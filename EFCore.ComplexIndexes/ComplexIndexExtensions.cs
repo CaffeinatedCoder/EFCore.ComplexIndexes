@@ -9,6 +9,14 @@ public static class ComplexIndexExtensions
 
     extension<TProperty>(ComplexTypePropertyBuilder<TProperty> builder)
     {
+        /// <summary>
+        /// Configures a single-column index on a complex type property.
+        /// </summary>
+        /// <typeparam name="TProperty">The type of the property.</typeparam>
+        /// <param name="isUnique">Whether the index is unique.</param>
+        /// <param name="filter">A SQL filter for the index.</param>
+        /// <param name="indexName">The custom name of the index.</param>
+        /// <returns>The same builder instance so that multiple configuration calls can be chained.</returns>
         public ComplexTypePropertyBuilder<TProperty> HasComplexIndex(
             bool    isUnique  = false,
             string? filter    = null,
@@ -33,6 +41,16 @@ public static class ComplexIndexExtensions
     extension<TEntity>(EntityTypeBuilder<TEntity> builder)
         where TEntity : class
     {
+        /// <summary>
+        /// Configures a multi-column composite index for the entity type.
+        /// </summary>
+        /// <typeparam name="TProperties">The type of the anonymous type containing the properties.</typeparam>
+        /// <param name="columns">An expression representing the properties to be included in the index (e.g., x => new { x.Prop1, x.Prop2 }).</param>
+        /// <param name="isUnique">Whether the index is unique.</param>
+        /// <param name="filter">A SQL filter for the index.</param>
+        /// <param name="indexName">The custom name of the index.</param>
+        /// <returns>The same builder instance so that multiple configuration calls can be chained.</returns>
+        /// <exception cref="ArgumentException">Thrown if fewer than two properties are specified.</exception>
         public EntityTypeBuilder<TEntity> HasComplexCompositeIndex<TProperties>(
             Expression<Func<TEntity, TProperties>> columns,
             bool                                   isUnique  = false,
