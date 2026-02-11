@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="EFCore.ComplexIndexes.Tests/EFCore.ComplexIndexes.Tests.csproj" />
+  <Project Path="EFCore.ComplexIndexes/EFCore.ComplexIndexes.csproj" />
+</Solution>
