@@ -1,5 +1,3 @@
-using System.ComponentModel;
-
 namespace EFCore.ComplexIndexes.Tests;
 
 [TestClass]
