@@ -5,24 +5,33 @@
         <ImplicitUsings>enable</ImplicitUsings>
         <Nullable>enable</Nullable>
         <PackageId>EFCore.ComplexIndexes</PackageId>
-        <Version>1.0.0</Version>
+        <Version>1.0.1</Version>
         <Authors>CaffeinatedCoder</Authors>
         <Description>EF Core complex property indexing extensions for EF Core 10.</Description>
         <PackageProjectUrl>https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes</PackageProjectUrl>
         <RepositoryUrl>https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes</RepositoryUrl>
         <PackageLicenseExpression>MIT</PackageLicenseExpression>
+        <PackageTags>efcore;entityframework;complextype;index;valueobject;ddd;softdelete</PackageTags>
         <GenerateDocumentationFile>true</GenerateDocumentationFile>
+        <GeneratePackageOnBuild>true</GeneratePackageOnBuild>
     </PropertyGroup>
 
     <ItemGroup>
-        <PackageReference Include="Microsoft.EntityFrameworkCore.Abstractions" Version="10.0.3" />
-        <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.3">
+        <PackageReference Include="Microsoft.EntityFrameworkCore.Abstractions" Version="10.0.0" />
+        <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.0">
             <PrivateAssets>all</PrivateAssets>
+            <IncludeAssets>compile</IncludeAssets>
         </PackageReference>
     </ItemGroup>
 
     <ItemGroup>
         <InternalsVisibleTo Include="EFCore.ComplexIndexes.Tests" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <None Include="build/EFCore.ComplexIndexes.targets"
+              Pack="true"
+              PackagePath="build/" />
     </ItemGroup>
 
 </Project>

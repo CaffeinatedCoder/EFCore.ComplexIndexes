@@ -1,0 +1,7 @@
+<Project>
+    <ItemGroup>
+        <AssemblyAttribute Include="Microsoft.EntityFrameworkCore.Design.DesignTimeServicesReferenceAttribute">
+            <_Parameter1>EFCore.ComplexIndexes.CustomDesignTimeServices, EFCore.ComplexIndexes</_Parameter1>
+        </AssemblyAttribute>
+    </ItemGroup>
+</Project>
