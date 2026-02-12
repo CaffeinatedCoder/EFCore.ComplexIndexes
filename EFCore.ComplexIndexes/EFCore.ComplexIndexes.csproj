@@ -5,13 +5,15 @@
         <ImplicitUsings>enable</ImplicitUsings>
         <Nullable>enable</Nullable>
         <PackageId>EFCore.ComplexIndexes</PackageId>
-        <Version>1.0.1</Version>
+        <Version>1.0.2</Version>
         <Authors>CaffeinatedCoder</Authors>
         <Description>EF Core complex property indexing extensions for EF Core 10.</Description>
         <PackageProjectUrl>https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes</PackageProjectUrl>
         <RepositoryUrl>https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes</RepositoryUrl>
         <PackageLicenseExpression>MIT</PackageLicenseExpression>
         <PackageTags>efcore;entityframework;complextype;index;valueobject;ddd;softdelete</PackageTags>
+        <PackageReadmeFile>README.md</PackageReadmeFile>
+        <PackageReleaseNotes>Now index generation is also kicking off in cases, where this package isn't directly referenced by the migration entry point assembly.</PackageReleaseNotes>
         <GenerateDocumentationFile>true</GenerateDocumentationFile>
         <GeneratePackageOnBuild>true</GeneratePackageOnBuild>
     </PropertyGroup>
@@ -32,6 +34,10 @@
         <None Include="build/EFCore.ComplexIndexes.targets"
               Pack="true"
               PackagePath="build/" />
+        <None Include="build/EFCore.ComplexIndexes.targets"
+              Pack="true"
+              PackagePath="buildTransitive/" />
+        <None Include="../README.md" Pack="true" PackagePath="\" />
     </ItemGroup>
 
 </Project>
