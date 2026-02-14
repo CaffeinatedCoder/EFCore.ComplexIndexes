@@ -148,7 +148,13 @@ public class CustomMigrationsModelDiffer(
                 columnNames.Add(col);
             }
 
-            if (!allResolved) continue;
+            if (!allResolved)
+            {
+                throw new InvalidOperationException(
+                    $"Could not resolve property path for composite index on entity {entityType.Name}. " +
+                    $"Invalid path: {string.Join(".", def.PropertyPaths)}"
+                );
+            }
 
             var indexName = def.IndexName ?? $"IX_{tableName}_{string.Join("_", columnNames)}";
 
