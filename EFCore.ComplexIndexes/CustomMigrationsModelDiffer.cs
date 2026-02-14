@@ -57,18 +57,23 @@ public class CustomMigrationsModelDiffer(
 
         foreach (var tgt in targetIndexes)
         {
-            if (!sourceIndexes.Contains(tgt))
-            {
-                operations.Add(new CreateIndexOperation
-                               {
-                                   Name     = tgt.IndexName,
-                                   Table    = tgt.TableName,
-                                   Schema   = tgt.Schema,
-                                   Columns  = [.. tgt.ColumnNames],
-                                   IsUnique = tgt.IsUnique,
-                                   Filter   = tgt.Filter
-                               });
-            }
+            if (sourceIndexes.Contains(tgt)) continue;
+
+            var op = new CreateIndexOperation
+                     {
+                         Name     = tgt.IndexName,
+                         Table    = tgt.TableName,
+                         Schema   = tgt.Schema,
+                         Columns  = [.. tgt.ColumnNames],
+                         IsUnique = tgt.IsUnique,
+                         Filter   = tgt.Filter
+                     };
+
+            // Forward all extra annotations — provider SQL generators handle their own
+            foreach (var (key, value) in tgt.ProviderAnnotations)
+                op.AddAnnotation(key, value);
+
+            operations.Add(op);
         }
 
         return operations;
@@ -92,6 +97,15 @@ public class CustomMigrationsModelDiffer(
         return result;
     }
 
+    private static readonly HashSet<string> CoreAnnotationKeys =
+    [
+        ComplexIndexAnnotations.IsIndexed,
+        ComplexIndexAnnotations.IsUnique,
+        ComplexIndexAnnotations.Filter,
+        ComplexIndexAnnotations.IndexName,
+        ComplexIndexAnnotations.CompositeIndexes
+    ];
+
     private static void ScanForSingleColumnIndexes(
         ITypeBase                typeBase,
         string                   tableName,
@@ -110,7 +124,15 @@ public class CustomMigrationsModelDiffer(
             var indexName = property.FindAnnotation(ComplexIndexAnnotations.IndexName)?.Value as string
                          ?? $"IX_{tableName}_{columnName}";
 
-            results.Add(new IndexDescriptor(tableName, schema, [columnName], indexName, isUnique, filter));
+            // Collect all non-core annotations as provider annotations
+            var providerAnnotations = new Dictionary<string, object?>();
+            foreach (var ann in property.GetAnnotations())
+            {
+                if (!CoreAnnotationKeys.Contains(ann.Name))
+                    providerAnnotations[ann.Name] = ann.Value;
+            }
+
+            results.Add(new IndexDescriptor(tableName, schema, [columnName], indexName, isUnique, filter, providerAnnotations));
         }
 
         foreach (var cp in typeBase.GetDeclaredComplexProperties())
@@ -158,7 +180,17 @@ public class CustomMigrationsModelDiffer(
 
             var indexName = def.IndexName ?? $"IX_{tableName}_{string.Join("_", columnNames)}";
 
-            results.Add(new IndexDescriptor(tableName, schema, columnNames, indexName, def.IsUnique, def.Filter));
+            results.Add(
+                new IndexDescriptor(
+                    tableName,
+                    schema,
+                    columnNames,
+                    indexName,
+                    def.IsUnique,
+                    def.Filter,
+                    def.ProviderAnnotations ?? []
+                )
+            );
         }
     }
 
@@ -181,12 +213,13 @@ public class CustomMigrationsModelDiffer(
     }
 
     internal sealed record IndexDescriptor(
-        string                TableName,
-        string?               Schema,
-        IReadOnlyList<string> ColumnNames,
-        string                IndexName,
-        bool                  IsUnique,
-        string?               Filter)
+        string                      TableName,
+        string?                     Schema,
+        IReadOnlyList<string>       ColumnNames,
+        string                      IndexName,
+        bool                        IsUnique,
+        string?                     Filter,
+        Dictionary<string, object?> ProviderAnnotations)
     {
         public bool Equals(IndexDescriptor? other)
         {
@@ -196,7 +229,20 @@ public class CustomMigrationsModelDiffer(
                 && ColumnNames.SequenceEqual(other.ColumnNames)
                 && IndexName == other.IndexName
                 && IsUnique  == other.IsUnique
-                && Filter    == other.Filter;
+                && Filter    == other.Filter
+                && ProviderAnnotationsEqual(other);
+        }
+
+        private bool ProviderAnnotationsEqual(IndexDescriptor other)
+        {
+            if (ProviderAnnotations.Count != other.ProviderAnnotations.Count) return false;
+            foreach (var (key, value) in ProviderAnnotations)
+            {
+                if (!other.ProviderAnnotations.TryGetValue(key, out var otherValue)) return false;
+                if (!Equals(value, otherValue)) return false;
+            }
+
+            return true;
         }
 
         public override int GetHashCode()
@@ -208,6 +254,12 @@ public class CustomMigrationsModelDiffer(
             hash.Add(IndexName);
             hash.Add(IsUnique);
             hash.Add(Filter);
+            foreach (var (key, value) in ProviderAnnotations.OrderBy(kv => kv.Key))
+            {
+                hash.Add(key);
+                hash.Add(value);
+            }
+
             return hash.ToHashCode();
         }
     }

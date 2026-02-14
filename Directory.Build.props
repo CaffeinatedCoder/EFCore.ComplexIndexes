@@ -1,0 +1,11 @@
+<Project>
+    <PropertyGroup>
+        <Version>2.0.0</Version>
+        <Authors>CaffeinatedCoder</Authors>
+        <PackageLicenseExpression>MIT</PackageLicenseExpression>
+        <GenerateDocumentationFile>true</GenerateDocumentationFile>
+        <GeneratePackageOnBuild>true</GeneratePackageOnBuild>
+        <PackageProjectUrl>https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes</PackageProjectUrl>
+        <RepositoryUrl>https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes</RepositoryUrl>
+    </PropertyGroup>
+</Project>

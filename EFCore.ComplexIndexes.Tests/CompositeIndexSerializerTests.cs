@@ -57,5 +57,6 @@ public class CompositeIndexSerializerTests
 
         Assert.DoesNotContain("filter", json);
         Assert.DoesNotContain("name",   json);
+        Assert.DoesNotContain("props",  json);
     }
 }

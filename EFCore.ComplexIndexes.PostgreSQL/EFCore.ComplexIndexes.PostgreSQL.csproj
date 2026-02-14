@@ -1,0 +1,33 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+    <PropertyGroup>
+        <TargetFramework>net10.0</TargetFramework>
+        <ImplicitUsings>enable</ImplicitUsings>
+        <Nullable>enable</Nullable>
+        <PackageId>EFCore.ComplexIndexes.PostgreSQL</PackageId>
+        <Description>PostgreSQL provider extensions for EFCore.ComplexIndexes — GIN, GiST, BRIN, SP-GiST, and Hash index support for complex type properties.</Description>
+        <PackageTags>efcore;entityframework;complextype;index;postgresql;npgsql;gin;gist;brin</PackageTags>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <ProjectReference Include="..\EFCore.ComplexIndexes\EFCore.ComplexIndexes.csproj" />
+        <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.0">
+            <PrivateAssets>all</PrivateAssets>
+            <IncludeAssets>compile</IncludeAssets>
+        </PackageReference>
+    </ItemGroup>
+
+    <ItemGroup>
+        <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="10.0.0" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <None Include="build/EFCore.ComplexIndexes.PostgreSQL.targets"
+              Pack="true"
+              PackagePath="build/" />
+        <None Include="build/EFCore.ComplexIndexes.PostgreSQL.targets"
+              Pack="true"
+              PackagePath="buildTransitive/" />
+    </ItemGroup>
+
+</Project>

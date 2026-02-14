@@ -14,6 +14,15 @@ EF Core 8.0 introduced complex properties, but migration tooling doesn't automat
 - Flexible Filtering: Supports SQL WHERE clauses for filtered indexes (e.g., soft deletes)
 - Composite Indexes: Define multi-column indexes spanning both scalar and nested properties with a single, intuitive expression
 
+| Package | NuGet | Description |
+|---|---|---|
+| **EFCore.ComplexIndexes** | [![nuget](https://img.shields.io/nuget/v/EFCore.ComplexIndexes.svg)](https://www.nuget.org/packages/EFCore.ComplexIndexes/) | Core library — single-column, composite, unique, and filtered indexes on complex type properties. Works with any EF Core relational provider. |
+| **EFCore.ComplexIndexes.PostgreSQL** | [![nuget](https://img.shields.io/nuget/v/EFCore.ComplexIndexes.PostgreSQL.svg)](https://www.nuget.org/packages/EFCore.ComplexIndexes.PostgreSQL/) | PostgreSQL extensions via [Npgsql](https://www.npgsql.org/efcore/) — adds GIN, GiST, BRIN, SP-GiST, and Hash index methods, operator classes, covering indexes (`INCLUDE`), concurrent creation, and nulls-distinct control. |
+
+> **Which package do I need?**
+> Install only the **core** package if you use SQL Server, SQLite, or any provider where the default B-tree index type is sufficient.
+> Add the **PostgreSQL** package when you need PostgreSQL-specific index types — it includes the core automatically.
+
 ### Quick Example:
 
 ``` csharp
