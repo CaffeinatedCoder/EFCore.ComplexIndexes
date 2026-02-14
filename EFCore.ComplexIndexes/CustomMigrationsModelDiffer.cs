@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata;
 using Microsoft.EntityFrameworkCore.Migrations;
@@ -180,6 +181,8 @@ public class CustomMigrationsModelDiffer(
 
             var indexName = def.IndexName ?? $"IX_{tableName}_{string.Join("_", columnNames)}";
 
+            var normalized = NormalizeProviderAnnotations(def.ProviderAnnotations);
+
             results.Add(
                 new IndexDescriptor(
                     tableName,
@@ -188,10 +191,42 @@ public class CustomMigrationsModelDiffer(
                     indexName,
                     def.IsUnique,
                     def.Filter,
-                    def.ProviderAnnotations ?? []
+                    normalized
                 )
             );
         }
+    }
+
+    private static Dictionary<string, object?> NormalizeProviderAnnotations(Dictionary<string, object?>? annotations)
+    {
+        if (annotations is null) return [];
+
+        var result = new Dictionary<string, object?>(annotations.Count);
+
+        foreach (var (key, value) in annotations)
+        {
+            result[key] = value is JsonElement je
+                              ? NormalizeJsonElement(je)
+                              : value;
+        }
+
+        return result;
+    }
+
+    private static object? NormalizeJsonElement(JsonElement je)
+    {
+        return je.ValueKind switch
+               {
+                   JsonValueKind.String => je.GetString(),
+                   JsonValueKind.True   => true,
+                   JsonValueKind.False  => false,
+                   JsonValueKind.Number => je.TryGetInt64(out var l) ? l : je.GetDouble(),
+                   JsonValueKind.Null   => null,
+                   JsonValueKind.Array => je.EnumerateArray()
+                                            .Select(e => e.ValueKind == JsonValueKind.String ? e.GetString() : e.ToString())
+                                            .ToArray(),
+                   _ => je.ToString()
+               };
     }
 
     private static string? ResolveColumnName(IEntityType entityType, string dotPath)
