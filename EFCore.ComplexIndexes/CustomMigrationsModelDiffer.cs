@@ -114,14 +114,30 @@ public class CustomMigrationsModelDiffer(
         HashSet<IndexDescriptor> results
     )
     {
+        var storeObject = StoreObjectIdentifier.Table(tableName, schema);
+
+        ScanForSingleColumnIndexes(typeBase, tableName, schema, storeObject, results);
+    }
+
+    private static void ScanForSingleColumnIndexes(
+        ITypeBase                typeBase,
+        string                   tableName,
+        string?                  schema,
+        StoreObjectIdentifier    storeObject,
+        HashSet<IndexDescriptor> results
+    )
+    {
         foreach (var property in typeBase.GetDeclaredProperties())
         {
             if (property.FindAnnotation(ComplexIndexAnnotations.IsIndexed)?.Value is not true)
                 continue;
 
-            var columnName = property.GetColumnName();
-            var isUnique   = property.FindAnnotation(ComplexIndexAnnotations.IsUnique)?.Value is true;
-            var filter     = property.FindAnnotation(ComplexIndexAnnotations.Filter)?.Value as string;
+            var columnName = property.GetColumnName(storeObject);
+            if (columnName is null)
+                continue;
+
+            var isUnique = property.FindAnnotation(ComplexIndexAnnotations.IsUnique)?.Value is true;
+            var filter   = property.FindAnnotation(ComplexIndexAnnotations.Filter)?.Value as string;
             var indexName = property.FindAnnotation(ComplexIndexAnnotations.IndexName)?.Value as string
                          ?? $"IX_{tableName}_{columnName}";
 
@@ -137,7 +153,7 @@ public class CustomMigrationsModelDiffer(
         }
 
         foreach (var cp in typeBase.GetDeclaredComplexProperties())
-            ScanForSingleColumnIndexes(cp.ComplexType, tableName, schema, results);
+            ScanForSingleColumnIndexes(cp.ComplexType, tableName, schema, storeObject, results);
     }
 
     private static void ScanForCompositeIndexes(
@@ -153,29 +169,29 @@ public class CustomMigrationsModelDiffer(
             return;
 
         var definitions = CompositeIndexSerializer.Deserialize(json);
+        var storeObject = StoreObjectIdentifier.Table(tableName, schema);
 
         foreach (var def in definitions)
         {
-            var columnNames = new List<string>(def.PropertyPaths.Count);
-            var allResolved = true;
+            var     columnNames    = new List<string>(def.PropertyPaths.Count);
+            string? unresolvedPath = null;
 
             foreach (var path in def.PropertyPaths)
             {
-                var col = ResolveColumnName(entityType, path);
+                var col = ResolveColumnName(entityType, path, storeObject);
                 if (col is null)
                 {
-                    allResolved = false;
+                    unresolvedPath = path;
                     break;
                 }
 
                 columnNames.Add(col);
             }
 
-            if (!allResolved)
+            if (unresolvedPath is not null)
             {
                 throw new InvalidOperationException(
-                    $"Could not resolve property path for composite index on entity {entityType.Name}. " +
-                    $"Invalid path: {string.Join(".", def.PropertyPaths)}"
+                    $"Could not resolve property path '{unresolvedPath}' for composite index on entity {entityType.Name}."
                 );
             }
 
@@ -229,7 +245,11 @@ public class CustomMigrationsModelDiffer(
                };
     }
 
-    private static string? ResolveColumnName(IEntityType entityType, string dotPath)
+    private static string? ResolveColumnName(
+        IEntityType           entityType,
+        string                dotPath,
+        StoreObjectIdentifier storeObject
+    )
     {
         var       parts   = dotPath.Split('.');
         ITypeBase current = entityType;
@@ -237,7 +257,7 @@ public class CustomMigrationsModelDiffer(
         for (var i = 0; i < parts.Length; i++)
         {
             if (i == parts.Length - 1)
-                return current.FindProperty(parts[i])?.GetColumnName();
+                return current.FindProperty(parts[i])?.GetColumnName(storeObject);
 
             var cp = current.FindComplexProperty(parts[i]);
             if (cp is null) return null;
@@ -285,10 +305,14 @@ public class CustomMigrationsModelDiffer(
             var hash = new HashCode();
             hash.Add(TableName);
             hash.Add(Schema);
-            foreach (var col in ColumnNames) hash.Add(col);
+            
+            foreach (var col in ColumnNames) 
+                hash.Add(col);
+            
             hash.Add(IndexName);
             hash.Add(IsUnique);
             hash.Add(Filter);
+            
             foreach (var (key, value) in ProviderAnnotations.OrderBy(kv => kv.Key))
             {
                 hash.Add(key);

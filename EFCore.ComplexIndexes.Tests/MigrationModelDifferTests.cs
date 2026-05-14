@@ -1,4 +1,3 @@
-using System.ComponentModel;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
@@ -134,6 +133,90 @@ public class MigrationsModelDifferTests : IDisposable
         }
     }
 
+    private enum VacancySource
+    {
+        Source1,
+        Source2,
+        Source3
+    }
+
+    private class Vacancy
+    {
+        public Guid          Id     { get; set; }
+        public VacancyOrigin Origin { get; set; } = new();
+    }
+
+    private class VacancyOrigin
+    {
+        public VacancySource Source     { get; set; }
+        public string        ExternalId { get; set; } = "";
+    }
+
+    private class VacancyCompositeConventionColumnNamesContext(
+        DbContextOptions<VacancyCompositeConventionColumnNamesContext> options) : DbContext(options)
+    {
+        public DbSet<Vacancy> Vacancies => Set<Vacancy>();
+
+        protected override void OnModelCreating(ModelBuilder modelBuilder)
+        {
+            modelBuilder.Entity<Vacancy>(builder =>
+            {
+                builder.ToTable("Vacancies");
+                builder.HasKey(x => x.Id);
+                builder.ComplexProperty(x => x.Origin);
+
+                builder.HasComplexCompositeIndex(
+                    vacancy => new { vacancy.Origin.Source, vacancy.Origin.ExternalId },
+                    isUnique: true);
+            });
+        }
+    }
+
+    private class VacancySingleConventionColumnNameContext(
+        DbContextOptions<VacancySingleConventionColumnNameContext> options) : DbContext(options)
+    {
+        public DbSet<Vacancy> Vacancies => Set<Vacancy>();
+
+        protected override void OnModelCreating(ModelBuilder modelBuilder)
+        {
+            modelBuilder.Entity<Vacancy>(builder =>
+            {
+                builder.ToTable("Vacancies");
+                builder.HasKey(x => x.Id);
+
+                builder.ComplexProperty(x => x.Origin, complex =>
+                {
+                    complex.Property(x => x.Source).HasComplexIndex(isUnique: true);
+                });
+            });
+        }
+    }
+
+    private class VacancyCompositeExplicitColumnNamesContext(
+        DbContextOptions<VacancyCompositeExplicitColumnNamesContext> options) : DbContext(options)
+    {
+        public DbSet<Vacancy> Vacancies => Set<Vacancy>();
+
+        protected override void OnModelCreating(ModelBuilder modelBuilder)
+        {
+            modelBuilder.Entity<Vacancy>(builder =>
+            {
+                builder.ToTable("Vacancies");
+                builder.HasKey(x => x.Id);
+
+                builder.ComplexProperty(x => x.Origin, complex =>
+                {
+                    complex.Property(x => x.Source).HasColumnName("vacancy_source");
+                    complex.Property(x => x.ExternalId).HasColumnName("external_vacancy_id");
+                });
+
+                builder.HasComplexCompositeIndex(
+                    vacancy => new { vacancy.Origin.Source, vacancy.Origin.ExternalId },
+                    isUnique: true);
+            });
+        }
+    }
+
     // ── Tests ──
 
     [TestMethod(DisplayName = "Initial migration creates index")]
@@ -193,6 +276,52 @@ public class MigrationsModelDifferTests : IDisposable
         string[] columnNames = ["name", "email_address"];
         Assert.IsTrue(createIndex.Columns.SequenceEqual(columnNames));
         Assert.IsTrue(createIndex.IsUnique);
+    }
+
+    [TestMethod(DisplayName = "Composite complex index uses convention-based complex column names")]
+    public void Composite_complex_index_uses_convention_based_complex_column_names()
+    {
+        var target     = BuildRelationalModel<VacancyCompositeConventionColumnNamesContext>();
+        var operations = GetDifferences(source: null, target: target);
+
+        var createIndex = Assert.ContainsSingle(operations.OfType<CreateIndexOperation>());
+
+        string[] expectedColumnNames = ["Origin_Source", "Origin_ExternalId"];
+
+        Assert.AreEqual("Vacancies", createIndex.Table);
+        Assert.IsTrue(createIndex.Columns.SequenceEqual(expectedColumnNames));
+        Assert.IsTrue(createIndex.IsUnique);
+        Assert.AreEqual("IX_Vacancies_Origin_Source_Origin_ExternalId", createIndex.Name);
+    }
+
+    [TestMethod(DisplayName = "Single-column complex index uses convention-based complex column name")]
+    public void Single_column_complex_index_uses_convention_based_complex_column_name()
+    {
+        var target     = BuildRelationalModel<VacancySingleConventionColumnNameContext>();
+        var operations = GetDifferences(source: null, target: target);
+
+        var createIndex = Assert.ContainsSingle(operations.OfType<CreateIndexOperation>());
+
+        Assert.AreEqual("Vacancies", createIndex.Table);
+        Assert.AreEqual("Origin_Source", Assert.ContainsSingle(createIndex.Columns));
+        Assert.IsTrue(createIndex.IsUnique);
+        Assert.AreEqual("IX_Vacancies_Origin_Source", createIndex.Name);
+    }
+
+    [TestMethod(DisplayName = "Composite complex index uses explicit complex column names")]
+    public void Composite_complex_index_uses_explicit_complex_column_names()
+    {
+        var target     = BuildRelationalModel<VacancyCompositeExplicitColumnNamesContext>();
+        var operations = GetDifferences(source: null, target: target);
+
+        var createIndex = Assert.ContainsSingle(operations.OfType<CreateIndexOperation>());
+
+        string[] expectedColumnNames = ["vacancy_source", "external_vacancy_id"];
+
+        Assert.AreEqual("Vacancies", createIndex.Table);
+        Assert.IsTrue(createIndex.Columns.SequenceEqual(expectedColumnNames));
+        Assert.IsTrue(createIndex.IsUnique);
+        Assert.AreEqual("IX_Vacancies_vacancy_source_external_vacancy_id", createIndex.Name);
     }
 
     [TestMethod(DisplayName = "Filtered index preserves filter")]
