@@ -4,9 +4,11 @@ namespace EFCore.ComplexIndexes;
 /// Builder for configuring a complex-type index.
 /// Provider satellites extend this with their own methods.
 /// </summary>
-public class ComplexIndexBuilder
+public class ComplexIndexBuilder : IIndexAnnotationBuilder
 {
     internal Dictionary<string, object?> Annotations { get; } = new();
+
+    Dictionary<string, object?> IIndexAnnotationBuilder.Annotations => Annotations;
 
     /// <summary>Marks this index as unique.</summary>
     public ComplexIndexBuilder IsUnique(bool unique = true)
@@ -28,7 +30,7 @@ public class ComplexIndexBuilder
         Annotations[ComplexIndexAnnotations.IndexName] = name;
         return this;
     }
-
+    
     /// <summary>
     /// Sets a provider-specific annotation. Intended for use by provider satellite packages.
     /// </summary>

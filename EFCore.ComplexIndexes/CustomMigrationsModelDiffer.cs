@@ -65,7 +65,10 @@ public class CustomMigrationsModelDiffer(
                          Name     = tgt.IndexName,
                          Table    = tgt.TableName,
                          Schema   = tgt.Schema,
-                         Columns  = [.. tgt.ColumnNames],
+                         // EF's MigrationBuilder.CreateIndex rejects an empty column list, so for
+                         // expression indexes we fill Columns with the verbatim part values (the
+                         // provider SQL generator renders from the IndexParts annotation instead).
+                         Columns  = [.. tgt.Parts.Select(p => p.Value)],
                          IsUnique = tgt.IsUnique,
                          Filter   = tgt.Filter
                      };
@@ -73,6 +76,10 @@ public class CustomMigrationsModelDiffer(
             // Forward all extra annotations — provider SQL generators handle their own
             foreach (var (key, value) in tgt.ProviderAnnotations)
                 op.AddAnnotation(key, value);
+
+            // Only expression indexes need the ordered parts; column-only indexes render from Columns.
+            if (tgt.HasExpression)
+                op.AddAnnotation(ComplexIndexAnnotations.IndexParts, IndexPartsSerializer.Serialize(tgt.Parts));
 
             operations.Add(op);
         }
@@ -158,7 +165,7 @@ public class CustomMigrationsModelDiffer(
                     providerAnnotations[ann.Name] = ann.Value;
             }
 
-            results.Add(new IndexDescriptor(tableName, schema, [columnName], indexName, isUnique, filter, providerAnnotations));
+            results.Add(new IndexDescriptor(tableName, schema, [new ResolvedIndexPart(false, columnName)], indexName, isUnique, filter, providerAnnotations));
         }
 
         foreach (var cp in typeBase.GetDeclaredComplexProperties())
@@ -182,29 +189,28 @@ public class CustomMigrationsModelDiffer(
 
         foreach (var def in definitions)
         {
-            var     columnNames    = new List<string>(def.PropertyPaths.Count);
-            string? unresolvedPath = null;
+            var parts = new List<ResolvedIndexPart>(def.EffectiveParts.Count);
 
-            foreach (var path in def.PropertyPaths)
+            foreach (var part in def.EffectiveParts)
             {
-                var col = ResolveColumnName(entityType, path, storeObject);
-                if (col is null)
+                if (part.IsExpression)
                 {
-                    unresolvedPath = path;
-                    break;
+                    parts.Add(new ResolvedIndexPart(true, part.Expression!));
+                    continue;
                 }
 
-                columnNames.Add(col);
+                var col = ResolveColumnName(entityType, part.PropertyPath!, storeObject);
+                if (col is null)
+                {
+                    throw new InvalidOperationException(
+                        $"Could not resolve property path '{part.PropertyPath}' for index on entity {entityType.Name}."
+                    );
+                }
+
+                parts.Add(new ResolvedIndexPart(false, col));
             }
 
-            if (unresolvedPath is not null)
-            {
-                throw new InvalidOperationException(
-                    $"Could not resolve property path '{unresolvedPath}' for composite index on entity {entityType.Name}."
-                );
-            }
-
-            var indexName = def.IndexName ?? $"IX_{tableName}_{string.Join("_", columnNames)}";
+            var indexName = def.IndexName ?? $"IX_{tableName}_{string.Join("_", parts.Select(BuildPartToken))}";
 
             var normalized = NormalizeProviderAnnotations(def.ProviderAnnotations);
 
@@ -212,7 +218,7 @@ public class CustomMigrationsModelDiffer(
                 new IndexDescriptor(
                     tableName,
                     schema,
-                    columnNames,
+                    parts,
                     indexName,
                     def.IsUnique,
                     def.Filter,
@@ -254,6 +260,17 @@ public class CustomMigrationsModelDiffer(
                };
     }
 
+    // Builds a default index-name token for a part: column names pass through; expressions are
+    // reduced to their alphanumeric characters (e.g. lower("Email") -> "lowerEmail").
+    private static string BuildPartToken(ResolvedIndexPart part)
+    {
+        if (!part.IsExpression)
+            return part.Value;
+
+        var token = new string([.. part.Value.Where(char.IsLetterOrDigit)]);
+        return token.Length > 0 ? token : "expr";
+    }
+
     private static string? ResolveColumnName(
         IEntityType           entityType,
         string                dotPath,
@@ -277,20 +294,24 @@ public class CustomMigrationsModelDiffer(
     }
 
     internal sealed record IndexDescriptor(
-        string                      TableName,
-        string?                     Schema,
-        IReadOnlyList<string>       ColumnNames,
-        string                      IndexName,
-        bool                        IsUnique,
-        string?                     Filter,
-        Dictionary<string, object?> ProviderAnnotations)
+        string                        TableName,
+        string?                       Schema,
+        IReadOnlyList<ResolvedIndexPart> Parts,
+        string                        IndexName,
+        bool                          IsUnique,
+        string?                       Filter,
+        Dictionary<string, object?>   ProviderAnnotations)
     {
+        public IEnumerable<string> ColumnNames => Parts.Where(p => !p.IsExpression).Select(p => p.Value);
+
+        public bool HasExpression => Parts.Any(p => p.IsExpression);
+
         public bool Equals(IndexDescriptor? other)
         {
             if (other is null) return false;
             return TableName == other.TableName
                 && Schema    == other.Schema
-                && ColumnNames.SequenceEqual(other.ColumnNames)
+                && Parts.SequenceEqual(other.Parts)
                 && IndexName == other.IndexName
                 && IsUnique  == other.IsUnique
                 && Filter    == other.Filter
@@ -325,14 +346,14 @@ public class CustomMigrationsModelDiffer(
             var hash = new HashCode();
             hash.Add(TableName);
             hash.Add(Schema);
-            
-            foreach (var col in ColumnNames) 
-                hash.Add(col);
-            
+
+            foreach (var part in Parts)
+                hash.Add(part);
+
             hash.Add(IndexName);
             hash.Add(IsUnique);
             hash.Add(Filter);
-            
+
             foreach (var (key, value) in ProviderAnnotations.OrderBy(kv => kv.Key))
             {
                 hash.Add(key);

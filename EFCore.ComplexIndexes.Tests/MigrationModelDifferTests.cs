@@ -1,3 +1,4 @@
+using EFCore.ComplexIndexes.PostgreSQL;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
@@ -357,6 +358,68 @@ public class MigrationsModelDifferTests : IDisposable
                 });
             });
         }
+    }
+
+    // V4: expression index on a regular column
+    private class ContextWithExpressionIndex(
+        DbContextOptions<ContextWithExpressionIndex> options) : DbContext(options)
+    {
+        public DbSet<PersonV1> People => Set<PersonV1>();
+
+        protected override void OnModelCreating(ModelBuilder modelBuilder)
+        {
+            modelBuilder.Entity<PersonV1>(builder =>
+            {
+                builder.ToTable("person");
+                builder.HasKey(x => x.Id);
+                builder.Property(x => x.Name).HasColumnName("name");
+                builder.ComplexProperty(x => x.EmailAddress, c => { c.Property(x => x.Value).HasColumnName("email_address"); });
+                builder.HasExpressionIndex("lower(name)");
+            });
+        }
+    }
+
+    [TestMethod(DisplayName = "Expression index emits IndexParts annotation and no columns")]
+    public void Expression_index_emits_parts_annotation()
+    {
+        var target     = BuildRelationalModel<ContextWithExpressionIndex>();
+        var operations = GetDifferences(source: null, target: target);
+
+        var createIndex = Assert.ContainsSingle(operations.OfType<CreateIndexOperation>());
+        Assert.AreEqual("person", createIndex.Table);
+        // Columns must be non-empty (EF rejects an empty list); it carries the verbatim part value.
+        Assert.AreEqual("lower(name)", Assert.ContainsSingle(createIndex.Columns));
+        Assert.AreEqual("IX_person_lowername", createIndex.Name);
+
+        var partsJson = createIndex.FindAnnotation(ComplexIndexAnnotations.IndexParts)?.Value as string;
+        Assert.IsNotNull(partsJson);
+
+        var parts = IndexPartsSerializer.Deserialize(partsJson);
+        var part  = Assert.ContainsSingle(parts);
+        Assert.IsTrue(part.IsExpression);
+        Assert.AreEqual("lower(name)", part.Value);
+    }
+
+    [TestMethod(DisplayName = "Unchanged expression index produces no operations")]
+    public void Unchanged_expression_index_is_noop()
+    {
+        var source     = BuildRelationalModel<ContextWithExpressionIndex>();
+        var target     = BuildRelationalModel<ContextWithExpressionIndex>();
+        var operations = GetDifferences(source, target);
+
+        Assert.IsEmpty(operations.OfType<CreateIndexOperation>());
+        Assert.IsEmpty(operations.OfType<DropIndexOperation>());
+    }
+
+    [TestMethod(DisplayName = "Removing expression index drops it by name")]
+    public void Removing_expression_index_drops_it()
+    {
+        var source     = BuildRelationalModel<ContextWithExpressionIndex>();
+        var target     = BuildRelationalModel<ContextV1>();
+        var operations = GetDifferences(source, target);
+
+        var dropIndex = Assert.ContainsSingle(operations.OfType<DropIndexOperation>());
+        Assert.AreEqual("IX_person_lowername", dropIndex.Name);
     }
 
     [TestMethod(DisplayName = "Dropping table does not emit separate drop index")]
