@@ -107,6 +107,15 @@ public class CustomMigrationsModelDiffer(
         ComplexIndexAnnotations.CompositeIndexes
     ];
 
+    // EF relational column-facet annotations that are meaningless on an index operation. The
+    // snapshot model serializes the column type (HasColumnType) so it carries Relational:ColumnType,
+    // while the code model leaves it implicit (no annotation). Collecting it would make the source
+    // and target descriptors differ for every complex index, producing phantom drop/create churn.
+    private static readonly HashSet<string> NonIndexColumnAnnotationKeys =
+    [
+        "Relational:ColumnType"
+    ];
+
     private static void ScanForSingleColumnIndexes(
         ITypeBase                typeBase,
         string                   tableName,
@@ -141,11 +150,11 @@ public class CustomMigrationsModelDiffer(
             var indexName = property.FindAnnotation(ComplexIndexAnnotations.IndexName)?.Value as string
                          ?? $"IX_{tableName}_{columnName}";
 
-            // Collect all non-core annotations as provider annotations
+            // Collect provider annotations, skipping core keys and non-index column facets
             var providerAnnotations = new Dictionary<string, object?>();
             foreach (var ann in property.GetAnnotations())
             {
-                if (!CoreAnnotationKeys.Contains(ann.Name))
+                if (!CoreAnnotationKeys.Contains(ann.Name) && !NonIndexColumnAnnotationKeys.Contains(ann.Name))
                     providerAnnotations[ann.Name] = ann.Value;
             }
 
@@ -294,10 +303,21 @@ public class CustomMigrationsModelDiffer(
             foreach (var (key, value) in ProviderAnnotations)
             {
                 if (!other.ProviderAnnotations.TryGetValue(key, out var otherValue)) return false;
-                if (!Equals(value, otherValue)) return false;
+                if (!AnnotationValueEquals(value, otherValue)) return false;
             }
 
             return true;
+        }
+
+        // Annotation values may be arrays (e.g. operator classes / included columns). object.Equals
+        // compares arrays by reference, so structurally-equal values from two model builds never
+        // match — compare such values by sequence instead.
+        private static bool AnnotationValueEquals(object? a, object? b)
+        {
+            if (a is string || b is string) return Equals(a, b);
+            if (a is System.Collections.IEnumerable ea && b is System.Collections.IEnumerable eb)
+                return ea.Cast<object?>().SequenceEqual(eb.Cast<object?>());
+            return Equals(a, b);
         }
 
         public override int GetHashCode()
@@ -316,7 +336,12 @@ public class CustomMigrationsModelDiffer(
             foreach (var (key, value) in ProviderAnnotations.OrderBy(kv => kv.Key))
             {
                 hash.Add(key);
-                hash.Add(value);
+
+                // Hash array contents (not the reference) to stay consistent with AnnotationValueEquals.
+                if (value is not string && value is System.Collections.IEnumerable seq)
+                    foreach (var item in seq) hash.Add(item);
+                else
+                    hash.Add(value);
             }
 
             return hash.ToHashCode();
