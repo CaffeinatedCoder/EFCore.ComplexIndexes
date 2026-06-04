@@ -360,6 +360,47 @@ public class MigrationsModelDifferTests : IDisposable
         }
     }
 
+    // Composite index with a descending column
+    private class ContextWithDescendingComposite(
+        DbContextOptions<ContextWithDescendingComposite> options) : DbContext(options)
+    {
+        public DbSet<PersonV1> People => Set<PersonV1>();
+
+        protected override void OnModelCreating(ModelBuilder modelBuilder)
+        {
+            modelBuilder.Entity<PersonV1>(builder =>
+            {
+                builder.ToTable("person");
+                builder.HasKey(x => x.Id);
+                builder.Property(x => x.Name).HasColumnName("name");
+                builder.ComplexProperty(x => x.EmailAddress, c => { c.Property(x => x.Value).HasColumnName("email_address"); });
+                builder.HasComplexCompositeIndex(x => new { x.Name, Email = DbOrder.Desc(x.EmailAddress.Value) });
+            });
+        }
+    }
+
+    [TestMethod(DisplayName = "Composite index sets per-column descending order")]
+    public void Composite_index_sets_descending_order()
+    {
+        var target     = BuildRelationalModel<ContextWithDescendingComposite>();
+        var operations = GetDifferences(source: null, target: target);
+
+        var createIndex = Assert.ContainsSingle(operations.OfType<CreateIndexOperation>());
+        Assert.IsTrue(createIndex.Columns.SequenceEqual(["name", "email_address"]));
+        Assert.IsNotNull(createIndex.IsDescending);
+        Assert.IsTrue(createIndex.IsDescending!.SequenceEqual([false, true]));
+    }
+
+    [TestMethod(DisplayName = "All-ascending composite leaves IsDescending null")]
+    public void Ascending_composite_leaves_isdescending_null()
+    {
+        var target     = BuildRelationalModel<ContextV3>();
+        var operations = GetDifferences(source: null, target: target);
+
+        var createIndex = Assert.ContainsSingle(operations.OfType<CreateIndexOperation>());
+        Assert.IsNull(createIndex.IsDescending);
+    }
+
     // V4: expression index on a regular column
     private class ContextWithExpressionIndex(
         DbContextOptions<ContextWithExpressionIndex> options) : DbContext(options)

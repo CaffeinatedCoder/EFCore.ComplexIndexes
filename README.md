@@ -12,7 +12,7 @@ EF Core 8.0 introduced complex properties, but migration tooling doesn't automat
 - **DDD-Friendly**: Supports the Domain-Driven Design pattern of encapsulating logic in value objects without sacrificing database performance
 - **Migration-Aware**: Automatically generates proper `CREATE INDEX` and `DROP INDEX` operations during EF Core migrations
 - **Flexible Filtering**: Supports SQL `WHERE` clauses for filtered indexes (e.g., soft deletes)
-- **Composite Indexes**: Define multi-column indexes spanning both scalar and nested properties with a single, intuitive expression
+- **Composite Indexes**: Define multi-column indexes spanning both scalar and nested properties with a single, intuitive expression — with per-column `ASC`/`DESC` ordering via `DbOrder.Asc`/`DbOrder.Desc`
 - **Expression Indexes** *(PostgreSQL)*: Index arbitrary SQL expressions such as `lower(email)` or `to_tsvector('english', body)` — including on plain, non-complex entities
 
 | Package | NuGet | Description |
@@ -66,6 +66,19 @@ builder.HasComplexCompositeIndex(
     x => new { x.Name, x.EmailAddress.Value },
     isUnique: true);
 ```
+
+#### Per-column sort direction
+
+Wrap any member in `DbOrder.Desc(...)` (or `DbOrder.Asc(...)`, the default) to control its sort order. Because a wrapped member is a method call, C# requires you to **name it** in the anonymous type:
+
+```csharp
+builder.HasComplexCompositeIndex(
+    c => new { c.HybridDateTime.DateTime, Counter = DbOrder.Desc(c.HybridDateTime.Counter), c.Id },
+    indexName: "IX_Commits_DateTime_Counter_Id");
+// CREATE INDEX "IX_Commits_DateTime_Counter_Id" ON ... ("DateTime", "Counter" DESC, "Id");
+```
+
+Direction maps to EF Core's native `CreateIndexOperation.IsDescending`, so it is rendered by **every relational provider** (SQL Server, SQLite, PostgreSQL) — no extra wiring required. Re-declaring an index over the same columns updates its direction.
 
 ### PostgreSQL index methods on a complex property
 

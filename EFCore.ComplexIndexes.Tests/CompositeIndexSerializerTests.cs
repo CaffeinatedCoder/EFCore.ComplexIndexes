@@ -57,6 +57,29 @@ public class CompositeIndexSerializerTests
         Assert.IsTrue(deserialized[0].EffectiveParts[1].IsExpression);
     }
 
+    [TestMethod(DisplayName = "Roundtrips per-column descending direction")]
+    public void Roundtrips_descending_direction()
+    {
+        var definitions = new List<CompositeIndexDefinition>
+                          {
+                              new()
+                              {
+                                  Parts =
+                                  [
+                                      new IndexPartDefinition { PropertyPath = "Name" },
+                                      new IndexPartDefinition { PropertyPath = "Created", Descending = true }
+                                  ]
+                              }
+                          };
+
+        var json         = CompositeIndexSerializer.Serialize(definitions);
+        var deserialized = CompositeIndexSerializer.Deserialize(json);
+
+        Assert.AreEqual(definitions[0], deserialized[0]);
+        Assert.IsFalse(deserialized[0].EffectiveParts[0].Descending);
+        Assert.IsTrue(deserialized[0].EffectiveParts[1].Descending);
+    }
+
     [TestMethod(DisplayName = "Legacy paths-only JSON still deserializes via EffectiveParts")]
     public void Legacy_paths_json_deserializes()
     {

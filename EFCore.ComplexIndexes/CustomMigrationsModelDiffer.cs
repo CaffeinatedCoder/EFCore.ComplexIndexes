@@ -73,6 +73,10 @@ public class CustomMigrationsModelDiffer(
                          Filter   = tgt.Filter
                      };
 
+            // null means all-ascending — leave it so existing ascending indexes don't churn.
+            if (tgt.Parts.Any(p => p.Descending))
+                op.IsDescending = [.. tgt.Parts.Select(p => p.Descending)];
+
             // Forward all extra annotations — provider SQL generators handle their own
             foreach (var (key, value) in tgt.ProviderAnnotations)
                 op.AddAnnotation(key, value);
@@ -195,7 +199,7 @@ public class CustomMigrationsModelDiffer(
             {
                 if (part.IsExpression)
                 {
-                    parts.Add(new ResolvedIndexPart(true, part.Expression!));
+                    parts.Add(new ResolvedIndexPart(true, part.Expression!, part.Descending));
                     continue;
                 }
 
@@ -207,7 +211,7 @@ public class CustomMigrationsModelDiffer(
                     );
                 }
 
-                parts.Add(new ResolvedIndexPart(false, col));
+                parts.Add(new ResolvedIndexPart(false, col, part.Descending));
             }
 
             var indexName = def.IndexName ?? $"IX_{tableName}_{string.Join("_", parts.Select(BuildPartToken))}";

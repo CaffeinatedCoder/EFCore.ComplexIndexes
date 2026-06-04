@@ -16,14 +16,20 @@ public sealed class IndexPartDefinition : IEquatable<IndexPartDefinition>
     /// <summary>Verbatim SQL fragment, emitted as-is. Null for column parts.</summary>
     [JsonPropertyName("expr")] public string? Expression { get; init; }
 
+    /// <summary>Whether this part sorts descending. Defaults to ascending.</summary>
+    [JsonPropertyName("desc")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public bool Descending { get; init; }
+
     [JsonIgnore] public bool IsExpression => Expression is not null;
 
     public bool Equals(IndexPartDefinition? other) =>
         other is not null
      && PropertyPath == other.PropertyPath
-     && Expression   == other.Expression;
+     && Expression   == other.Expression
+     && Descending   == other.Descending;
 
     public override bool Equals(object? obj) => Equals(obj as IndexPartDefinition);
 
-    public override int GetHashCode() => HashCode.Combine(PropertyPath, Expression);
+    public override int GetHashCode() => HashCode.Combine(PropertyPath, Expression, Descending);
 }

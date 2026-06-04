@@ -62,6 +62,29 @@ public class PathExtractionTests
         Assert.IsTrue(expectedPaths.SequenceEqual(paths));
     }
 
+    [TestMethod(DisplayName = "Extracts per-column direction from DbOrder markers")]
+    public void Extracts_direction_from_dborder_markers()
+    {
+        var parts = ComplexIndexExtensions
+           .ExtractIndexParts<Person, object>(x => new { x.FirstName, Email = DbOrder.Desc(x.EmailAddress.Value) });
+
+        Assert.AreEqual("FirstName", parts[0].PropertyPath);
+        Assert.IsFalse(parts[0].Descending);
+
+        Assert.AreEqual("EmailAddress.Value", parts[1].PropertyPath);
+        Assert.IsTrue(parts[1].Descending);
+    }
+
+    [TestMethod(DisplayName = "DbOrder markers do not affect extracted paths")]
+    public void DbOrder_markers_do_not_affect_paths()
+    {
+        var paths = ComplexIndexExtensions
+           .ExtractPropertyPaths<Person, object>(x => new { x.FirstName, Email = DbOrder.Desc(x.EmailAddress.Value) });
+
+        List<string> expectedPaths = ["FirstName", "EmailAddress.Value"];
+        Assert.IsTrue(expectedPaths.SequenceEqual(paths));
+    }
+
     [TestMethod(DisplayName = "Throws for non anonymous type")]
     public void Throws_for_non_anonymous_type()
     {
