@@ -46,6 +46,15 @@ services.AddDbContext<AppDbContext>(options =>
 > ⚠️ **`UseNpgsqlComplexIndexes()` is a prerequisite for `HasExpressionIndex`.**
 > Without it, applying a migration that contains an expression index will fail (the stock generator can't render the expression). All other features — complex-property indexes, composite indexes, and the GIN/GiST/etc. methods — do **not** require this call; they flow through Npgsql's own SQL generator.
 
+> Using a custom Internal Service Provider? If your application builds its own `IServiceProvider` and passes it to `.UseInternalServiceProvider(...)`, EF Core prevents `.UseNpgsqlComplexIndexes()` from modifying services. Instead, register the generator directly on your `IServiceCollection`:
+
+```csharp
+var provider = new ServiceCollection()
+.AddEntityFrameworkNpgsql()
+.AddNpgsqlComplexIndexes() // ← Add this for expression indexes
+.BuildServiceProvider();
+```
+
 ---
 
 ## Usage
