@@ -14,11 +14,12 @@ EF Core 8.0 introduced complex properties, but migration tooling doesn't automat
 - **Flexible Filtering**: Supports SQL `WHERE` clauses for filtered indexes (e.g., soft deletes)
 - **Composite Indexes**: Define multi-column indexes spanning both scalar and nested properties with a single, intuitive expression — with per-column `ASC`/`DESC` ordering via `DbOrder.Asc`/`DbOrder.Desc`
 - **Expression Indexes** *(PostgreSQL)*: Index arbitrary SQL expressions such as `lower(email)` or `to_tsvector('english', body)` — including on plain, non-complex entities
+- **Temporal Constraints** *(PostgreSQL 18)*: Declare `UNIQUE … WITHOUT OVERLAPS` constraints to guarantee no two rows occupy overlapping time periods — the database enforces scheduling integrity for you
 
 | Package | NuGet | Description |
 |---|---|---|
 | **EFCore.ComplexIndexes** | [![nuget](https://img.shields.io/nuget/v/EFCore.ComplexIndexes.svg)](https://www.nuget.org/packages/EFCore.ComplexIndexes/) | Core library — single-column, composite, unique, and filtered indexes on complex type properties. Works with any EF Core relational provider. |
-| **EFCore.ComplexIndexes.PostgreSQL** | [![nuget](https://img.shields.io/nuget/v/EFCore.ComplexIndexes.PostgreSQL.svg)](https://www.nuget.org/packages/EFCore.ComplexIndexes.PostgreSQL/) | PostgreSQL extensions via [Npgsql](https://www.npgsql.org/efcore/) — adds GIN, GiST, BRIN, SP-GiST, and Hash index methods, operator classes, covering indexes (`INCLUDE`), concurrent creation, nulls-distinct control, and **expression (functional) indexes**. |
+| **EFCore.ComplexIndexes.PostgreSQL** | [![nuget](https://img.shields.io/nuget/v/EFCore.ComplexIndexes.PostgreSQL.svg)](https://www.nuget.org/packages/EFCore.ComplexIndexes.PostgreSQL/) | PostgreSQL extensions via [Npgsql](https://www.npgsql.org/efcore/) — adds GIN, GiST, BRIN, SP-GiST, and Hash index methods, operator classes, covering indexes (`INCLUDE`), concurrent creation, nulls-distinct control, **expression (functional) indexes**, and **temporal `UNIQUE` constraints (`WITHOUT OVERLAPS`)**. |
 
 > **Which package do I need?**
 > Install only the **core** package if you use SQL Server, SQLite, or any provider where the default B-tree index type is sufficient.
@@ -168,6 +169,77 @@ builder.HasExpressionIndex(""" lower("Email") """.Trim());
 ```
 
 > **Roadmap:** the expression API is built on an `IIndexExpression` seam. A future LINQ add-on will let you write `HasExpressionIndex(x => x.Email.ToLower())` and have it translated to SQL — flowing through the exact same pipeline.
+
+### Temporal `UNIQUE` constraints (`WITHOUT OVERLAPS`) — PostgreSQL 18
+
+> Requires `UseNpgsqlComplexIndexes()` (see [Getting started](#expression-indexes-postgresql--one-time-setup)).
+> Available as an extension on `EntityTypeBuilder<TEntity>`, so it works on any entity — complex or not.
+
+PostgreSQL 18 introduced `WITHOUT OVERLAPS` for unique constraints — a long-requested feature for scheduling, booking, and versioning scenarios. Instead of only checking *"is this exact value already present?"*, the database enforces *"no two rows for the same key have overlapping time periods"*.
+
+```sql
+ALTER TABLE bookings
+  ADD CONSTRAINT ak_bookings_room_period
+    UNIQUE (room_id, period WITHOUT OVERLAPS);
+```
+
+`HasTemporalConstraint` exposes this as a first-class EF Core API. You supply scalar key columns (the "group" — e.g. a room, a resource, an employee) and a period column (a [PostgreSQL range type](https://www.postgresql.org/docs/current/rangetypes.html) such as `daterange`, `tstzrange`, or `NpgsqlRange<T>`):
+
+**Single key column:**
+
+```csharp
+builder.HasTemporalConstraint(
+    keyColumns: b => b.RoomId,
+    period:     b => b.ValidPeriod);
+// ALTER TABLE "Bookings" ADD CONSTRAINT "AK_Bookings__RoomId_ValidPeriod"
+//   UNIQUE ("RoomId", "ValidPeriod" WITHOUT OVERLAPS);
+```
+
+**Composite key columns:**
+
+```csharp
+builder.HasTemporalConstraint(
+    keyColumns: b => new { b.Facility, b.RoomId },
+    period:     b => b.ValidPeriod);
+// UNIQUE ("Facility", "RoomId", "ValidPeriod" WITHOUT OVERLAPS)
+```
+
+**Explicit constraint name:**
+
+```csharp
+builder.HasTemporalConstraint(
+    keyColumns: b => b.RoomId,
+    period:     b => b.ValidPeriod,
+    name:       "uk_room_no_overlap");
+```
+
+#### How the period column is validated
+
+The migration differ validates the period property at migration-generation time (`dotnet ef migrations add`). It must be mapped to a PostgreSQL range or multirange store type (anything ending in `range` — e.g. `daterange`, `tstzrange`, `int4multirange`) or have a CLR type of `NpgsqlRange<T>` / a multirange struct from `NpgsqlTypes`. Using an incompatible type such as `string`, `int`, or `DateOnly` throws an `InvalidOperationException` *before* any SQL is generated:
+
+```
+The temporal constraint period property 'Start' on entity 'Booking' does not appear to be a range or multirange type. Found CLR type 'DateTime' (store type: 'timestamp with time zone'). Expected NpgsqlRange<T>, a PostgreSQL range/multirange column type, or a store type ending in 'range' (e.g., daterange, int4multirange).
+```
+
+The period column stays a plain mapped column — it is deliberately **not** part of an EF key, because EF Core forbids non-comparable range types in primary keys. Use a surrogate or scalar EF primary key for change tracking; the temporal constraint handles the non-overlap guarantee independently.
+
+#### `btree_gist` extension
+
+Temporal constraints over scalar key columns require the `btree_gist` PostgreSQL extension. The differ injects `CREATE EXTENSION IF NOT EXISTS btree_gist;` automatically when a temporal constraint is first added. You can take explicit control or opt out:
+
+```csharp
+// Explicit: declare the extension yourself (Npgsql's own differ handles it)
+modelBuilder.UseBtreeGist();
+
+// Opt out: e.g. if the extension is provisioned out-of-band by your DBA
+modelBuilder.SuppressTemporalExtensionAutoInjection();
+```
+
+When `UseBtreeGist()` is present, automatic injection backs off to avoid a duplicate `CREATE EXTENSION` statement.
+
+#### Idempotency and renames
+
+Re-declaring a temporal constraint on the same key + period replaces the previous one. Removing `HasTemporalConstraint` from the model causes the differ to emit a `DROP CONSTRAINT` in the next migration (unless the table itself is being dropped).
 
 ---
 

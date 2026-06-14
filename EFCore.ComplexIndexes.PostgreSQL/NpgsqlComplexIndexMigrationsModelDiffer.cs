@@ -61,7 +61,7 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
             }
         }
 
-        return ApplyTemporalConstraints(operations, source, target);
+        return ApplyTemporalConstraints(operations, source, target, typeMappingSource);
     }
 
     // Diffs the temporal UNIQUE constraints declared on entity types and emits standalone
@@ -71,11 +71,12 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
     private static IReadOnlyList<MigrationOperation> ApplyTemporalConstraints(
         IReadOnlyList<MigrationOperation> operations,
         IRelationalModel?                 source,
-        IRelationalModel?                 target
+        IRelationalModel?                 target,
+        IRelationalTypeMappingSource      typeMappingSource
     )
     {
-        var sourceConstraints = BuildDescriptors(source);
-        var targetConstraints = BuildDescriptors(target);
+        var sourceConstraints = BuildDescriptors(source, typeMappingSource);
+        var targetConstraints = BuildDescriptors(target, typeMappingSource);
 
         if (sourceConstraints.Count == 0 && targetConstraints.Count == 0)
             return operations;
@@ -124,7 +125,10 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
         return result;
     }
 
-    private static HashSet<TemporalDescriptor> BuildDescriptors(IRelationalModel? model)
+    private static HashSet<TemporalDescriptor> BuildDescriptors(
+        IRelationalModel?            model,
+        IRelationalTypeMappingSource typeMappingSource
+    )
     {
         var set = new HashSet<TemporalDescriptor>();
         if (model is null) return set;
@@ -146,16 +150,26 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
                 var keyColumns = new List<string>(def.KeyProperties.Count);
                 foreach (var keyProperty in def.KeyProperties)
                 {
+                    var property = ResolveProperty(entityType, keyProperty)
+                                ?? throw new InvalidOperationException(
+                                       $"Could not resolve temporal constraint key property '{keyProperty}' on entity '{entityType.Name}'.");
+
                     keyColumns.Add(
-                        ResolveColumn(entityType, keyProperty, storeObject)
+                        property.GetColumnName(storeObject)
                      ?? throw new InvalidOperationException(
-                            $"Could not resolve temporal constraint key column '{keyProperty}' on entity {entityType.Name}.")
+                            $"Temporal constraint key property '{keyProperty}' on entity '{entityType.Name}' has no column mapping for table '{table}'.")
                     );
                 }
 
-                var periodColumn = ResolveColumn(entityType, def.PeriodProperty, storeObject)
-                                ?? throw new InvalidOperationException(
-                                       $"Could not resolve temporal constraint period column '{def.PeriodProperty}' on entity {entityType.Name}.");
+                var periodProperty = ResolveProperty(entityType, def.PeriodProperty)
+                                  ?? throw new InvalidOperationException(
+                                         $"Could not resolve temporal constraint period column '{def.PeriodProperty}' on entity {entityType.Name}.");
+
+                ValidatePeriodIsRangeOrMultirangeType(periodProperty, def.PeriodProperty, entityType.Name, typeMappingSource);
+
+                var periodColumn = periodProperty.GetColumnName(storeObject)
+                                   ?? throw new InvalidOperationException(
+                                          $"Temporal constraint period property '{def.PeriodProperty}' on entity '{entityType.Name}' has no column mapping for table '{table}'.");
 
                 var name = def.Name ?? $"AK_{table}_{string.Join("_", keyColumns)}_{periodColumn}";
 
@@ -166,7 +180,40 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
         return set;
     }
 
-    private static string? ResolveColumn(IEntityType entityType, string dotPath, StoreObjectIdentifier storeObject)
+    private static void ValidatePeriodIsRangeOrMultirangeType(
+        IProperty                    property,
+        string                       propertyName,
+        string                       entityName,
+        IRelationalTypeMappingSource typeMappingSource
+    )
+    {
+        var clrType   = property.ClrType;
+        var storeType = typeMappingSource.FindMapping(property)?.StoreType ?? property.GetColumnType();
+
+        var isValidPeriod = IsRangeClrType(clrType)
+                         || IsMultirangeClrType(clrType)
+                         || (storeType is not null && storeType.EndsWith("range", StringComparison.OrdinalIgnoreCase));
+
+        if (!isValidPeriod)
+            throw new InvalidOperationException(
+                $"The temporal constraint period property '{propertyName}' on entity " +
+                $"'{entityName}' does not appear to be a range or multirange type. " +
+                $"Found CLR type '{clrType.Name}'" +
+                (storeType is not null ? $" (store type: '{storeType}')" : "") +
+                ". Expected NpgsqlRange<T>, a PostgreSQL range/multirange column type, " +
+                "or a store type ending in 'range' (e.g., daterange, int4multirange)."
+            );
+    }
+
+    private static bool IsRangeClrType(Type type)
+        => type.IsGenericType
+        && type.GetGenericTypeDefinition().FullName is "NpgsqlTypes.NpgsqlRange`1";
+
+    private static bool IsMultirangeClrType(Type type)
+        => type.Namespace is "NpgsqlTypes"
+        && type.Name.EndsWith("Multirange", StringComparison.Ordinal);
+
+    private static IProperty? ResolveProperty(ITypeBase entityType, string dotPath)
     {
         var       parts   = dotPath.Split('.');
         ITypeBase current = entityType;
@@ -174,7 +221,7 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
         for (var i = 0; i < parts.Length; i++)
         {
             if (i == parts.Length - 1)
-                return current.FindProperty(parts[i])?.GetColumnName(storeObject);
+                return current.FindProperty(parts[i]);
 
             var cp = current.FindComplexProperty(parts[i]);
             if (cp is null) return null;
