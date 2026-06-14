@@ -95,6 +95,61 @@ public class NpgsqlComplexIndexSqlGenerator(
         }
     }
 
+    /// <summary>
+    /// Renders a temporal <c>UNIQUE</c> constraint (<c>… WITHOUT OVERLAPS</c>) declared via
+    /// <c>HasTemporalConstraint</c>; otherwise delegates to the base Npgsql generator.
+    /// </summary>
+    protected override void Generate(
+        AddUniqueConstraintOperation operation,
+        IModel?                      model,
+        MigrationCommandListBuilder  builder
+    )
+    {
+        if (operation[NpgsqlTemporalAnnotations.WithoutOverlaps] is string period)
+            GenerateTemporalConstraint(operation.Name, operation.Table, operation.Schema, operation.Columns, "UNIQUE", period, builder, terminate: true);
+        else
+            base.Generate(operation, model, builder);
+    }
+
+    // Emits ALTER TABLE … ADD CONSTRAINT … <keyword> (cols…, period WITHOUT OVERLAPS). PostgreSQL
+    // requires the range column last, so the period column is always emitted at the end regardless of
+    // its position in the key.
+    private void GenerateTemporalConstraint(
+        string                      name,
+        string                      table,
+        string?                     schema,
+        IReadOnlyList<string>       columns,
+        string                      keyword,
+        string                      periodColumn,
+        MigrationCommandListBuilder builder,
+        bool                        terminate
+    )
+    {
+        var sqlHelper = Dependencies.SqlGenerationHelper;
+
+        var rendered = columns.Where(c => c != periodColumn)
+                              .Select(sqlHelper.DelimitIdentifier)
+                              .ToList();
+        rendered.Add($"{sqlHelper.DelimitIdentifier(periodColumn)} WITHOUT OVERLAPS");
+
+        builder
+           .Append("ALTER TABLE ")
+           .Append(sqlHelper.DelimitIdentifier(table, schema))
+           .Append(" ADD CONSTRAINT ")
+           .Append(sqlHelper.DelimitIdentifier(name))
+           .Append(" ")
+           .Append(keyword)
+           .Append(" (")
+           .Append(string.Join(", ", rendered))
+           .Append(")");
+
+        if (terminate)
+        {
+            builder.AppendLine(sqlHelper.StatementTerminator);
+            EndStatement(builder);
+        }
+    }
+
     private static IReadOnlyList<string>? ToStringList(object? value) =>
         value switch
         {
