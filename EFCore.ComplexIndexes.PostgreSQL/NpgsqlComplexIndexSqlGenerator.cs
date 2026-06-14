@@ -111,6 +111,74 @@ public class NpgsqlComplexIndexSqlGenerator(
             base.Generate(operation, model, builder);
     }
 
+    /// <summary>
+    /// Renders a PostgreSQL 18 temporal foreign key (<c>FOREIGN KEY (..., PERIOD period)</c>);
+    /// otherwise delegates to the base Npgsql generator.
+    /// </summary>
+    protected override void Generate(
+        AddForeignKeyOperation      operation,
+        IModel?                    model,
+        MigrationCommandListBuilder builder,
+        bool                       terminate = true
+    )
+    {
+        if (operation[NpgsqlTemporalAnnotations.ForeignKeyDependentPeriod] is string dependentPeriod
+         && operation[NpgsqlTemporalAnnotations.ForeignKeyPrincipalPeriod] is string principalPeriod)
+        {
+            GenerateTemporalForeignKey(operation, dependentPeriod, principalPeriod, builder, terminate);
+            return;
+        }
+
+        base.Generate(operation, model, builder, terminate);
+    }
+
+    // Emits ALTER TABLE … ADD CONSTRAINT … FOREIGN KEY (cols…, PERIOD period)
+    // REFERENCES principal (cols…, PERIOD period). PostgreSQL requires the period column last.
+    private void GenerateTemporalForeignKey(
+        AddForeignKeyOperation      operation,
+        string                      dependentPeriodColumn,
+        string                      principalPeriodColumn,
+        MigrationCommandListBuilder builder,
+        bool                        terminate
+    )
+    {
+        if (operation.OnDelete != ReferentialAction.NoAction || operation.OnUpdate != ReferentialAction.NoAction)
+            throw new InvalidOperationException("PostgreSQL temporal foreign keys only support NO ACTION referential actions.");
+
+        var sqlHelper = Dependencies.SqlGenerationHelper;
+
+        var dependentColumns = operation.Columns
+                                        .Where(c => c != dependentPeriodColumn)
+                                        .Select(sqlHelper.DelimitIdentifier)
+                                        .ToList();
+        dependentColumns.Add($"PERIOD {sqlHelper.DelimitIdentifier(dependentPeriodColumn)}");
+
+        var principalColumns = (operation.PrincipalColumns ?? [])
+                              .Where(c => c != principalPeriodColumn)
+                              .Select(sqlHelper.DelimitIdentifier)
+                              .ToList();
+        principalColumns.Add($"PERIOD {sqlHelper.DelimitIdentifier(principalPeriodColumn)}");
+
+        builder
+           .Append("ALTER TABLE ")
+           .Append(sqlHelper.DelimitIdentifier(operation.Table, operation.Schema))
+           .Append(" ADD CONSTRAINT ")
+           .Append(sqlHelper.DelimitIdentifier(operation.Name))
+           .Append(" FOREIGN KEY (")
+           .Append(string.Join(", ", dependentColumns))
+           .Append(") REFERENCES ")
+           .Append(sqlHelper.DelimitIdentifier(operation.PrincipalTable, operation.PrincipalSchema))
+           .Append(" (")
+           .Append(string.Join(", ", principalColumns))
+           .Append(")");
+
+        if (terminate)
+        {
+            builder.AppendLine(sqlHelper.StatementTerminator);
+            EndStatement(builder);
+        }
+    }
+
     // Emits ALTER TABLE … ADD CONSTRAINT … <keyword> (cols…, period WITHOUT OVERLAPS). PostgreSQL
     // requires the range column last, so the period column is always emitted at the end regardless of
     // its position in the key.

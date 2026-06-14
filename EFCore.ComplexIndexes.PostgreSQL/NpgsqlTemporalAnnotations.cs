@@ -22,6 +22,24 @@ internal static class NpgsqlTemporalAnnotations
     public const string WithoutOverlaps = "CustomTemporal:WithoutOverlaps";
 
     /// <summary>
+    /// Stamped on a dependent entity type to hold the JSON-serialized list of temporal foreign keys
+    /// declared via <c>HasTemporalForeignKey</c>.
+    /// </summary>
+    public const string ForeignKeys = "CustomTemporal:ForeignKeys";
+
+    /// <summary>
+    /// Stamped by the differ onto an <c>AddForeignKeyOperation</c> to carry the dependent range column
+    /// rendered as <c>PERIOD dependent_period</c>.
+    /// </summary>
+    public const string ForeignKeyDependentPeriod = "CustomTemporal:ForeignKeyDependentPeriod";
+
+    /// <summary>
+    /// Stamped by the differ onto an <c>AddForeignKeyOperation</c> to carry the principal range column
+    /// rendered as <c>PERIOD principal_period</c>.
+    /// </summary>
+    public const string ForeignKeyPrincipalPeriod = "CustomTemporal:ForeignKeyPrincipalPeriod";
+
+    /// <summary>
     /// Stamped on the model to opt out of automatic <c>CREATE EXTENSION btree_gist</c> injection.
     /// </summary>
     public const string SuppressAutoExtension = "CustomTemporal:SuppressAutoExtension";

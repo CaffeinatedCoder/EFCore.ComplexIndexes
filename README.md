@@ -241,6 +241,66 @@ When `UseBtreeGist()` is present, automatic injection backs off to avoid a dupli
 
 Re-declaring a temporal constraint on the same key + period replaces the previous one. Removing `HasTemporalConstraint` from the model causes the differ to emit a `DROP CONSTRAINT` in the next migration (unless the table itself is being dropped).
 
+### Temporal foreign keys (`PERIOD`) — PostgreSQL 18
+
+> Requires `UseNpgsqlComplexIndexes()` because PostgreSQL's temporal FK syntax needs custom migration SQL rendering.
+
+`HasTemporalForeignKey` adds PostgreSQL 18 temporal referential integrity. The scalar key columns are matched by equality, and the dependent period must be fully covered by matching principal periods.
+
+A typical subscription/add-on model looks like this:
+
+```csharp
+modelBuilder.Entity<Subscription>(b =>
+{
+    // Principal side: PostgreSQL requires the referenced columns to have
+    // a temporal UNIQUE/PRIMARY KEY constraint with WITHOUT OVERLAPS.
+    b.HasTemporalConstraint(
+        keyColumns: x => x.SubscriptionId,
+        period:     x => x.ValidDuring);
+});
+
+modelBuilder.Entity<SubscriptionAddOn>(b =>
+{
+    b.HasTemporalForeignKey<SubscriptionAddOn, Subscription>(
+        dependentKeyColumns: x => x.SubscriptionId,
+        dependentPeriod:     x => x.ActiveDuring,
+        principalKeyColumns: x => x.SubscriptionId,
+        principalPeriod:     x => x.ValidDuring,
+        name:                "fk_addons_subscriptions_temporal" 
+    );
+});
+```
+
+Generated SQL:
+
+```sql
+ALTER TABLE subscription_addons
+  ADD CONSTRAINT fk_addons_subscriptions_temporal
+    FOREIGN KEY (subscription_id, PERIOD active_during)
+    REFERENCES subscriptions (subscription_id, PERIOD valid_during);
+```
+
+Composite keys use anonymous types on both sides:
+
+```csharp
+b.HasTemporalForeignKey<SubscriptionAddOn, Subscription>(
+    dependentKeyColumns: x => new { x.TenantId, x.SubscriptionId },
+    dependentPeriod:     x => x.ActiveDuring,
+    principalKeyColumns: x => new { x.TenantId, x.SubscriptionId },
+    principalPeriod:     x => x.ValidDuring 
+);
+```
+
+#### Restrictions and validation
+
+- PostgreSQL 18+ only.
+- Period columns must be PostgreSQL range or multirange columns (`daterange`, `tstzrange`, `NpgsqlRange<T>`, etc.).
+- The referenced principal columns must have a matching `HasTemporalConstraint` in the model. PostgreSQL requires a referenced temporal `UNIQUE`/`PRIMARY KEY` constraint with `WITHOUT OVERLAPS`.
+- Temporal foreign keys emit `NO ACTION` referential actions. PostgreSQL does not support temporal FK `CASCADE`, `RESTRICT`, `SET NULL`, or `SET DEFAULT` actions.
+- This API emits standalone database constraints; it does not try to model the temporal relationship as an EF navigation/relationship key.
+
+The standalone design is intentional. The period column remains a normal mapped property, not an EF key member. EF keys require key values suitable for change tracking, while Npgsql range values are not suitable EF key members; PostgreSQL enforces the temporal relationship independently at the database level.
+
 ---
 
-The package integrates seamlessly with EF Core's design-time tooling. Apart from the one-time `UseNpgsqlComplexIndexes()` call for expression indexes, there is no additional ceremony — just configure and migrate.
+The package integrates seamlessly with EF Core's design-time tooling. Apart from the one-time `UseNpgsqlComplexIndexes()` call for PostgreSQL-specific SQL generation, there is no additional ceremony — just configure and migrate.

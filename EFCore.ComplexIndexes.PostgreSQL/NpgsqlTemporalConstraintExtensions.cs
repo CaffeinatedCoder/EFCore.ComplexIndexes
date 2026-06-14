@@ -1,5 +1,4 @@
 using System.Linq.Expressions;
-using EFCore.ComplexIndexes;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
 
@@ -61,12 +60,84 @@ public static class NpgsqlTemporalConstraintExtensions
             return builder;
         }
 
+        /// <summary>
+        /// Adds a PostgreSQL 18 temporal foreign key. The scalar key columns are compared by equality,
+        /// and the dependent period must be covered by matching principal periods.
+        /// </summary>
+        public EntityTypeBuilder<TEntity> HasTemporalForeignKey<TPrincipal>(
+            Expression<Func<TEntity, object?>>    dependentKeyColumns,
+            Expression<Func<TEntity, object?>>    dependentPeriod,
+            Expression<Func<TPrincipal, object?>> principalKeyColumns,
+            Expression<Func<TPrincipal, object?>> principalPeriod,
+            string?                               name = null
+        ) where TPrincipal : class
+        {
+            var dependentKeys      = ExtractPaths(dependentKeyColumns);
+            var principalKeys      = ExtractPaths(principalKeyColumns);
+            var dependentPeriodPath = ComplexIndexExtensions.ExtractSinglePath(dependentPeriod.Body);
+            var principalPeriodPath = ComplexIndexExtensions.ExtractSinglePath(principalPeriod.Body);
+
+            if (dependentKeys.Count == 0)
+                throw new ArgumentException("A temporal foreign key requires at least one dependent key column.", nameof(dependentKeyColumns));
+
+            if (principalKeys.Count == 0)
+                throw new ArgumentException("A temporal foreign key requires at least one principal key column.", nameof(principalKeyColumns));
+
+            if (dependentKeys.Count != principalKeys.Count)
+                throw new ArgumentException(
+                    $"Temporal foreign key key-count mismatch: dependent has {dependentKeys.Count} key column(s), principal has {principalKeys.Count}.",
+                    nameof(principalKeyColumns)
+                );
+
+            if (dependentKeys.Contains(dependentPeriodPath))
+                throw new ArgumentException(
+                    $"The dependent period column '{dependentPeriodPath}' must not also appear in the dependent key columns.",
+                    nameof(dependentPeriod)
+                );
+
+            if (principalKeys.Contains(principalPeriodPath))
+                throw new ArgumentException(
+                    $"The principal period column '{principalPeriodPath}' must not also appear in the principal key columns.",
+                    nameof(principalPeriod)
+                );
+
+            var definition = new TemporalForeignKeyDefinition
+                             {
+                                 DependentKeyProperties = dependentKeys,
+                                 DependentPeriodProperty = dependentPeriodPath,
+                                 PrincipalEntityType     = typeof(TPrincipal).FullName ?? typeof(TPrincipal).Name,
+                                 PrincipalKeyProperties  = principalKeys,
+                                 PrincipalPeriodProperty = principalPeriodPath,
+                                 Name                    = name
+                             };
+
+            var existing = GetExistingForeignKeys(builder);
+            existing.RemoveAll(d => d.DependentKeyProperties.SequenceEqual(dependentKeys)
+                                 && d.DependentPeriodProperty == dependentPeriodPath
+                                 && d.PrincipalEntityType     == definition.PrincipalEntityType
+                                 && d.PrincipalKeyProperties.SequenceEqual(principalKeys)
+                                 && d.PrincipalPeriodProperty == principalPeriodPath);
+            existing.Add(definition);
+
+            builder.HasAnnotation(NpgsqlTemporalAnnotations.ForeignKeys, TemporalForeignKeySerializer.Serialize(existing));
+            return builder;
+        }
+
         private static List<TemporalConstraintDefinition> GetExisting(EntityTypeBuilder<TEntity> entityTypeBuilder)
         {
             var annotation = entityTypeBuilder.Metadata.FindAnnotation(NpgsqlTemporalAnnotations.Constraints);
 
             return annotation?.Value is string json && !string.IsNullOrEmpty(json)
                        ? TemporalConstraintSerializer.Deserialize(json)
+                       : [];
+        }
+
+        private static List<TemporalForeignKeyDefinition> GetExistingForeignKeys(EntityTypeBuilder<TEntity> entityTypeBuilder)
+        {
+            var annotation = entityTypeBuilder.Metadata.FindAnnotation(NpgsqlTemporalAnnotations.ForeignKeys);
+
+            return annotation?.Value is string json && !string.IsNullOrEmpty(json)
+                       ? TemporalForeignKeySerializer.Deserialize(json)
                        : [];
         }
     }
@@ -94,7 +165,13 @@ public static class NpgsqlTemporalConstraintExtensions
 
     // Accepts either an anonymous-type key list (x => new { x.A, x.B }) or a single member (x => x.A).
     private static List<string> ExtractPaths<TEntity, TKey>(Expression<Func<TEntity, TKey>> expression)
-        => expression.Body is NewExpression
-               ? ComplexIndexExtensions.ExtractPropertyPaths(expression)
-               : [ComplexIndexExtensions.ExtractSinglePath(expression.Body)];
+    {
+        var body = expression.Body;
+        while (body is UnaryExpression { NodeType: ExpressionType.Convert } unary)
+            body = unary.Operand;
+
+        return body is NewExpression newExpression
+                   ? [.. newExpression.Arguments.Select(ComplexIndexExtensions.ExtractSinglePath)]
+                   : [ComplexIndexExtensions.ExtractSinglePath(body)];
+    }
 }
