@@ -3,7 +3,7 @@
 </p>
 
 [![nuget](https://img.shields.io/nuget/v/EFCore.ComplexIndexes.svg)](https://www.nuget.org/packages/EFCore.ComplexIndexes/)
-[![Context7](https://img.shields.io/badge/Context7-Indexed-3B82F6)](https://context7.com/your/library-id)
+[![Context7](https://img.shields.io/badge/Context7-Indexed-3B82F6)](https://context7.com/caffeinatedcoder/efcore.complexindexes)
 
 ## Index support for complex type properties in EF Core migrations — the missing piece for value object-driven architectures.
 EF Core 8.0 introduced complex properties, but migration tooling doesn't automatically generate indexes for these nested value objects. This NuGet package bridges that gap with a clean, fluent API for defining single-column, composite, unique, and filtered indexes directly on complex type properties — and, on PostgreSQL, **expression (functional) indexes**.
