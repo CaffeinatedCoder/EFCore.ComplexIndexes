@@ -14,17 +14,21 @@ EF Core 8.0 introduced complex properties, but migration tooling doesn't automat
 - **Flexible Filtering**: Supports SQL `WHERE` clauses for filtered indexes (e.g., soft deletes)
 - **Composite Indexes**: Define multi-column indexes spanning both scalar and nested properties with a single, intuitive expression — with per-column `ASC`/`DESC` ordering via `DbOrder.Asc`/`DbOrder.Desc`
 - **Expression Indexes** *(PostgreSQL)*: Index arbitrary SQL expressions such as `lower(email)` or `to_tsvector('english', body)` — including on plain, non-complex entities
+- **Typed Expression Indexes** *(PostgreSQL)*: Write `HasExpressionIndex(x => x.Email.ToLower())` and let the package translate it — property paths resolve to real columns at migration time
+- **JSON Member Indexes** *(PostgreSQL)*: Index members of complex properties mapped with `ToJson()` — the same `HasComplexIndex` declaration becomes a `(col ->> 'Member')` expression index automatically
 - **Temporal Constraints** *(PostgreSQL 18)*: Declare `UNIQUE … WITHOUT OVERLAPS` constraints to guarantee no two rows occupy overlapping time periods — the database enforces scheduling integrity for you
 - **Exclusion Constraints** *(PostgreSQL)*: Declare `EXCLUDE USING gist (… WITH =, … WITH &&) WHERE (…)` constraints — filtered overlap protection (e.g. ignore soft-deleted rows), on any supported PostgreSQL version
+- **SQL Server Options** *(SQL Server)*: Clustered, covering (`INCLUDE`), online-built, and fill-factor index options on complex-property indexes — rendered by the stock SQL Server generator, no runtime wiring
 
 | Package | NuGet | Description |
 |---|---|---|
 | **EFCore.ComplexIndexes** | [![nuget](https://img.shields.io/nuget/v/EFCore.ComplexIndexes.svg)](https://www.nuget.org/packages/EFCore.ComplexIndexes/) | Core library — single-column, composite, unique, and filtered indexes on complex type properties. Works with any EF Core relational provider. |
-| **EFCore.ComplexIndexes.PostgreSQL** | [![nuget](https://img.shields.io/nuget/v/EFCore.ComplexIndexes.PostgreSQL.svg)](https://www.nuget.org/packages/EFCore.ComplexIndexes.PostgreSQL/) | PostgreSQL extensions via [Npgsql](https://www.npgsql.org/efcore/) — adds GIN, GiST, BRIN, SP-GiST, and Hash index methods, operator classes, covering indexes (`INCLUDE`), concurrent creation, nulls-distinct control, **expression (functional) indexes**, **temporal `UNIQUE` constraints (`WITHOUT OVERLAPS`)**, and **exclusion constraints (`EXCLUDE`)**. |
+| **EFCore.ComplexIndexes.PostgreSQL** | [![nuget](https://img.shields.io/nuget/v/EFCore.ComplexIndexes.PostgreSQL.svg)](https://www.nuget.org/packages/EFCore.ComplexIndexes.PostgreSQL/) | PostgreSQL extensions via [Npgsql](https://www.npgsql.org/efcore/) — adds GIN, GiST, BRIN, SP-GiST, and Hash index methods, operator classes, covering indexes (`INCLUDE`), concurrent creation, nulls-distinct control, `NULLS FIRST/LAST`, **expression (functional) indexes** (raw SQL and **typed LINQ**), **JSON member indexes**, **temporal `UNIQUE` constraints (`WITHOUT OVERLAPS`)**, and **exclusion constraints (`EXCLUDE`)**. |
+| **EFCore.ComplexIndexes.SqlServer** | [![nuget](https://img.shields.io/nuget/v/EFCore.ComplexIndexes.SqlServer.svg)](https://www.nuget.org/packages/EFCore.ComplexIndexes.SqlServer/) | SQL Server extensions — clustered/nonclustered control, covering indexes (`INCLUDE`), online index builds, fill factor, and sort-in-tempdb on complex-property indexes. Rendered by the stock SQL Server generator; no runtime wiring. |
 
 > **Which package do I need?**
-> Install only the **core** package if you use SQL Server, SQLite, or any provider where the default B-tree index type is sufficient.
-> Add the **PostgreSQL** package when you need PostgreSQL-specific index types or expression indexes — it includes the core automatically.
+> Install only the **core** package if you use SQLite or any provider where the default B-tree index type is sufficient.
+> Add the **PostgreSQL** package for PostgreSQL-specific index types, expression/JSON indexes, or temporal/exclusion constraints; add the **SQL Server** package for clustered/covering/online/fill-factor options. Both include the core automatically.
 
 ---
 
@@ -101,6 +105,18 @@ builder.HasComplexCompositeIndex(
 ```
 
 Direction maps to EF Core's native `CreateIndexOperation.IsDescending`, so it is rendered by **every relational provider** (SQL Server, SQLite, PostgreSQL) — no extra wiring required. Re-declaring an index over the same columns updates its direction.
+
+#### Per-column null ordering — PostgreSQL
+
+`DbOrder.NullsFirst(...)` / `DbOrder.NullsLast(...)` control where nulls sort; the markers compose with `Desc`:
+
+```csharp
+builder.HasComplexCompositeIndex(
+    x => new { x.Name, Reviewed = DbOrder.NullsLast(DbOrder.Desc(x.ReviewedAt)) });
+// CREATE INDEX ... ON ... (name, reviewed_at DESC NULLS LAST);
+```
+
+Null ordering has no slot on EF's native index operation, so these indexes render through the package's PostgreSQL SQL generator — they require the one-time `UseNpgsqlComplexIndexes()` wiring, and the SQL Server differ rejects the markers (SQL Server has no `NULLS FIRST/LAST` syntax).
 
 ### PostgreSQL index methods on a complex property
 
@@ -189,7 +205,47 @@ Strings are passed through untouched, so identifiers that need PostgreSQL quotin
 builder.HasExpressionIndex(""" lower("Email") """.Trim());
 ```
 
-> **Roadmap:** the expression API is built on an `IIndexExpression` seam. A future LINQ add-on will let you write `HasExpressionIndex(x => x.Email.ToLower())` and have it translated to SQL — flowing through the exact same pipeline.
+### Typed (LINQ) expression indexes — PostgreSQL
+
+> Requires `UseNpgsqlComplexIndexes()`, like all expression indexes.
+
+Instead of raw SQL, pass a lambda — property paths stay symbolic and are resolved against the
+finalized model at `migrations add` time, so `HasColumnName`, complex-property columns, and even
+`ToJson()` members are honored automatically:
+
+```csharp
+builder.HasExpressionIndex(x => x.Email.Value.ToLower(), isUnique: true);
+// CREATE UNIQUE INDEX ... ON people ((lower("email")));
+
+builder.HasExpressionIndex(x => (x.Nickname ?? x.FirstName) + " " + x.LastName);
+// CREATE INDEX ... ON people (((coalesce("nickname", "first_name") || ' ') || "last_name"));
+```
+
+The supported subset is deliberately small and fails loudly: `ToLower`/`ToUpper`, `Trim`/`TrimStart`/`TrimEnd`, `Substring` (1-based conversion handled), `Replace`, `string.Length`, string concatenation (`+`), null coalescing (`??`), and constants (captured variables are evaluated and inlined invariant-culture). Anything else throws `NotSupportedException` **at declaration time** with a pointer to the raw-SQL overload.
+
+### JSON member indexes — PostgreSQL
+
+> Requires `UseNpgsqlComplexIndexes()` (JSON member indexes are expression indexes under the hood).
+
+When a complex property is mapped to JSON with `ToJson()`, its members have no table columns — yet
+the **same index declarations keep working**: the differ resolves them to `->>`
+extraction expressions instead. Moving a value object between scalar columns and a JSON document
+does not force you to rewrite its indexes:
+
+```csharp
+builder.ComplexProperty(x => x.Name, c => c.ToJson("name"));
+
+// Entity level …
+builder.HasComplexIndex(x => x.Name.ShortName, isUnique: true, indexName: "ux_employer_short_name");
+// … or property level, inside the complex property:
+//   c.Property(x => x.ShortName).HasComplexIndex(isUnique: true);
+
+// ALTER: CREATE UNIQUE INDEX "ux_employer_short_name" ON employers (("name" ->> 'ShortName'));
+```
+
+Nested complex types become `->` segments (`("profile" -> 'Address' ->> 'City')`), and
+`HasJsonPropertyName` is honored. Members are extracted as **text**; for typed comparisons or
+ordering semantics use `HasExpressionIndex` with an explicit cast.
 
 ### Temporal `UNIQUE` constraints (`WITHOUT OVERLAPS`) — PostgreSQL 18
 
@@ -366,17 +422,48 @@ governed by the same `UseBtreeGist()` / `SuppressTemporalExtensionAutoInjection(
 Re-declaring a constraint over the same elements replaces it; removing the declaration emits a
 `DROP CONSTRAINT` in the next migration.
 
+### SQL Server index options
+
+The **EFCore.ComplexIndexes.SqlServer** package brings the SQL Server option set to complex-property
+indexes. Like the PostgreSQL GIN/GiST options, everything flows as native provider annotations that
+SQL Server's own migrations SQL generator renders — **no runtime wiring at all**:
+
+```csharp
+builder.ComplexProperty(x => x.Email, c =>
+    c.Property(x => x.Value).HasColumnName("email"));
+
+builder.HasComplexIndex(x => x.Email.Value, ix => ix
+    .IsUnique()
+    .HasName("ux_person_email")
+    .IncludeProperties("name")   // covering index
+    .IsCreatedOnline()           // ONLINE = ON
+    .HasFillFactor(80));
+// CREATE UNIQUE INDEX [ux_person_email] ON [person] ([email])
+//   INCLUDE ([name]) WITH (FILLFACTOR = 80, ONLINE = ON);
+```
+
+`IsClustered()` and `SortInTempDb()` are also available. Filtered indexes (`filter:`) and
+`DbOrder.Desc` work out of the box, since both ride on EF's native operation. Two deliberate
+rejections with clear errors at `migrations add`: expression parts (SQL Server has no
+expression-index DDL — model a persisted computed column and index that) and
+`DbOrder.NullsFirst/NullsLast` (no such T-SQL syntax).
+
 ---
 
 ## What changed in 5.0.0
 
 - **Fixed:** custom `DROP INDEX` operations are now ordered *before* the base migration operations. Previously, moving an index between a native `HasIndex` and a complex-index declaration scaffolded a migration that created the new index before dropping the same-named old one — colliding at apply time.
 - **Fixed:** descending parts of expression indexes now render `DESC` (declarable via `ExpressionIndexBuilder.Descending()`).
+- **Fixed:** integral provider-annotation values (e.g. fill factor) survive snapshot round-trips as `int` instead of degrading to `double`, which made generators drop them.
 - **Changed:** property annotations are forwarded onto index operations through a provider **whitelist** instead of a blacklist. Column facets such as `Relational:ColumnName` no longer leak into scaffolded migrations, and the class of phantom drop/create churn caused by snapshot/code-model annotation asymmetries is closed for good.
-- **Changed:** an indexed property that resolves to no column now throws at `migrations add` instead of silently dropping the index.
+- **Changed:** an indexed property that resolves to no column now throws at `migrations add` instead of silently dropping the index — unless it is a `ToJson()` member, which now resolves to a JSON expression index (PostgreSQL).
 - **Changed:** two indexes over the same columns may now coexist when their filters differ (both must be named); re-declaring with the same filter still updates in place.
 - **New:** entity-level `HasComplexIndex(x => x.Complex.Prop, …)` for single-column indexes, enabling multiple filtered indexes per column.
-- **New:** `HasExclusionConstraint` (see above).
+- **New:** `HasExclusionConstraint` — `EXCLUDE` constraints with `WHERE` predicates (see above).
+- **New:** typed LINQ expression indexes — `HasExpressionIndex(x => x.Email.ToLower())`.
+- **New:** JSON member indexes for `ToJson()` complex properties.
+- **New:** `NULLS FIRST`/`NULLS LAST` via `DbOrder.NullsFirst/NullsLast` and `ExpressionIndexBuilder.NullsFirst()/NullsLast()` (PostgreSQL).
+- **New:** the **EFCore.ComplexIndexes.SqlServer** satellite — clustered, covering, online, fill-factor, and sort-in-tempdb options.
 
 ---
 

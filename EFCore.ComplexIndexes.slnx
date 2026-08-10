@@ -1,5 +1,6 @@
 <Solution>
   <Project Path="EFCore.ComplexIndexes.PostgreSQL/EFCore.ComplexIndexes.PostgreSQL.csproj" />
+  <Project Path="EFCore.ComplexIndexes.SqlServer/EFCore.ComplexIndexes.SqlServer.csproj" />
   <Project Path="EFCore.ComplexIndexes.Tests/EFCore.ComplexIndexes.Tests.csproj" />
   <Project Path="EFCore.ComplexIndexes/EFCore.ComplexIndexes.csproj" />
 </Solution>

@@ -36,16 +36,28 @@ public sealed class ExpressionIndexBuilder : IIndexAnnotationBuilder
 
     /// <summary>Marks the most recently added part as sorting descending.</summary>
     public ExpressionIndexBuilder Descending()
+        => MutateLastPart(nameof(Descending), descending: true);
+
+    /// <summary>Sorts nulls of the most recently added part before non-null values.</summary>
+    public ExpressionIndexBuilder NullsFirst()
+        => MutateLastPart(nameof(NullsFirst), nullSort: DbNullSort.First);
+
+    /// <summary>Sorts nulls of the most recently added part after non-null values.</summary>
+    public ExpressionIndexBuilder NullsLast()
+        => MutateLastPart(nameof(NullsLast), nullSort: DbNullSort.Last);
+
+    private ExpressionIndexBuilder MutateLastPart(string modifier, bool? descending = null, DbNullSort? nullSort = null)
     {
         if (_parts.Count == 0)
-            throw new InvalidOperationException("Call Expression(...) before Descending().");
+            throw new InvalidOperationException($"Call Expression(...) before {modifier}().");
 
         var last = _parts[^1];
         _parts[^1] = new IndexPartDefinition
                      {
                          PropertyPath = last.PropertyPath,
                          Expression   = last.Expression,
-                         Descending   = true
+                         Descending   = descending ?? last.Descending,
+                         NullSort     = nullSort   ?? last.NullSort
                      };
         return this;
     }

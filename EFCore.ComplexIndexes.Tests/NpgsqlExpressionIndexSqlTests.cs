@@ -105,4 +105,28 @@ public class NpgsqlExpressionIndexSqlTests
         Assert.IsFalse(parts[0].Descending);
         Assert.IsTrue(parts[1].Descending);
     }
+
+    [TestMethod(DisplayName = "Renders NULLS FIRST/LAST after direction")]
+    public void Renders_null_ordering()
+    {
+        var op = ExpressionIndex("ix5", "person",
+                                 new ResolvedIndexPart(false, "name", Descending: true, NullSort: DbNullSort.Last),
+                                 new ResolvedIndexPart(true,  "lower(email)", NullSort: DbNullSort.First));
+
+        var sql = GenerateSql(op);
+
+        StringAssert.Contains(sql, "(name DESC NULLS LAST, (lower(email)) NULLS FIRST)");
+    }
+
+    [TestMethod(DisplayName = "ExpressionIndexBuilder.NullsFirst/NullsLast mark the most recent part")]
+    public void Builder_null_ordering_marks_last_part()
+    {
+        var builder = new EFCore.ComplexIndexes.PostgreSQL.ExpressionIndexBuilder();
+        builder.Expression("a").NullsFirst().Expression("b").Descending().NullsLast();
+
+        var parts = builder.Parts;
+        Assert.AreEqual(DbNullSort.First, parts[0].NullSort);
+        Assert.AreEqual(DbNullSort.Last,  parts[1].NullSort);
+        Assert.IsTrue(parts[1].Descending);
+    }
 }

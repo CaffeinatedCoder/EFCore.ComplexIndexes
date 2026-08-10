@@ -71,9 +71,14 @@ public class NpgsqlComplexIndexSqlGenerator(
             if (operators is not null && i < operators.Count && !string.IsNullOrEmpty(operators[i]))
                 builder.Append(" ").Append(operators[i]);
 
-            // PostgreSQL clause order: operator class before direction.
+            // PostgreSQL clause order: operator class, then direction, then null ordering.
             if (parts[i].Descending)
                 builder.Append(" DESC");
+
+            if (parts[i].NullSort == DbNullSort.First)
+                builder.Append(" NULLS FIRST");
+            else if (parts[i].NullSort == DbNullSort.Last)
+                builder.Append(" NULLS LAST");
         }
 
         builder.Append(")");

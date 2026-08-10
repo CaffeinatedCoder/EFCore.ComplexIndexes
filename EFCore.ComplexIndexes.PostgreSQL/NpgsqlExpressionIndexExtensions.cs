@@ -1,3 +1,4 @@
+using System.Linq.Expressions;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
 
 namespace EFCore.ComplexIndexes.PostgreSQL;
@@ -29,6 +30,39 @@ public static class NpgsqlExpressionIndexExtensions
         var definition = new CompositeIndexDefinition
                          {
                              Parts     = [new IndexPartDefinition { Expression = expression }],
+                             IsUnique  = isUnique,
+                             Filter    = filter,
+                             IndexName = indexName
+                         };
+
+        ComplexIndexStorage.AddOrReplace(builder, definition);
+        return builder;
+    }
+
+    /// <summary>
+    /// Configures an expression index from a typed LINQ expression, e.g.
+    /// <c>HasExpressionIndex(x => x.Email.ToLower(), isUnique: true)</c>. Property paths — including
+    /// complex-type and JSON members — are resolved to real columns at migration time, so
+    /// <c>HasColumnName</c> and <c>ToJson</c> are honored. Supports a documented subset of string
+    /// operations (<c>ToLower</c>/<c>ToUpper</c>, <c>Trim</c> variants, <c>Substring</c>,
+    /// <c>Replace</c>, <c>Length</c>, concatenation, <c>??</c>, constants); anything else throws
+    /// <see cref="NotSupportedException"/> at declaration time. Requires runtime wiring via
+    /// <c>UseNpgsqlComplexIndexes()</c>.
+    /// </summary>
+    public static EntityTypeBuilder<TEntity> HasExpressionIndex<TEntity, TResult>(
+        this EntityTypeBuilder<TEntity>    builder,
+        Expression<Func<TEntity, TResult>> expression,
+        bool                               isUnique  = false,
+        string?                            filter    = null,
+        string?                            indexName = null
+    )
+        where TEntity : class
+    {
+        ArgumentNullException.ThrowIfNull(expression);
+
+        var definition = new CompositeIndexDefinition
+                         {
+                             Parts     = [new IndexPartDefinition { Template = NpgsqlLinqIndexTranslator.Translate(expression) }],
                              IsUnique  = isUnique,
                              Filter    = filter,
                              IndexName = indexName

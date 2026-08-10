@@ -35,7 +35,8 @@ This library fills a gap in EF Core 10.0 migrations: EF Core can model complex p
 | Project | Purpose |
 |---------|---------|
 | `EFCore.ComplexIndexes` | Core library — provider-agnostic fluent API and migration differ |
-| `EFCore.ComplexIndexes.PostgreSQL` | Satellite package — adds Npgsql-specific index methods (GIN, GiST, BRIN, Hash, SP-GiST) |
+| `EFCore.ComplexIndexes.PostgreSQL` | Satellite package — Npgsql index methods (GIN, GiST, BRIN, Hash, SP-GiST), expression/JSON/LINQ indexes, temporal + exclusion constraints |
+| `EFCore.ComplexIndexes.SqlServer` | Satellite package — clustered/covering/online/fill-factor options; rejects expression parts and NULLS ordering with clear errors |
 | `EFCore.ComplexIndexes.Tests` | MSTest suite covering path extraction, serialization, and migration diffing |
 
 Shared NuGet metadata and the package version live in `Directory.Build.props`.
@@ -86,7 +87,27 @@ Expression indexes are **provider-specific** and deliberately live in the satell
 - The **entry point** `HasExpressionIndex` (on `EntityTypeBuilder<TEntity>`) lives in `EFCore.ComplexIndexes.PostgreSQL` (`NpgsqlExpressionIndexExtensions.cs`), as does its `ExpressionIndexBuilder`.
 - Core owns only the inert **plumbing**: the `IIndexExpression` seam (`SqlIndexExpression` ships today; a future LINQ add-on plugs in here), `IndexPartDefinition`/`ResolvedIndexPart`/`IndexPartsSerializer`, `CompositeIndexDefinition.Parts`, the differ's part-handling, and the `ComplexIndexStorage` helper satellites call to dedup-and-store definitions. None of it activates unless a satellite populates it.
 
-Each column-list entry is a "part"; an index is an ordered list of parts. Strings are emitted verbatim (no property→column resolution).
+Each column-list entry is a "part"; an index is an ordered list of parts. Verbatim string parts are emitted as-is (no property→column resolution).
+
+An `IndexPartDefinition` is exactly one of three kinds: a **column** (`PropertyPath`, resolved to a
+column name), a **verbatim expression** (`Expression`, emitted as-is), or a **template**
+(`Template`, produced by `NpgsqlLinqIndexTranslator` from a typed lambda — SQL with
+`{Property.Path}` placeholders, literal braces escaped `{{`/`}}`). Three virtuals on the core
+differ let satellites resolve what the core cannot:
+
+- `IsForwardedIndexAnnotation` — the annotation whitelist (see below).
+- `ResolveUnmappedPart` — a path with no table column; the Npgsql differ builds a JSON extraction
+  (`"col" -> 'A' ->> 'B'`) when the path traverses a `ToJson()` complex property, honoring
+  `HasJsonPropertyName`. Members extract as text — no automatic casts (text→timestamptz casts are
+  not IMMUTABLE and would blow up `CREATE INDEX`).
+- `ResolveTemplatePart` — substitutes template placeholders with quoted columns or parenthesized
+  JSON extractions; core throws (identifier quoting is provider-specific).
+
+`NULLS FIRST/LAST` (`DbOrder.NullsFirst/NullsLast`, `ExpressionIndexBuilder.NullsFirst()/NullsLast()`)
+rides on the parts as `NullSort`. EF's native `CreateIndexOperation` has no slot for it, so any
+index containing a nulls-ordered part is routed through the `IndexParts` annotation and the custom
+Npgsql generator — i.e. it needs `UseNpgsqlComplexIndexes()` even when column-only. The SQL Server
+differ rejects nulls-ordered and expression parts with targeted errors.
 
 `CreateIndexOperation.Columns` is a `string[]` of quoted identifiers with no slot for an expression, so:
 - The differ stamps the ordered, resolved parts onto the operation as the `CustomIndex:IndexParts` annotation (`ResolvedIndexPart` + `IndexPartsSerializer`), **only when a part is an expression** (column-only indexes are untouched).
@@ -109,7 +130,7 @@ constraint has an `=` element.
 
 ### Key extension points
 
-- **Adding a new provider**: Subclass `CustomMigrationsModelDiffer`, implement `IDesignTimeServices` to replace the differ, and ship a `.targets` file that injects the attribute. See the PostgreSQL project for the exact pattern.
+- **Adding a new provider**: Subclass `CustomMigrationsModelDiffer` (override `IsForwardedIndexAnnotation`, optionally `ResolveUnmappedPart`/`ResolveTemplatePart`), implement `IDesignTimeServices` to replace the differ, and ship a `.targets` file that injects the attribute. The PostgreSQL project is the full-featured reference; the SQL Server project is the minimal one (whitelist + validation, no custom SQL generator).
 - **New index options**: Add constants to `ComplexIndexAnnotations.cs` (or `NpgsqlAnnotations.cs`), expose them via `ComplexIndexBuilder`, and read them in the differ when constructing `CreateIndexOperation`.
 
 ### Expression path extraction

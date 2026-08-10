@@ -43,6 +43,132 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
     protected override bool IsForwardedIndexAnnotation(string annotationName)
         => SupportedNpgsqlAnnotations.Contains(annotationName);
 
+    /// <summary>
+    /// Resolves an index part whose path traverses a complex property mapped to JSON
+    /// (<c>ToJson()</c>) into a PostgreSQL extraction expression, e.g.
+    /// <c>"name" -&gt; 'Inner' -&gt;&gt; 'Leaf'</c>. Members are extracted as text
+    /// (<c>-&gt;&gt;</c>) and honor <c>HasJsonPropertyName</c>; for typed semantics use
+    /// <c>HasExpressionIndex</c> with an explicit cast. Like all expression parts, rendering
+    /// requires the <c>UseNpgsqlComplexIndexes()</c> runtime wiring.
+    /// </summary>
+    protected override ResolvedIndexPart? ResolveUnmappedPart(
+        IEntityType           entityType,
+        IndexPartDefinition   part,
+        StoreObjectIdentifier storeObject
+    )
+    {
+        if (part.PropertyPath is null)
+            return null;
+
+        var       segments        = part.PropertyPath.Split('.');
+        ITypeBase current         = entityType;
+        string?   containerColumn = null;
+        var       jsonPath        = new List<string>();
+
+        for (var i = 0; i < segments.Length - 1; i++)
+        {
+            var complexProperty = current.FindComplexProperty(segments[i]);
+            if (complexProperty is null)
+                return null;
+
+            // The first JSON-mapped complex property on the path starts the document; complex
+            // properties nested inside it become JSON path segments.
+            if (containerColumn is null)
+                containerColumn = complexProperty.ComplexType.GetContainerColumnName();
+            else
+                jsonPath.Add(complexProperty.GetJsonPropertyName() ?? complexProperty.Name);
+
+            current = complexProperty.ComplexType;
+        }
+
+        if (containerColumn is null)
+            return null;
+
+        var leaf = current.FindProperty(segments[^1]);
+        if (leaf is null)
+            return null;
+
+        jsonPath.Add(leaf.GetJsonPropertyName() ?? leaf.Name);
+
+        var sql = new System.Text.StringBuilder(Quote(containerColumn));
+        for (var i = 0; i < jsonPath.Count; i++)
+        {
+            sql.Append(i == jsonPath.Count - 1 ? " ->> '" : " -> '")
+               .Append(jsonPath[i].Replace("'", "''"))
+               .Append('\'');
+        }
+
+        return new ResolvedIndexPart(true, sql.ToString(), part.Descending, part.NullSort);
+    }
+
+    /// <summary>
+    /// Resolves a typed-expression template into final SQL: <c>{Property.Path}</c> placeholders
+    /// become quoted column references — or parenthesized JSON extractions for <c>ToJson()</c>
+    /// members; <c>{{</c>/<c>}}</c> unescape to literal braces.
+    /// </summary>
+    protected override ResolvedIndexPart ResolveTemplatePart(
+        IEntityType           entityType,
+        IndexPartDefinition   part,
+        StoreObjectIdentifier storeObject
+    )
+    {
+        var template = part.Template!;
+        var sql      = new System.Text.StringBuilder(template.Length);
+
+        for (var i = 0; i < template.Length; i++)
+        {
+            var ch = template[i];
+
+            if (ch == '{')
+            {
+                if (i + 1 < template.Length && template[i + 1] == '{')
+                {
+                    sql.Append('{');
+                    i++;
+                    continue;
+                }
+
+                var end = template.IndexOf('}', i + 1);
+                if (end < 0)
+                    throw new InvalidOperationException($"Malformed index expression template '{template}' on entity '{entityType.Name}'.");
+
+                sql.Append(ResolvePlaceholder(entityType, template[(i + 1)..end], storeObject));
+                i = end;
+                continue;
+            }
+
+            if (ch == '}')
+            {
+                if (i + 1 < template.Length && template[i + 1] == '}')
+                {
+                    sql.Append('}');
+                    i++;
+                    continue;
+                }
+
+                throw new InvalidOperationException($"Malformed index expression template '{template}' on entity '{entityType.Name}'.");
+            }
+
+            sql.Append(ch);
+        }
+
+        return new ResolvedIndexPart(true, sql.ToString(), part.Descending, part.NullSort);
+    }
+
+    private string ResolvePlaceholder(IEntityType entityType, string path, StoreObjectIdentifier storeObject)
+    {
+        var column = ResolveProperty(entityType, path)?.GetColumnName(storeObject);
+        if (column is not null)
+            return Quote(column);
+
+        var jsonPart = ResolveUnmappedPart(entityType, new IndexPartDefinition { PropertyPath = path }, storeObject);
+        if (jsonPart is not null)
+            return $"({jsonPart.Value})";
+
+        throw new InvalidOperationException(
+            $"Could not resolve property path '{path}' referenced by an index expression on entity '{entityType.Name}'.");
+    }
+
     public override IReadOnlyList<MigrationOperation> GetDifferences(
         IRelationalModel? source,
         IRelationalModel? target

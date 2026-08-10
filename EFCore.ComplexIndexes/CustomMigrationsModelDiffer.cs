@@ -92,8 +92,10 @@ public class CustomMigrationsModelDiffer(
             foreach (var (key, value) in tgt.ProviderAnnotations)
                 op.AddAnnotation(key, value);
 
-            // Only expression indexes need the ordered parts; column-only indexes render from Columns.
-            if (tgt.HasExpression)
+            // Ordered parts are needed when the stock generator can't render the index: expression
+            // parts have no slot in Columns, and NULLS FIRST/LAST has no slot on the native
+            // operation. Plain column indexes render from Columns and stay annotation-free.
+            if (tgt.RequiresPartsAnnotation)
                 op.AddAnnotation(ComplexIndexAnnotations.IndexParts, IndexPartsSerializer.Serialize(tgt.Parts));
 
             creates.Add(op);
@@ -115,6 +117,31 @@ public class CustomMigrationsModelDiffer(
     /// </summary>
     protected virtual bool IsForwardedIndexAnnotation(string annotationName) => false;
 
+    /// <summary>
+    /// Called for an index part whose property path does not resolve to a table column — typically
+    /// a member of a complex property mapped to JSON via <c>ToJson()</c>. Provider satellites can
+    /// return an expression part (e.g. a PostgreSQL <c>-&gt;&gt;</c> extraction); the core returns
+    /// null, which surfaces as a resolution error.
+    /// </summary>
+    protected virtual ResolvedIndexPart? ResolveUnmappedPart(
+        IEntityType           entityType,
+        IndexPartDefinition   part,
+        StoreObjectIdentifier storeObject
+    ) => null;
+
+    /// <summary>
+    /// Resolves a template part (<c>{Property.Path}</c> placeholders from a typed-expression
+    /// translator) into a final SQL expression. Identifier quoting is provider-specific, so the
+    /// core has no implementation — provider satellites override this.
+    /// </summary>
+    protected virtual ResolvedIndexPart ResolveTemplatePart(
+        IEntityType           entityType,
+        IndexPartDefinition   part,
+        StoreObjectIdentifier storeObject
+    ) => throw new InvalidOperationException(
+             $"The index template '{part.Template}' on entity '{entityType.Name}' requires a provider " +
+             "satellite differ (e.g. EFCore.ComplexIndexes.PostgreSQL) to resolve column references.");
+
     private HashSet<IndexDescriptor> ExtractAllIndexDescriptors(IRelationalModel? relationalModel)
     {
         var result = new HashSet<IndexDescriptor>();
@@ -126,7 +153,9 @@ public class CustomMigrationsModelDiffer(
             var schema    = entityType.GetSchema();
             if (tableName is null) continue;
 
-            ScanForSingleColumnIndexes(entityType, tableName, schema, result);
+            var storeObject = StoreObjectIdentifier.Table(tableName, schema);
+
+            ScanForSingleColumnIndexes(entityType, entityType, pathPrefix: "", tableName, schema, storeObject, result);
             ScanForCompositeIndexes(entityType, tableName, schema, result);
         }
 
@@ -134,19 +163,9 @@ public class CustomMigrationsModelDiffer(
     }
 
     private void ScanForSingleColumnIndexes(
+        IEntityType              rootEntityType,
         ITypeBase                typeBase,
-        string                   tableName,
-        string?                  schema,
-        HashSet<IndexDescriptor> results
-    )
-    {
-        var storeObject = StoreObjectIdentifier.Table(tableName, schema);
-
-        ScanForSingleColumnIndexes(typeBase, tableName, schema, storeObject, results);
-    }
-
-    private void ScanForSingleColumnIndexes(
-        ITypeBase                typeBase,
+        string                   pathPrefix,
         string                   tableName,
         string?                  schema,
         StoreObjectIdentifier    storeObject,
@@ -158,17 +177,26 @@ public class CustomMigrationsModelDiffer(
             if (property.FindAnnotation(ComplexIndexAnnotations.IsIndexed)?.Value is not true)
                 continue;
 
-            var columnName = property.GetColumnName(storeObject)
+            var columnName = property.GetColumnName(storeObject);
+
+            // No table column — a JSON-mapped complex member, for example. Give the provider
+            // satellite a chance to resolve it to an expression part before giving up.
+            var part = columnName is not null
+                           ? new ResolvedIndexPart(false, columnName)
+                           : ResolveUnmappedPart(
+                                 rootEntityType,
+                                 new IndexPartDefinition { PropertyPath = pathPrefix + property.Name },
+                                 storeObject)
                           ?? throw new InvalidOperationException(
                                  $"The property '{property.Name}' on '{typeBase.Name}' is marked with " +
                                  $"HasComplexIndex but has no column mapping for table '{tableName}'. " +
                                  "A property mapped to JSON (or not mapped to this table) cannot carry " +
-                                 "a complex index; use an expression index over the JSON column instead.");
+                                 "a complex index here; use an expression index over the JSON column instead.");
 
             var isUnique = property.FindAnnotation(ComplexIndexAnnotations.IsUnique)?.Value is true;
             var filter   = property.FindAnnotation(ComplexIndexAnnotations.Filter)?.Value as string;
             var indexName = property.FindAnnotation(ComplexIndexAnnotations.IndexName)?.Value as string
-                         ?? $"IX_{tableName}_{columnName}";
+                         ?? $"IX_{tableName}_{BuildPartToken(part)}";
 
             // Collect only whitelisted provider index options; everything else on the property is a
             // column facet that does not belong on an index operation.
@@ -179,14 +207,14 @@ public class CustomMigrationsModelDiffer(
                     providerAnnotations[ann.Name] = ann.Value;
             }
 
-            results.Add(new IndexDescriptor(tableName, schema, [new ResolvedIndexPart(false, columnName)], indexName, isUnique, filter, providerAnnotations));
+            results.Add(new IndexDescriptor(tableName, schema, [part], indexName, isUnique, filter, providerAnnotations));
         }
 
         foreach (var cp in typeBase.GetDeclaredComplexProperties())
-            ScanForSingleColumnIndexes(cp.ComplexType, tableName, schema, storeObject, results);
+            ScanForSingleColumnIndexes(rootEntityType, cp.ComplexType, $"{pathPrefix}{cp.Name}.", tableName, schema, storeObject, results);
     }
 
-    private static void ScanForCompositeIndexes(
+    private void ScanForCompositeIndexes(
         IEntityType              entityType,
         string                   tableName,
         string?                  schema,
@@ -209,19 +237,30 @@ public class CustomMigrationsModelDiffer(
             {
                 if (part.IsExpression)
                 {
-                    parts.Add(new ResolvedIndexPart(true, part.Expression!, part.Descending));
+                    parts.Add(new ResolvedIndexPart(true, part.Expression!, part.Descending, part.NullSort));
+                    continue;
+                }
+
+                if (part.IsTemplate)
+                {
+                    parts.Add(ResolveTemplatePart(entityType, part, storeObject));
                     continue;
                 }
 
                 var col = ResolveColumnName(entityType, part.PropertyPath!, storeObject);
-                if (col is null)
+                if (col is not null)
                 {
-                    throw new InvalidOperationException(
-                        $"Could not resolve property path '{part.PropertyPath}' for index on entity {entityType.Name}."
-                    );
+                    parts.Add(new ResolvedIndexPart(false, col, part.Descending, part.NullSort));
+                    continue;
                 }
 
-                parts.Add(new ResolvedIndexPart(false, col, part.Descending));
+                // No table column — give the provider satellite a chance (JSON members, …).
+                var unmapped = ResolveUnmappedPart(entityType, part, storeObject)
+                            ?? throw new InvalidOperationException(
+                                   $"Could not resolve property path '{part.PropertyPath}' for index on entity {entityType.Name}."
+                               );
+
+                parts.Add(unmapped);
             }
 
             var indexName = def.IndexName ?? $"IX_{tableName}_{string.Join("_", parts.Select(BuildPartToken))}";
@@ -265,13 +304,23 @@ public class CustomMigrationsModelDiffer(
                    JsonValueKind.String => je.GetString(),
                    JsonValueKind.True   => true,
                    JsonValueKind.False  => false,
-                   JsonValueKind.Number => je.TryGetInt64(out var l) ? l : je.GetDouble(),
+                   JsonValueKind.Number => NormalizeNumber(je),
                    JsonValueKind.Null   => null,
                    JsonValueKind.Array => je.EnumerateArray()
                                             .Select(e => e.ValueKind == JsonValueKind.String ? e.GetString() : e.ToString())
                                             .ToArray(),
                    _ => je.ToString()
                };
+    }
+
+    // int first: provider generators read their numeric index options with `as int?` (e.g. SQL
+    // Server's FILLFACTOR), which returns null for a boxed long or double — the option would be
+    // silently dropped. (A ternary here would also coerce every integral to double.)
+    private static object NormalizeNumber(JsonElement je)
+    {
+        if (je.TryGetInt32(out var i)) return i;
+        if (je.TryGetInt64(out var l)) return l;
+        return je.GetDouble();
     }
 
     // Builds a default index-name token for a part: column names pass through; expressions are
@@ -319,6 +368,9 @@ public class CustomMigrationsModelDiffer(
         public IEnumerable<string> ColumnNames => Parts.Where(p => !p.IsExpression).Select(p => p.Value);
 
         public bool HasExpression => Parts.Any(p => p.IsExpression);
+
+        // True when a provider's custom generator must render the index from the parts annotation.
+        public bool RequiresPartsAnnotation => Parts.Any(p => p.IsExpression || p.NullSort != DbNullSort.Default);
 
         public bool Equals(IndexDescriptor? other)
         {

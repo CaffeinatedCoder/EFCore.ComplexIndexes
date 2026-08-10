@@ -21,6 +21,7 @@
 
     <ItemGroup>
         <InternalsVisibleTo Include="EFCore.ComplexIndexes.PostgreSQL" />
+        <InternalsVisibleTo Include="EFCore.ComplexIndexes.SqlServer" />
         <InternalsVisibleTo Include="EFCore.ComplexIndexes.Tests" />
     </ItemGroup>
 

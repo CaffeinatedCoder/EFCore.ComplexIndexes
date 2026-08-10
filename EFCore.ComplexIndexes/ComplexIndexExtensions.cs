@@ -175,9 +175,9 @@ public static class ComplexIndexExtensions
         );
     }
 
-    // Stores ascending-only composite indexes in the legacy column-path form (so snapshots written
-    // before direction support are unchanged); switches to the ordered Parts form only when a
-    // descending column is present.
+    // Stores plain ascending composite indexes in the legacy column-path form (so snapshots written
+    // before direction support are unchanged); switches to the ordered Parts form only when a part
+    // carries sort options (descending or null ordering).
     private static CompositeIndexDefinition BuildCompositeDefinition(
         List<IndexPartDefinition>    parts,
         bool                         isUnique,
@@ -186,12 +186,12 @@ public static class ComplexIndexExtensions
         Dictionary<string, object?>? providerAnnotations
     )
     {
-        var hasDirection = parts.Any(p => p.Descending);
+        var hasSortOptions = parts.Any(p => p.Descending || p.NullSort != DbNullSort.Default);
 
         return new CompositeIndexDefinition
                {
-                   PropertyPaths       = hasDirection ? [] : [.. parts.Select(p => p.PropertyPath!)],
-                   Parts               = hasDirection ? parts : null,
+                   PropertyPaths       = hasSortOptions ? [] : [.. parts.Select(p => p.PropertyPath!)],
+                   Parts               = hasSortOptions ? parts : null,
                    IsUnique            = isUnique,
                    Filter              = filter,
                    IndexName           = indexName,
@@ -222,8 +222,10 @@ public static class ComplexIndexExtensions
     internal static IndexPartDefinition ExtractSinglePart(Expression expression)
     {
         var descending = false;
+        var nullSort   = DbNullSort.Default;
 
-        // Peel off Convert boxing and DbOrder.Asc/Desc(...) direction markers in any order.
+        // Peel off Convert boxing and DbOrder marker functions (Asc/Desc/NullsFirst/NullsLast)
+        // in any order — they compose, e.g. DbOrder.NullsLast(DbOrder.Desc(x.B)).
         while (true)
         {
             if (expression is UnaryExpression { NodeType: ExpressionType.Convert } unary)
@@ -235,7 +237,13 @@ public static class ComplexIndexExtensions
             if (expression is MethodCallExpression { Method.DeclaringType: { } declaringType } call
              && declaringType == typeof(DbOrder))
             {
-                descending = call.Method.Name == nameof(DbOrder.Desc);
+                switch (call.Method.Name)
+                {
+                    case nameof(DbOrder.Desc):       descending = true;                break;
+                    case nameof(DbOrder.NullsFirst): nullSort   = DbNullSort.First;    break;
+                    case nameof(DbOrder.NullsLast):  nullSort   = DbNullSort.Last;     break;
+                }
+
                 expression = call.Arguments[0];
                 continue;
             }
@@ -258,6 +266,11 @@ public static class ComplexIndexExtensions
                 """
             );
 
-        return new IndexPartDefinition { PropertyPath = string.Join(".", segments), Descending = descending };
+        return new IndexPartDefinition
+               {
+                   PropertyPath = string.Join(".", segments),
+                   Descending   = descending,
+                   NullSort     = nullSort
+               };
     }
 }

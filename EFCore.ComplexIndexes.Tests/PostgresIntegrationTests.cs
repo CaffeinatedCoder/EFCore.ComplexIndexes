@@ -241,6 +241,44 @@ public class PostgresIntegrationTests
         AssertRejected("INSERT INTO ig_people (\"Id\", email) VALUES (2, 'a@EXAMPLE.com')");
     }
 
+    // ── JSON-member index: unique index on a ToJson complex member ──
+
+    private class CompanyName
+    {
+        public string ShortName { get; set; } = "";
+        public string LegalName { get; set; } = "";
+    }
+
+    private class Employer
+    {
+        public int         Id   { get; set; }
+        public CompanyName Name { get; set; } = new();
+    }
+
+    private class EmployerContext(DbContextOptions<EmployerContext> options) : DbContext(options)
+    {
+        public DbSet<Employer> Employers => Set<Employer>();
+
+        protected override void OnModelCreating(ModelBuilder modelBuilder) =>
+            modelBuilder.Entity<Employer>(b =>
+            {
+                b.ToTable("ig_employers");
+                b.HasKey(x => x.Id);
+                b.ComplexProperty(x => x.Name, c => c.ToJson("name"));
+                b.HasComplexIndex(x => x.Name.ShortName, isUnique: true, indexName: "ux_ig_employers_short_name");
+            });
+    }
+
+    [TestMethod(DisplayName = "Unique index on a ToJson complex member applies and enforces")]
+    public void Json_member_index_applies_and_enforces()
+    {
+        Migrate<EmployerContext>();
+
+        Sql("""INSERT INTO ig_employers ("Id", name) VALUES (1, '{"ShortName":"ACME","LegalName":"Acme Corp."}')""");
+        AssertRejected("""INSERT INTO ig_employers ("Id", name) VALUES (2, '{"ShortName":"ACME","LegalName":"Acme Holdings"}')""");
+        Sql("""INSERT INTO ig_employers ("Id", name) VALUES (3, '{"ShortName":"Globex","LegalName":"Globex GmbH"}')""");
+    }
+
     // ── The AuditOffice regression: native HasIndex ⇄ HasComplexIndex round-trips cleanly ──
 
     private class EmailAddress

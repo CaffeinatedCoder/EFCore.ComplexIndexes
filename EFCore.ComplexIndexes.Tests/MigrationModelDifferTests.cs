@@ -617,4 +617,48 @@ public class MigrationsModelDifferTests : IDisposable
         Assert.AreEqual("ux_person_name_email", createIndex.Name);
         Assert.IsTrue(createIndex.IsUnique);
     }
+
+    // ── NULLS FIRST/LAST (v5) ──
+
+    private class NullOrderedCompositeContext(
+        DbContextOptions<NullOrderedCompositeContext> options) : DbContext(options)
+    {
+        public DbSet<PersonV1> People => Set<PersonV1>();
+
+        protected override void OnModelCreating(ModelBuilder modelBuilder) =>
+            modelBuilder.Entity<PersonV1>(builder =>
+            {
+                builder.ToTable("person");
+                builder.HasKey(x => x.Id);
+                builder.Property(x => x.Name).HasColumnName("name");
+                builder.ComplexProperty(x => x.EmailAddress, c => c.Property(x => x.Value).HasColumnName("email_address"));
+                builder.HasComplexCompositeIndex(x => new
+                {
+                    x.Name,
+                    Email = DbOrder.NullsLast(DbOrder.Desc(x.EmailAddress.Value))
+                });
+            });
+    }
+
+    [TestMethod(DisplayName = "Null ordering routes a column-only index through the parts annotation")]
+    public void Null_ordering_carries_parts_annotation()
+    {
+        var target     = BuildRelationalModel<NullOrderedCompositeContext>();
+        var operations = GetDifferences(source: null, target: target);
+
+        var createIndex = Assert.ContainsSingle(operations.OfType<CreateIndexOperation>());
+        Assert.IsTrue(createIndex.Columns.SequenceEqual(["name", "email_address"]));
+        Assert.IsNotNull(createIndex.IsDescending);
+        Assert.IsTrue(createIndex.IsDescending!.SequenceEqual([false, true]));
+
+        // NULLS FIRST/LAST has no slot on the native operation, so the ordered parts must ride along.
+        var partsJson = createIndex.FindAnnotation(ComplexIndexAnnotations.IndexParts)?.Value as string;
+        Assert.IsNotNull(partsJson);
+
+        var parts = IndexPartsSerializer.Deserialize(partsJson!);
+        Assert.HasCount(2, parts);
+        Assert.AreEqual(DbNullSort.Default, parts[0].NullSort);
+        Assert.AreEqual(DbNullSort.Last,    parts[1].NullSort);
+        Assert.IsTrue(parts[1].Descending);
+    }
 }

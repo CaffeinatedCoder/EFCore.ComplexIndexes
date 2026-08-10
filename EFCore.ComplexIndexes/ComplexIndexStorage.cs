@@ -46,9 +46,9 @@ internal static class ComplexIndexStorage
 
     // Direction is deliberately ignored: re-declaring with a different DbOrder updates the index.
     private static bool HasSameParts(CompositeIndexDefinition a, CompositeIndexDefinition b)
-        => a.EffectiveParts.Select(p => (p.PropertyPath, p.Expression))
-            .SequenceEqual(b.EffectiveParts.Select(p => (p.PropertyPath, p.Expression)));
+        => a.EffectiveParts.Select(p => (p.PropertyPath, p.Expression, p.Template))
+            .SequenceEqual(b.EffectiveParts.Select(p => (p.PropertyPath, p.Expression, p.Template)));
 
     private static string DescribeParts(CompositeIndexDefinition definition)
-        => string.Join(", ", definition.EffectiveParts.Select(p => p.PropertyPath ?? p.Expression));
+        => string.Join(", ", definition.EffectiveParts.Select(p => p.PropertyPath ?? p.Expression ?? p.Template));
 }
