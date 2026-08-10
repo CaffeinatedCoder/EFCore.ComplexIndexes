@@ -124,7 +124,42 @@ public class NpgsqlTemporalConstraintDifferTests
             });
     }
 
+    // Same default-named constraint as TemporalContext, on a renamed table.
+    private class TemporalRenamedTableContext(DbContextOptions<TemporalRenamedTableContext> options) : DbContext(options)
+    {
+        public DbSet<RoomBooking> Bookings => Set<RoomBooking>();
+        protected override void OnModelCreating(ModelBuilder modelBuilder)
+            => modelBuilder.Entity<RoomBooking>(b =>
+            {
+                MapBooking(b);
+                b.ToTable("bookings");
+                b.HasTemporalConstraint(x => x.RoomId, x => x.BookedDuring);
+            });
+    }
+
     // ── Tests ──
+
+    [TestMethod(DisplayName = "Default-named temporal constraint on a renamed table becomes RENAME CONSTRAINT")]
+    public void Renamed_table_renames_default_named_temporal_constraint()
+    {
+        var operations = GetDifferences(
+            source: BuildRelationalModel<TemporalContext>(),
+            target: BuildRelationalModel<TemporalRenamedTableContext>()).ToList();
+
+        Assert.IsNotEmpty(operations.OfType<RenameTableOperation>());
+        Assert.IsEmpty(operations.OfType<DropUniqueConstraintOperation>());
+        Assert.IsEmpty(operations.OfType<AddUniqueConstraintOperation>());
+
+        var rename = Assert.ContainsSingle(
+            operations.OfType<SqlOperation>().Where(o => o.Sql.Contains("RENAME CONSTRAINT")));
+        Assert.AreEqual(
+            "ALTER TABLE \"bookings\" RENAME CONSTRAINT " +
+            "\"AK_room_bookings_room_id_booked_during\" TO \"AK_bookings_room_id_booked_during\";",
+            rename.Sql);
+
+        // The rename references the new table name, so it must run after the base RenameTable.
+        Assert.IsTrue(operations.IndexOf(rename) > operations.FindIndex(o => o is RenameTableOperation));
+    }
 
     [TestMethod(DisplayName = "Temporal constraint emits a stamped AddUniqueConstraintOperation")]
     public void Temporal_constraint_emits_add_unique()

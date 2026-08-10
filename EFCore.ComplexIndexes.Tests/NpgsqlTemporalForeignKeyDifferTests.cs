@@ -467,22 +467,25 @@ public class NpgsqlTemporalForeignKeyDifferTests
         Assert.IsEmpty(operations.OfType<AddForeignKeyOperation>());
     }
 
-    [TestMethod(DisplayName = "Renaming the principal temporal constraint recreates the temporal FK around it")]
-    public void Renaming_principal_temporal_constraint_recreates_foreign_key_around_unique()
+    [TestMethod(DisplayName = "Renaming the principal temporal constraint becomes RENAME CONSTRAINT; the FK survives")]
+    public void Renaming_principal_temporal_constraint_renames_in_place()
     {
         var operations = GetDifferences(
             source: BuildRelationalModel<TemporalForeignKeyContext>(),
             target: BuildRelationalModel<TemporalRenamedPrincipalConstraintContext>()).ToList();
 
-        var dropForeignKey = operations.FindIndex(o => o is DropForeignKeyOperation);
-        var dropUnique     = operations.FindIndex(o => o is DropUniqueConstraintOperation);
-        var addUnique      = operations.FindIndex(o => o is AddUniqueConstraintOperation);
-        var addForeignKey  = operations.FindIndex(o => o is AddForeignKeyOperation);
+        // ALTER TABLE … RENAME CONSTRAINT preserves dependents, so neither the constraint nor the
+        // foreign key is rebuilt.
+        Assert.IsEmpty(operations.OfType<DropForeignKeyOperation>());
+        Assert.IsEmpty(operations.OfType<AddForeignKeyOperation>());
+        Assert.IsEmpty(operations.OfType<DropUniqueConstraintOperation>());
+        Assert.IsEmpty(operations.OfType<AddUniqueConstraintOperation>());
 
-        Assert.IsTrue(dropForeignKey >= 0);
-        Assert.IsTrue(dropUnique     > dropForeignKey);
-        Assert.IsTrue(addUnique      > dropUnique);
-        Assert.IsTrue(addForeignKey  > addUnique);
+        var rename = Assert.ContainsSingle(operations.OfType<SqlOperation>());
+        Assert.AreEqual(
+            "ALTER TABLE \"subscriptions\" RENAME CONSTRAINT " +
+            "\"AK_subscriptions_subscription_id_valid_during\" TO \"uq_subscriptions_temporal\";",
+            rename.Sql);
     }
 
     [TestMethod(DisplayName = "Dropping the dependent table skips explicit temporal FK drop")]

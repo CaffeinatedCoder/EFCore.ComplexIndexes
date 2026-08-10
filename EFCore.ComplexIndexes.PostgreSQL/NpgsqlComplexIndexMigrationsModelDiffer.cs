@@ -240,48 +240,121 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
                                         && sourceForeignKeys.Count == 0 && targetForeignKeys.Count == 0)
             return operations;
 
-        var result        = new List<MigrationOperation>();
         var droppedTables = operations
                            .OfType<DropTableOperation>()
                            .Select(o => (o.Name, o.Schema))
                            .ToHashSet();
 
+        // Source descriptors on tables the base operations rename are compared under their new
+        // table identity; drops still target the old name — they run before the base RenameTable.
+        var renamedTables = BuildRenamedTables(operations);
+
+        var normalizedConstraints = new Dictionary<TemporalDescriptor, (string Table, string? Schema)>();
+        foreach (var src in sourceConstraints)
+        {
+            var normalized = renamedTables.TryGetValue((src.Table, src.Schema), out var to)
+                                 ? src with { Table = to.Name, Schema = to.Schema }
+                                 : src;
+            normalizedConstraints.TryAdd(normalized, (src.Table, src.Schema));
+        }
+
+        var normalizedForeignKeys = new Dictionary<TemporalForeignKeyDescriptor, (string Table, string? Schema)>();
         foreach (var src in sourceForeignKeys)
         {
-            if (droppedTables.Contains((src.DependentTable, src.DependentSchema)))
+            var normalized = src;
+            if (renamedTables.TryGetValue((src.DependentTable, src.DependentSchema), out var dependent))
+                normalized = normalized with { DependentTable = dependent.Name, DependentSchema = dependent.Schema };
+            if (renamedTables.TryGetValue((src.PrincipalTable, src.PrincipalSchema), out var principal))
+                normalized = normalized with { PrincipalTable = principal.Name, PrincipalSchema = principal.Schema };
+            normalizedForeignKeys.TryAdd(normalized, (src.DependentTable, src.DependentSchema));
+        }
+
+        var pendingForeignKeyDrops = normalizedForeignKeys.Keys
+            .Where(src => !droppedTables.Contains(normalizedForeignKeys[src])
+                       && (!targetForeignKeys.Contains(src)
+                        || DependsOnChangedTemporalConstraint(src, normalizedConstraints.Keys, targetConstraints)))
+            .ToList();
+
+        var pendingConstraintDrops = normalizedConstraints.Keys
+            .Where(src => !targetConstraints.Contains(src)
+                       && !droppedTables.Contains(normalizedConstraints[src]))
+            .ToList();
+
+        var pendingConstraintAdds = targetConstraints.Where(tgt => !normalizedConstraints.ContainsKey(tgt)).ToList();
+
+        var pendingForeignKeyAdds = targetForeignKeys
+            .Where(tgt => !normalizedForeignKeys.ContainsKey(tgt)
+                       || DependsOnChangedTemporalConstraint(tgt, normalizedConstraints.Keys, targetConstraints))
+            .ToList();
+
+        // Drop/add pairs identical except for the name — typically default-named constraints on a
+        // renamed table — become RENAME CONSTRAINT. Dependent foreign keys survive a rename, so
+        // they don't churn (DependsOnChangedTemporalConstraint compares names insensitively).
+        var renames = new List<MigrationOperation>();
+
+        for (var i = pendingConstraintDrops.Count - 1; i >= 0; i--)
+        {
+            var dropped = pendingConstraintDrops[i];
+            var renamed = pendingConstraintAdds.FirstOrDefault(a => a.Name != dropped.Name
+                                                                 && (dropped with { Name = a.Name }).Equals(a));
+            if (renamed is null)
                 continue;
 
-            if (targetForeignKeys.Contains(src) && !DependsOnChangedTemporalConstraint(src, sourceConstraints, targetConstraints))
+            renames.Add(new SqlOperation
+                        {
+                            Sql = $"ALTER TABLE {QuoteQualified(renamed.Table, renamed.Schema)} " +
+                                  $"RENAME CONSTRAINT {Quote(dropped.Name)} TO {Quote(renamed.Name)};"
+                        });
+            pendingConstraintDrops.RemoveAt(i);
+            pendingConstraintAdds.Remove(renamed);
+        }
+
+        for (var i = pendingForeignKeyDrops.Count - 1; i >= 0; i--)
+        {
+            var dropped = pendingForeignKeyDrops[i];
+            var renamed = pendingForeignKeyAdds.FirstOrDefault(a => a.Name != dropped.Name
+                                                                 && (dropped with { Name = a.Name }).Equals(a));
+            if (renamed is null)
                 continue;
 
+            renames.Add(new SqlOperation
+                        {
+                            Sql = $"ALTER TABLE {QuoteQualified(renamed.DependentTable, renamed.DependentSchema)} " +
+                                  $"RENAME CONSTRAINT {Quote(dropped.Name)} TO {Quote(renamed.Name)};"
+                        });
+            pendingForeignKeyDrops.RemoveAt(i);
+            pendingForeignKeyAdds.Remove(renamed);
+        }
+
+        var result = new List<MigrationOperation>();
+
+        foreach (var src in pendingForeignKeyDrops)
+        {
+            var (table, schema) = normalizedForeignKeys[src];
             result.Add(new DropForeignKeyOperation
                        {
                            Name   = src.Name,
-                           Table  = src.DependentTable,
-                           Schema = src.DependentSchema
+                           Table  = table,
+                           Schema = schema
                        });
         }
 
-        foreach (var src in sourceConstraints)
+        foreach (var src in pendingConstraintDrops)
         {
-            if (targetConstraints.Contains(src) || droppedTables.Contains((src.Table, src.Schema)))
-                continue;
-
+            var (table, schema) = normalizedConstraints[src];
             result.Add(new DropUniqueConstraintOperation
                        {
                            Name   = src.Name,
-                           Table  = src.Table,
-                           Schema = src.Schema
+                           Table  = table,
+                           Schema = schema
                        });
         }
 
         result.AddRange(operations);
+        result.AddRange(renames);
 
-        foreach (var tgt in targetConstraints)
+        foreach (var tgt in pendingConstraintAdds)
         {
-            if (sourceConstraints.Contains(tgt))
-                continue;
-
             var op = new AddUniqueConstraintOperation
                      {
                          Name    = tgt.Name,
@@ -294,11 +367,8 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
             needsBtreeGist = true;
         }
 
-        foreach (var tgt in targetForeignKeys)
+        foreach (var tgt in pendingForeignKeyAdds)
         {
-            if (sourceForeignKeys.Contains(tgt) && !DependsOnChangedTemporalConstraint(tgt, sourceConstraints, targetConstraints))
-                continue;
-
             var op = new AddForeignKeyOperation
                      {
                          Name             = tgt.Name,
@@ -343,24 +413,61 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
                            .Select(o => (o.Name, o.Schema))
                            .ToHashSet();
 
-        var drops = new List<MigrationOperation>();
+        // Source constraints on tables the base operations rename are compared under their new
+        // table identity so the rename doesn't churn every constraint the table carries. Drops
+        // still target the old name — they run before the base RenameTable.
+        var renamedTables = BuildRenamedTables(operations);
+
+        var normalizedSource = new Dictionary<ExclusionDescriptor, (string Table, string? Schema)>();
         foreach (var src in sourceConstraints)
         {
-            if (targetConstraints.Contains(src) || droppedTables.Contains((src.Table, src.Schema)))
+            var normalized = renamedTables.TryGetValue((src.Table, src.Schema), out var to)
+                                 ? src with { Table = to.Name, Schema = to.Schema }
+                                 : src;
+            normalizedSource.TryAdd(normalized, (src.Table, src.Schema));
+        }
+
+        var pendingDrops = normalizedSource.Keys
+                                           .Where(src => !targetConstraints.Contains(src)
+                                                      && !droppedTables.Contains(normalizedSource[src]))
+                                           .ToList();
+
+        var pendingAdds = targetConstraints.Where(tgt => !normalizedSource.ContainsKey(tgt)).ToList();
+
+        // A drop/add pair identical except for the name — typically a default-named constraint on a
+        // renamed table — becomes RENAME CONSTRAINT: a catalog update instead of a gist rebuild.
+        // Placed after the base operations, which may themselves rename the table.
+        var renames = new List<MigrationOperation>();
+        for (var i = pendingDrops.Count - 1; i >= 0; i--)
+        {
+            var dropped = pendingDrops[i];
+            var renamed = pendingAdds.FirstOrDefault(a => a.Name != dropped.Name
+                                                       && (dropped with { Name = a.Name }).Equals(a));
+            if (renamed is null)
                 continue;
 
+            renames.Add(new SqlOperation
+                        {
+                            Sql = $"ALTER TABLE {QuoteQualified(renamed.Table, renamed.Schema)} " +
+                                  $"RENAME CONSTRAINT {Quote(dropped.Name)} TO {Quote(renamed.Name)};"
+                        });
+            pendingDrops.RemoveAt(i);
+            pendingAdds.Remove(renamed);
+        }
+
+        var drops = new List<MigrationOperation>();
+        foreach (var src in pendingDrops)
+        {
+            var (table, schema) = normalizedSource[src];
             drops.Add(new SqlOperation
                       {
-                          Sql = $"ALTER TABLE {QuoteQualified(src.Table, src.Schema)} DROP CONSTRAINT {Quote(src.Name)};"
+                          Sql = $"ALTER TABLE {QuoteQualified(table, schema)} DROP CONSTRAINT IF EXISTS {Quote(src.Name)};"
                       });
         }
 
         var adds = new List<MigrationOperation>();
-        foreach (var tgt in targetConstraints)
+        foreach (var tgt in pendingAdds)
         {
-            if (sourceConstraints.Contains(tgt))
-                continue;
-
             adds.Add(new SqlOperation { Sql = BuildAddExclusionSql(tgt) });
 
             // Scalar equality elements under gist need the btree_gist operator classes.
@@ -368,10 +475,20 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
                 needsBtreeGist = true;
         }
 
-        if (drops.Count == 0 && adds.Count == 0)
+        if (drops.Count == 0 && renames.Count == 0 && adds.Count == 0)
             return operations;
 
-        return [.. drops, .. operations, .. adds];
+        return [.. drops, .. operations, .. renames, .. adds];
+    }
+
+    // Tables the base operations rename, keyed by old identity.
+    private static Dictionary<(string Name, string? Schema), (string Name, string? Schema)> BuildRenamedTables(
+        IReadOnlyList<MigrationOperation> operations)
+    {
+        var renamed = new Dictionary<(string Name, string? Schema), (string Name, string? Schema)>();
+        foreach (var rename in operations.OfType<RenameTableOperation>())
+            renamed[(rename.Name, rename.Schema)] = (rename.NewName ?? rename.Name, rename.NewSchema ?? rename.Schema);
+        return renamed;
     }
 
     private static HashSet<ExclusionDescriptor> BuildExclusionDescriptors(IRelationalModel? model)
@@ -430,12 +547,18 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
         return set;
     }
 
+    // The ADD is preceded by DROP CONSTRAINT IF EXISTS so the migration also applies cleanly on
+    // databases where the constraint already exists — typically hand-written DDL being adopted
+    // into a declarative HasExclusionConstraint (the drop is a no-op everywhere else).
     private static string BuildAddExclusionSql(ExclusionDescriptor constraint)
     {
         var elements = constraint.Parts.Select(p =>
             $"{(p.IsExpression ? $"({p.Value})" : Quote(p.Value))} WITH {p.Operator}");
 
-        var sql = $"ALTER TABLE {QuoteQualified(constraint.Table, constraint.Schema)} " +
+        var table = QuoteQualified(constraint.Table, constraint.Schema);
+
+        var sql = $"ALTER TABLE {table} DROP CONSTRAINT IF EXISTS {Quote(constraint.Name)};\n" +
+                  $"ALTER TABLE {table} " +
                   $"ADD CONSTRAINT {Quote(constraint.Name)} EXCLUDE USING {constraint.Method} " +
                   $"({string.Join(", ", elements)})";
 
@@ -647,17 +770,19 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
                              && c.PeriodColumn == periodColumn
                              && c.KeyColumns.SequenceEqual(keyColumns));
 
+    // Name differences are ignored: a name-only change surfaces as RENAME CONSTRAINT, which keeps
+    // dependent foreign keys intact — only structural changes force the FK to be rebuilt.
     private static bool DependsOnChangedTemporalConstraint(
-        TemporalForeignKeyDescriptor foreignKey,
-        HashSet<TemporalDescriptor>  sourceConstraints,
-        HashSet<TemporalDescriptor>  targetConstraints)
+        TemporalForeignKeyDescriptor           foreignKey,
+        IReadOnlyCollection<TemporalDescriptor> sourceConstraints,
+        IReadOnlyCollection<TemporalDescriptor> targetConstraints)
     {
         var sourceConstraint = sourceConstraints.FirstOrDefault(c => IsPrincipalConstraintFor(foreignKey, c));
         var targetConstraint = targetConstraints.FirstOrDefault(c => IsPrincipalConstraintFor(foreignKey, c));
 
         return sourceConstraint is null
             || targetConstraint is null
-            || !sourceConstraint.Equals(targetConstraint);
+            || !sourceConstraint.Equals(targetConstraint with { Name = sourceConstraint.Name });
     }
 
     private static bool IsPrincipalConstraintFor(TemporalForeignKeyDescriptor foreignKey, TemporalDescriptor constraint)

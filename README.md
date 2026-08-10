@@ -430,6 +430,19 @@ governed by the same `UseBtreeGist()` / `SuppressTemporalExtensionAutoInjection(
 Re-declaring a constraint over the same elements replaces it; removing the declaration emits a
 `DROP CONSTRAINT` in the next migration.
 
+**Adopting hand-written constraints:** the generated `ADD CONSTRAINT` is preceded by
+`DROP CONSTRAINT IF EXISTS`, so declaring a constraint that already exists in the database under
+the same name — e.g. raw `migrationBuilder.Sql(...)` DDL from an earlier migration — applies
+cleanly on both fresh and existing databases. No hand-editing of the scaffolded migration needed;
+just make sure the declared name matches the existing one.
+
+> **If a constraint re-appears in every scaffolded migration:** the differ compares the model
+> against the *compiled* model snapshot, not the `…ModelSnapshot.cs` file. A constraint that is
+> re-emitted on every `dotnet ef migrations add` even though the snapshot file contains its
+> `CustomExclusion:Constraints` annotation means the compiled snapshot is stale — typically
+> scaffolding with `--no-build`, or a migrations assembly (`MigrationsAssembly(...)`) resolved from
+> an out-of-date build output. Rebuild the project that hosts the snapshot and re-scaffold.
+
 ### SQL Server index options
 
 The **EFCore.ComplexIndexes.SqlServer** package brings the SQL Server option set to complex-property
@@ -457,6 +470,13 @@ expression-index DDL — model a persisted computed column and index that) and
 `DbOrder.NullsFirst/NullsLast` (no such T-SQL syntax).
 
 ---
+
+## What changed in 5.0.1
+
+- **Changed:** exclusion-constraint `ADD CONSTRAINT` DDL is now preceded by `DROP CONSTRAINT IF EXISTS`, so adopting a pre-existing hand-written constraint of the same name applies cleanly instead of failing with `42P07`. The standalone drop path also uses `IF EXISTS`.
+- **Fixed:** renaming a table no longer drops and recreates the exclusion and temporal constraints it carries (the same normalization complex indexes already had).
+- **Changed:** a name-only change to an exclusion constraint, temporal constraint, or temporal foreign key — including the implicit one when a table rename changes a default-derived name — now emits `ALTER TABLE … RENAME CONSTRAINT` instead of dropping and rebuilding. Dependent temporal foreign keys survive such renames untouched.
+- **Tests:** the differ is now exercised against *real* model snapshots — generated as C#, compiled in-memory, and rebuilt exactly as `dotnet ef migrations add` does — guarding the whole feature set against snapshot round-trip churn.
 
 ## What changed in 5.0.0
 

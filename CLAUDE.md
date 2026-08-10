@@ -68,7 +68,11 @@ The differ recognizes two churn cases: a drop/create pair identical except for t
 `RenameIndexOperation` when `CanRenameIndexes` is true (Npgsql and SqlServer satellites; core
 default false — SQLite's generator can't rename annotation-only indexes), and source indexes on
 tables the base operations rename are compared under their new table identity (drops still target
-the old name, since they run before the rename). Indexes that need the custom generator
+the old name, since they run before the rename). The exclusion/temporal differs apply the same two
+rules: renamed-table normalization, and name-only changes → `ALTER TABLE … RENAME CONSTRAINT`
+(placed *after* the base ops — the rename references the new table name). A constraint rename
+keeps its dependents, so `DependsOnChangedTemporalConstraint` compares principal constraints
+name-insensitively and the temporal FK doesn't churn. Indexes that need the custom generator
 (`RequiresPartsAnnotation`) get `CustomMigrationsModelDiffer.RuntimeWiringSentinel` appended to
 `Columns`: the custom generator renders from the parts annotation and ignores `Columns`, while the
 stock generator fails loudly at apply time — deliberate, because a column-only NULLS-ordered index
@@ -137,7 +141,13 @@ EXCLUDE constraints do. Definitions (`ExclusionConstraintDefinition`: ordered pa
 property path *or* verbatim expression plus an operator; method defaulting to gist; filter; name;
 deferrability) are JSON-stored under `CustomExclusion:Constraints`. Unlike expression indexes, the
 differ renders the full `ALTER TABLE … ADD CONSTRAINT … EXCLUDE …` / `DROP CONSTRAINT` DDL as
-`SqlOperation`s at **design time** — no runtime `UseNpgsqlComplexIndexes()` wiring involved. The
+`SqlOperation`s at **design time** — no runtime `UseNpgsqlComplexIndexes()` wiring involved. Every
+ADD is preceded by `DROP CONSTRAINT IF EXISTS` in the same `SqlOperation` (and standalone drops use
+`IF EXISTS`), so adopting a same-named hand-written constraint applies without 42P07 and a
+re-applied migration self-heals. The snapshot round trip is covered end-to-end by
+`SnapshotRoundTripTests`, which compile a real generated snapshot with Roslyn and diff against it —
+if a constraint nevertheless re-emits on every `migrations add` in a consuming app, the *compiled*
+snapshot is stale (`--no-build`, stale migrations assembly), not a differ bug. The
 `btree_gist` auto-injection is shared with temporal constraints (single `CREATE EXTENSION`, same
 `UseBtreeGist()` / `SuppressTemporalExtensionAutoInjection()` switches) and triggers when a gist
 constraint has an `=` element.

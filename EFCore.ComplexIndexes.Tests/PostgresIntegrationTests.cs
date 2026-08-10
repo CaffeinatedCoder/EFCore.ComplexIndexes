@@ -175,6 +175,65 @@ public class PostgresIntegrationTests
         Sql("INSERT INTO ig_role_grants (\"Id\", grantee_id, role_id, period, revoked_at) VALUES (4, 1, 1, '[2024-03-01,2024-09-01)', '2024-04-01')");
     }
 
+    // Same table as GrantContext but without the declarative constraint — the "before adoption"
+    // model whose migration created the table while the constraint was hand-written SQL.
+    private class PlainGrantContext(DbContextOptions<PlainGrantContext> options) : DbContext(options)
+    {
+        public DbSet<RoleGrant> Grants => Set<RoleGrant>();
+
+        protected override void OnModelCreating(ModelBuilder modelBuilder) =>
+            modelBuilder.Entity<RoleGrant>(b =>
+            {
+                b.ToTable("ig_adopted_grants");
+                b.HasKey(x => x.Id);
+                b.Property(x => x.GranteeId).HasColumnName("grantee_id");
+                b.Property(x => x.RoleId).HasColumnName("role_id");
+                b.Property(x => x.Period).HasColumnName("period");
+                b.Property(x => x.RevokedAt).HasColumnName("revoked_at");
+            });
+    }
+
+    private class AdoptedGrantContext(DbContextOptions<AdoptedGrantContext> options) : DbContext(options)
+    {
+        public DbSet<RoleGrant> Grants => Set<RoleGrant>();
+
+        protected override void OnModelCreating(ModelBuilder modelBuilder) =>
+            modelBuilder.Entity<RoleGrant>(b =>
+            {
+                b.ToTable("ig_adopted_grants");
+                b.HasKey(x => x.Id);
+                b.Property(x => x.GranteeId).HasColumnName("grantee_id");
+                b.Property(x => x.RoleId).HasColumnName("role_id");
+                b.Property(x => x.Period).HasColumnName("period");
+                b.Property(x => x.RevokedAt).HasColumnName("revoked_at");
+                b.HasExclusionConstraint(
+                    equalityColumns: x => new { x.GranteeId, x.RoleId },
+                    overlapsColumn:  x => x.Period,
+                    filter:          "revoked_at IS NULL",
+                    name:            "ex_adopted_active");
+            });
+    }
+
+    [TestMethod(DisplayName = "Adopting a pre-existing hand-written constraint applies without 42P07")]
+    public void Exclusion_adoption_over_existing_constraint_applies()
+    {
+        // Original state: table created by migrations, constraint hand-written as raw SQL.
+        Migrate<PlainGrantContext>();
+        Sql("CREATE EXTENSION IF NOT EXISTS btree_gist");
+        Sql("ALTER TABLE ig_adopted_grants ADD CONSTRAINT ex_adopted_active " +
+            "EXCLUDE USING gist (grantee_id WITH =, role_id WITH =, period WITH &&) " +
+            "WHERE (revoked_at IS NULL)");
+
+        // Adoption migration: the declarative constraint diffs in over the existing one.
+        Apply(GetDifferences(
+            source: BuildRelationalModel<PlainGrantContext>(),
+            target: BuildRelationalModel<AdoptedGrantContext>()));
+
+        // Still enforced after the drop/re-add.
+        Sql("INSERT INTO ig_adopted_grants (\"Id\", grantee_id, role_id, period) VALUES (1, 1, 1, '[2024-01-01,2024-06-01)')");
+        AssertRejected("INSERT INTO ig_adopted_grants (\"Id\", grantee_id, role_id, period) VALUES (2, 1, 1, '[2024-03-01,2024-09-01)')");
+    }
+
     // ── Temporal constraint (PG 18 WITHOUT OVERLAPS) ──
 
     private class RoomBooking

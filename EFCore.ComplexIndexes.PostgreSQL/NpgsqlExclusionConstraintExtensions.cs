@@ -16,6 +16,9 @@ namespace EFCore.ComplexIndexes.PostgreSQL;
 /// <c>UseBtreeGist</c> for explicit control or <c>SuppressTemporalExtensionAutoInjection</c> to opt
 /// out). The constraint DDL is emitted as a raw SQL operation at design time, so — unlike
 /// expression indexes — no runtime <c>UseNpgsqlComplexIndexes()</c> wiring is required.
+/// The generated <c>ADD CONSTRAINT</c> is preceded by <c>DROP CONSTRAINT IF EXISTS</c>, so
+/// declaring a constraint that already exists in the database under the same name (hand-written
+/// DDL from an earlier migration) adopts it cleanly instead of failing with 42P07.
 /// </remarks>
 public static class NpgsqlExclusionConstraintExtensions
 {

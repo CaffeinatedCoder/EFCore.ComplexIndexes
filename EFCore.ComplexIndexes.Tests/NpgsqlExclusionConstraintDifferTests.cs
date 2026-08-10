@@ -167,6 +167,52 @@ public class NpgsqlExclusionConstraintDifferTests
 
     private class EmptyModelContext(DbContextOptions<EmptyModelContext> options) : DbContext(options);
 
+    // Same entity/constraint as FilteredExclusionContext, on a renamed table.
+    private class RenamedTableExclusionContext(DbContextOptions<RenamedTableExclusionContext> options) : DbContext(options)
+    {
+        public DbSet<RoleGrant> Grants => Set<RoleGrant>();
+        protected override void OnModelCreating(ModelBuilder modelBuilder)
+            => modelBuilder.Entity<RoleGrant>(b =>
+            {
+                MapGrant(b);
+                b.ToTable("access_grants");
+                b.HasExclusionConstraint(
+                    equalityColumns: x => new { x.GranteeId, x.RoleId },
+                    overlapsColumn:  x => x.Period,
+                    filter:          "revoked_at IS NULL",
+                    name:            "ex_role_grant_active_period");
+            });
+    }
+
+    // Default-named constraint: the name embeds the table name, so a table rename changes it.
+    private class DefaultNameOnRenamedTableContext(DbContextOptions<DefaultNameOnRenamedTableContext> options) : DbContext(options)
+    {
+        public DbSet<RoleGrant> Grants => Set<RoleGrant>();
+        protected override void OnModelCreating(ModelBuilder modelBuilder)
+            => modelBuilder.Entity<RoleGrant>(b =>
+            {
+                MapGrant(b);
+                b.ToTable("access_grants");
+                b.HasExclusionConstraint(x => x.GranteeId, x => x.Period);
+            });
+    }
+
+    // Same constraint as FilteredExclusionContext under a different explicit name.
+    private class RenamedConstraintContext(DbContextOptions<RenamedConstraintContext> options) : DbContext(options)
+    {
+        public DbSet<RoleGrant> Grants => Set<RoleGrant>();
+        protected override void OnModelCreating(ModelBuilder modelBuilder)
+            => modelBuilder.Entity<RoleGrant>(b =>
+            {
+                MapGrant(b);
+                b.HasExclusionConstraint(
+                    equalityColumns: x => new { x.GranteeId, x.RoleId },
+                    overlapsColumn:  x => x.Period,
+                    filter:          "revoked_at IS NULL",
+                    name:            "ex_role_grant_active_v2");
+            });
+    }
+
     // ── Tests ──
 
     [TestMethod(DisplayName = "Simple overload emits the full EXCLUDE DDL with predicate")]
@@ -176,6 +222,7 @@ public class NpgsqlExclusionConstraintDifferTests
 
         var sql = Assert.ContainsSingle(ExclusionSql(operations));
         Assert.AreEqual(
+            "ALTER TABLE \"role_grants\" DROP CONSTRAINT IF EXISTS \"ex_role_grant_active_period\";\n" +
             "ALTER TABLE \"role_grants\" ADD CONSTRAINT \"ex_role_grant_active_period\" " +
             "EXCLUDE USING gist (\"grantee_id\" WITH =, \"role_id\" WITH =, \"period\" WITH &&) " +
             "WHERE (revoked_at IS NULL);",
@@ -248,7 +295,7 @@ public class NpgsqlExclusionConstraintDifferTests
             target: BuildRelationalModel<PlainContext>());
 
         var sql = Assert.ContainsSingle(ExclusionSql(operations));
-        Assert.AreEqual("ALTER TABLE \"role_grants\" DROP CONSTRAINT \"ex_role_grant_active_period\";", sql);
+        Assert.AreEqual("ALTER TABLE \"role_grants\" DROP CONSTRAINT IF EXISTS \"ex_role_grant_active_period\";", sql);
     }
 
     [TestMethod(DisplayName = "Dropping the table does not emit a separate DROP CONSTRAINT")]
@@ -260,6 +307,72 @@ public class NpgsqlExclusionConstraintDifferTests
 
         Assert.IsNotEmpty(operations.OfType<DropTableOperation>());
         Assert.IsEmpty(ExclusionSql(operations));
+    }
+
+    [TestMethod(DisplayName = "A renamed table keeps its exclusion constraint without churn")]
+    public void Renamed_table_keeps_constraint_without_churn()
+    {
+        var operations = GetDifferences(
+            source: BuildRelationalModel<FilteredExclusionContext>(),
+            target: BuildRelationalModel<RenamedTableExclusionContext>());
+
+        Assert.IsNotEmpty(operations.OfType<RenameTableOperation>());
+        Assert.IsEmpty(ExclusionSql(operations));
+        Assert.IsFalse(operations.OfType<SqlOperation>().Any(o => o.Sql.Contains("RENAME CONSTRAINT")));
+    }
+
+    [TestMethod(DisplayName = "Default-named constraint on a renamed table becomes RENAME CONSTRAINT")]
+    public void Default_name_on_renamed_table_becomes_rename_constraint()
+    {
+        var operations = GetDifferences(
+            source: BuildRelationalModel<DefaultNameExclusionContext>(),
+            target: BuildRelationalModel<DefaultNameOnRenamedTableContext>()).ToList();
+
+        Assert.IsEmpty(ExclusionSql(operations));
+
+        var rename = Assert.ContainsSingle(
+            operations.OfType<SqlOperation>().Where(o => o.Sql.Contains("RENAME CONSTRAINT")));
+        Assert.AreEqual(
+            "ALTER TABLE \"access_grants\" RENAME CONSTRAINT " +
+            "\"EX_role_grants_grantee_id_period\" TO \"EX_access_grants_grantee_id_period\";",
+            rename.Sql);
+
+        // The rename references the new table name, so it must run after the base RenameTable.
+        var tableRenamePosition = operations.FindIndex(o => o is RenameTableOperation);
+        Assert.IsTrue(operations.IndexOf(rename) > tableRenamePosition);
+    }
+
+    [TestMethod(DisplayName = "A name-only constraint change becomes RENAME CONSTRAINT")]
+    public void Name_only_change_becomes_rename_constraint()
+    {
+        var operations = GetDifferences(
+            source: BuildRelationalModel<FilteredExclusionContext>(),
+            target: BuildRelationalModel<RenamedConstraintContext>());
+
+        Assert.IsEmpty(ExclusionSql(operations));
+
+        var rename = Assert.ContainsSingle(
+            operations.OfType<SqlOperation>().Where(o => o.Sql.Contains("RENAME CONSTRAINT")));
+        Assert.AreEqual(
+            "ALTER TABLE \"role_grants\" RENAME CONSTRAINT " +
+            "\"ex_role_grant_active_period\" TO \"ex_role_grant_active_v2\";",
+            rename.Sql);
+    }
+
+    [TestMethod(DisplayName = "A name change plus a real change still drops and re-adds")]
+    public void Name_change_plus_filter_change_drops_and_readds()
+    {
+        // DefaultNameExclusionContext: no filter, default name; RenamedConstraintContext: filter + explicit name.
+        var operations = GetDifferences(
+            source: BuildRelationalModel<DefaultNameExclusionContext>(),
+            target: BuildRelationalModel<RenamedConstraintContext>());
+
+        Assert.IsFalse(operations.OfType<SqlOperation>().Any(o => o.Sql.Contains("RENAME CONSTRAINT")));
+
+        var sql = ExclusionSql(operations);
+        Assert.HasCount(2, sql);
+        StringAssert.Contains(sql[0], "DROP CONSTRAINT IF EXISTS \"EX_role_grants_grantee_id_period\"");
+        StringAssert.Contains(sql[1], "ADD CONSTRAINT \"ex_role_grant_active_v2\"");
     }
 
     [TestMethod(DisplayName = "Serializer round-trips all definition facets")]
