@@ -21,7 +21,10 @@ dotnet test --filter "FullyQualifiedName~MigrationModelDifferTests.SingleIndex_I
 dotnet pack EFCore.ComplexIndexes/EFCore.ComplexIndexes.csproj
 ```
 
-Tests run in parallel at the method level (`Scope = ExecutionScope.MethodLevel`).
+Tests run in parallel at the method level (`Scope = ExecutionScope.MethodLevel`). The
+`PostgresIntegrationTests` class (`[TestCategory("Integration")]`, `[DoNotParallelize]`) spins up a
+PostgreSQL 18 Testcontainer and applies generated DDL for real; without Docker it needs excluding
+via `--filter "TestCategory!=Integration"`.
 
 ## Architecture
 
@@ -45,9 +48,27 @@ Shared NuGet metadata and the package version live in `Directory.Build.props`.
 
 3. **Design-time service injection** — Each project ships a `.targets` file (under `build/`) that injects a `DesignTimeServicesReferenceAttribute` into the consuming assembly at compile time. EF Core's design-time host discovers this attribute and instantiates the custom `IDesignTimeServices`, which replaces the default `IMigrationsModelDiffer`.
 
-4. **Migration differ** (`CustomMigrationsModelDiffer.cs`) — Extends `MigrationsModelDiffer`. During `dotnet ef migrations add`, it recursively walks entity type annotations and complex type properties to find index annotations, resolves the actual database column names (respecting both convention-based naming like `Origin_Source` and explicit `HasColumnName` overrides), and emits `CreateIndexOperation` / `DropIndexOperation`.
+4. **Migration differ** (`CustomMigrationsModelDiffer.cs`) — Extends `MigrationsModelDiffer`. During `dotnet ef migrations add`, it recursively walks entity type annotations and complex type properties to find index annotations, resolves the actual database column names (respecting both convention-based naming like `Origin_Source` and explicit `HasColumnName` overrides), and emits `CreateIndexOperation` / `DropIndexOperation`. **Operation ordering is load-bearing**: custom drops go *before* the base operations, creates after — an index moving between native `HasIndex` and a complex-index declaration produces a base create plus our same-named drop, and only this order keeps the scaffold from colliding at apply time (the temporal/exclusion differs follow the same rule).
 
 5. **PostgreSQL satellite** (`NpgsqlComplexIndexMigrationsModelDiffer.cs`) — Extends the core differ, validates Npgsql-specific annotations, and normalizes JSON element annotations before passing operations upstream.
+
+### Annotation forwarding is a whitelist
+
+Property-level annotations reach the `CreateIndexOperation` only through
+`IsForwardedIndexAnnotation` (virtual on the core differ, default **nothing**; the Npgsql differ
+whitelists exactly its seven `Npgsql:*` index-option keys). Never revert to sweeping "everything
+except known keys": column facets (`Relational:ColumnName`, `Relational:ColumnType`, …) leaked into
+scaffolded migrations that way, and snapshot/code-model asymmetries caused phantom drop/create
+churn (see `PhantomIndexChurnTests`).
+
+### Index identity and dedup
+
+`ComplexIndexStorage.AddOrReplace` is the single store for entity-level definitions: same ordered
+parts (direction ignored) + same filter → replace (re-declaring updates); same parts +
+*different* filter → coexisting partial indexes, both of which must be explicitly named (default
+names would collide). Single-column indexes exist in two forms: property-level (one per property,
+stored as property annotations) and entity-level `HasComplexIndex(x => x.Complex.Prop, …)`
+(stored as a one-part composite definition — use this for multiple filtered indexes per column).
 
 ### Two integration seams: design-time vs. runtime
 
@@ -72,6 +93,19 @@ Each column-list entry is a "part"; an index is an ordered list of parts. String
 - `NpgsqlComplexIndexSqlGenerator` (extends `NpgsqlMigrationsSqlGenerator`) overrides `Generate(CreateIndexOperation, …)`: if that annotation is present it renders the full `CREATE INDEX` itself (column parts quoted, expression parts wrapped in parens, reusing the forwarded Npgsql annotations for `USING`/`INCLUDE`/`NULLS NOT DISTINCT`/etc.); otherwise it delegates to `base`. This requires the runtime `UseNpgsqlComplexIndexes()` wiring.
 
 `CompositeIndexDefinition` carries the ordered parts additively via `Parts` (with `EffectiveParts` falling back to the legacy `PropertyPaths` field) so migration snapshots written before expression support still deserialize.
+
+### Exclusion constraints (`HasExclusionConstraint`)
+
+PostgreSQL-only (`NpgsqlExclusionConstraintExtensions.cs`), the answer to "temporal uniqueness with
+a filter": PostgreSQL's `ADD CONSTRAINT UNIQUE/PRIMARY KEY` grammar never accepts `WHERE`, only
+EXCLUDE constraints do. Definitions (`ExclusionConstraintDefinition`: ordered parts, each a
+property path *or* verbatim expression plus an operator; method defaulting to gist; filter; name;
+deferrability) are JSON-stored under `CustomExclusion:Constraints`. Unlike expression indexes, the
+differ renders the full `ALTER TABLE … ADD CONSTRAINT … EXCLUDE …` / `DROP CONSTRAINT` DDL as
+`SqlOperation`s at **design time** — no runtime `UseNpgsqlComplexIndexes()` wiring involved. The
+`btree_gist` auto-injection is shared with temporal constraints (single `CREATE EXTENSION`, same
+`UseBtreeGist()` / `SuppressTemporalExtensionAutoInjection()` switches) and triggers when a gist
+constraint has an `=` element.
 
 ### Key extension points
 

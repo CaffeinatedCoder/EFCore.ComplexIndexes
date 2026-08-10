@@ -15,11 +15,12 @@ EF Core 8.0 introduced complex properties, but migration tooling doesn't automat
 - **Composite Indexes**: Define multi-column indexes spanning both scalar and nested properties with a single, intuitive expression — with per-column `ASC`/`DESC` ordering via `DbOrder.Asc`/`DbOrder.Desc`
 - **Expression Indexes** *(PostgreSQL)*: Index arbitrary SQL expressions such as `lower(email)` or `to_tsvector('english', body)` — including on plain, non-complex entities
 - **Temporal Constraints** *(PostgreSQL 18)*: Declare `UNIQUE … WITHOUT OVERLAPS` constraints to guarantee no two rows occupy overlapping time periods — the database enforces scheduling integrity for you
+- **Exclusion Constraints** *(PostgreSQL)*: Declare `EXCLUDE USING gist (… WITH =, … WITH &&) WHERE (…)` constraints — filtered overlap protection (e.g. ignore soft-deleted rows), on any supported PostgreSQL version
 
 | Package | NuGet | Description |
 |---|---|---|
 | **EFCore.ComplexIndexes** | [![nuget](https://img.shields.io/nuget/v/EFCore.ComplexIndexes.svg)](https://www.nuget.org/packages/EFCore.ComplexIndexes/) | Core library — single-column, composite, unique, and filtered indexes on complex type properties. Works with any EF Core relational provider. |
-| **EFCore.ComplexIndexes.PostgreSQL** | [![nuget](https://img.shields.io/nuget/v/EFCore.ComplexIndexes.PostgreSQL.svg)](https://www.nuget.org/packages/EFCore.ComplexIndexes.PostgreSQL/) | PostgreSQL extensions via [Npgsql](https://www.npgsql.org/efcore/) — adds GIN, GiST, BRIN, SP-GiST, and Hash index methods, operator classes, covering indexes (`INCLUDE`), concurrent creation, nulls-distinct control, **expression (functional) indexes**, and **temporal `UNIQUE` constraints (`WITHOUT OVERLAPS`)**. |
+| **EFCore.ComplexIndexes.PostgreSQL** | [![nuget](https://img.shields.io/nuget/v/EFCore.ComplexIndexes.PostgreSQL.svg)](https://www.nuget.org/packages/EFCore.ComplexIndexes.PostgreSQL/) | PostgreSQL extensions via [Npgsql](https://www.npgsql.org/efcore/) — adds GIN, GiST, BRIN, SP-GiST, and Hash index methods, operator classes, covering indexes (`INCLUDE`), concurrent creation, nulls-distinct control, **expression (functional) indexes**, **temporal `UNIQUE` constraints (`WITHOUT OVERLAPS`)**, and **exclusion constraints (`EXCLUDE`)**. |
 
 > **Which package do I need?**
 > Install only the **core** package if you use SQL Server, SQLite, or any provider where the default B-tree index type is sufficient.
@@ -67,6 +68,17 @@ builder.ComplexProperty(x => x.EmailAddress, c =>
     c.Property(x => x.Value)
      .HasComplexIndex(isUnique: true, filter: "deleted_at IS NULL")
 );
+```
+
+A property-level declaration holds **one** index per property. To give the same column several
+differently-filtered indexes (the classic soft-delete pattern), declare them at the **entity level**
+— the selector reaches into complex properties, and both indexes must be named explicitly:
+
+```csharp
+builder.HasComplexIndex(x => x.EmailAddress.Value,
+    isUnique: true, filter: "deleted_at IS NULL", indexName: "ux_person_email_active");
+builder.HasComplexIndex(x => x.EmailAddress.Value,
+    indexName: "ix_person_email_all");
 ```
 
 ### Composite index across scalar and nested properties
@@ -139,6 +151,15 @@ builder.HasExpressionIndex(idx => idx
 // CREATE UNIQUE INDEX "ix_person_country_email_ci"
 //   ON person ((country), (lower(email)))
 //   WHERE deleted_at IS NULL;
+```
+
+**Descending parts:** call `.Descending()` after any part to sort it descending:
+
+```csharp
+builder.HasExpressionIndex(idx => idx
+    .Expression("created_at").Descending()
+    .Expression("lower(email)"));
+// CREATE INDEX ... ON person ((created_at) DESC, (lower(email)));
 ```
 
 **Full-text / JSONB with a GIN index:**
@@ -261,7 +282,7 @@ modelBuilder.Entity<Subscription>(b =>
 
 modelBuilder.Entity<SubscriptionAddOn>(b =>
 {
-    b.HasTemporalForeignKey<SubscriptionAddOn, Subscription>(
+    b.HasTemporalForeignKey<Subscription>(
         dependentKeyColumns: x => x.SubscriptionId,
         dependentPeriod:     x => x.ActiveDuring,
         principalKeyColumns: x => x.SubscriptionId,
@@ -283,7 +304,7 @@ ALTER TABLE subscription_addons
 Composite keys use anonymous types on both sides:
 
 ```csharp
-b.HasTemporalForeignKey<SubscriptionAddOn, Subscription>(
+b.HasTemporalForeignKey<Subscription>(
     dependentKeyColumns: x => new { x.TenantId, x.SubscriptionId },
     dependentPeriod:     x => x.ActiveDuring,
     principalKeyColumns: x => new { x.TenantId, x.SubscriptionId },
@@ -300,6 +321,62 @@ b.HasTemporalForeignKey<SubscriptionAddOn, Subscription>(
 - This API emits standalone database constraints; it does not try to model the temporal relationship as an EF navigation/relationship key.
 
 The standalone design is intentional. The period column remains a normal mapped property, not an EF key member. EF keys require key values suitable for change tracking, while Npgsql range values are not suitable EF key members; PostgreSQL enforces the temporal relationship independently at the database level.
+
+### Exclusion constraints (`EXCLUDE`) — PostgreSQL
+
+> No runtime wiring required — the DDL is rendered at design time into the migration itself.
+
+An exclusion constraint generalizes uniqueness: no two rows may satisfy all the per-element
+comparisons at once. Its killer feature over `UNIQUE … WITHOUT OVERLAPS`: it accepts a **`WHERE`
+predicate**. PostgreSQL's `ADD CONSTRAINT UNIQUE`/`PRIMARY KEY` grammar has never allowed one, so a
+*filtered* overlap guarantee — "no overlapping periods per key, but ignore revoked/soft-deleted
+rows" — can **only** be expressed as an EXCLUDE constraint. It also works on every supported
+PostgreSQL version, not just 18+.
+
+**The scheduling shape** (equality keys + overlap column + predicate):
+
+```csharp
+builder.HasExclusionConstraint(
+    equalityColumns: x => new { x.GranteeId, x.RoleId },
+    overlapsColumn:  x => x.Period,
+    filter:          "revoked_at IS NULL",
+    name:            "ex_role_grant_active_period");
+// ALTER TABLE role_grants ADD CONSTRAINT "ex_role_grant_active_period"
+//   EXCLUDE USING gist (grantee_id WITH =, role_id WITH =, period WITH &&)
+//   WHERE (revoked_at IS NULL);
+```
+
+**Full control** (arbitrary operators, expressions, method, deferrability):
+
+```csharp
+builder.HasExclusionConstraint(ex => ex
+    .WithEquality(x => x.Slot.Resource)      // complex-property members resolve to columns
+    .WithOverlaps(x => x.Slot.Period)
+    .WithExpression("lower(code)", "=")      // verbatim SQL element
+    .UseMethod("gist")                        // the default
+    .HasFilter("deleted_at IS NULL")
+    .HasName("ex_booking_slot")
+    .IsDeferrable(initiallyDeferred: true));
+```
+
+Selectors resolve complex-property members to their mapped columns, exactly like complex indexes.
+Scalar equality elements under `gist` need the `btree_gist` extension — the differ injects
+`CREATE EXTENSION IF NOT EXISTS btree_gist` automatically, shared with temporal constraints and
+governed by the same `UseBtreeGist()` / `SuppressTemporalExtensionAutoInjection()` switches.
+Re-declaring a constraint over the same elements replaces it; removing the declaration emits a
+`DROP CONSTRAINT` in the next migration.
+
+---
+
+## What changed in 5.0.0
+
+- **Fixed:** custom `DROP INDEX` operations are now ordered *before* the base migration operations. Previously, moving an index between a native `HasIndex` and a complex-index declaration scaffolded a migration that created the new index before dropping the same-named old one — colliding at apply time.
+- **Fixed:** descending parts of expression indexes now render `DESC` (declarable via `ExpressionIndexBuilder.Descending()`).
+- **Changed:** property annotations are forwarded onto index operations through a provider **whitelist** instead of a blacklist. Column facets such as `Relational:ColumnName` no longer leak into scaffolded migrations, and the class of phantom drop/create churn caused by snapshot/code-model annotation asymmetries is closed for good.
+- **Changed:** an indexed property that resolves to no column now throws at `migrations add` instead of silently dropping the index.
+- **Changed:** two indexes over the same columns may now coexist when their filters differ (both must be named); re-declaring with the same filter still updates in place.
+- **New:** entity-level `HasComplexIndex(x => x.Complex.Prop, …)` for single-column indexes, enabling multiple filtered indexes per column.
+- **New:** `HasExclusionConstraint` (see above).
 
 ---
 

@@ -154,7 +154,8 @@ public static class NpgsqlTemporalConstraintExtensions
 
         /// <summary>
         /// Opts out of automatic <c>CREATE EXTENSION IF NOT EXISTS btree_gist</c> injection by the
-        /// differ. Use when the extension is provisioned out of band.
+        /// differ — for temporal and exclusion constraints alike. Use when the extension is
+        /// provisioned out of band.
         /// </summary>
         public ModelBuilder SuppressTemporalExtensionAutoInjection()
         {
@@ -164,7 +165,8 @@ public static class NpgsqlTemporalConstraintExtensions
     }
 
     // Accepts either an anonymous-type key list (x => new { x.A, x.B }) or a single member (x => x.A).
-    private static List<string> ExtractPaths<TEntity, TKey>(Expression<Func<TEntity, TKey>> expression)
+    // Shared with the exclusion-constraint API.
+    internal static List<string> ExtractPaths<TEntity, TKey>(Expression<Func<TEntity, TKey>> expression)
     {
         var body = expression.Body;
         while (body is UnaryExpression { NodeType: ExpressionType.Convert } unary)

@@ -42,13 +42,32 @@ public class PhantomIndexChurnTests : IDisposable
     {
         var options = new DbContextOptionsBuilder().UseSqlite(_connection).Options;
         using var context = new EmptyContext(options);
-        var differ = new CustomMigrationsModelDiffer(
+        var differ = new TestAnnotationDiffer(
             context.GetService<IRelationalTypeMappingSource>(),
             context.GetService<IMigrationsAnnotationProvider>(),
             context.GetService<IRelationalAnnotationProvider>(),
             context.GetService<IRowIdentityMapFactory>(),
             context.GetService<CommandBatchPreparerDependencies>());
         return differ.GetDifferences(source, target);
+    }
+
+    // Since v5 the core differ forwards only whitelisted annotation keys (satellites override the
+    // whitelist); the array-comparison behavior under test needs the Test:* keys let through.
+    private sealed class TestAnnotationDiffer(
+        IRelationalTypeMappingSource     typeMappingSource,
+        IMigrationsAnnotationProvider    migrationsAnnotationProvider,
+        IRelationalAnnotationProvider    relationalAnnotationProvider,
+        IRowIdentityMapFactory           rowIdentityMapFactory,
+        CommandBatchPreparerDependencies commandBatchPreparerDependencies)
+        : CustomMigrationsModelDiffer(
+            typeMappingSource,
+            migrationsAnnotationProvider,
+            relationalAnnotationProvider,
+            rowIdentityMapFactory,
+            commandBatchPreparerDependencies)
+    {
+        protected override bool IsForwardedIndexAnnotation(string annotationName)
+            => annotationName.StartsWith("Test:", StringComparison.Ordinal);
     }
 
     private class EmptyContext(DbContextOptions options) : DbContext(options);
@@ -180,5 +199,16 @@ public class PhantomIndexChurnTests : IDisposable
 
         Assert.IsNotEmpty(operations.OfType<CreateIndexOperation>());
         Assert.IsNotEmpty(operations.OfType<DropIndexOperation>());
+    }
+
+    [TestMethod(DisplayName = "Column facets (HasColumnName/HasColumnType) never leak onto the index operation")]
+    public void Column_facets_are_not_forwarded()
+    {
+        var target     = BuildRelationalModel<ExplicitColumnTypeContext>();
+        var operations = GetDifferences(source: null, target: target);
+
+        var createIndex = Assert.ContainsSingle(operations.OfType<CreateIndexOperation>());
+        Assert.IsNull(createIndex.FindAnnotation("Relational:ColumnName"));
+        Assert.IsNull(createIndex.FindAnnotation("Relational:ColumnType"));
     }
 }

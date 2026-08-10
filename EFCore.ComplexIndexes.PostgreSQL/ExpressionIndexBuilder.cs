@@ -34,6 +34,22 @@ public sealed class ExpressionIndexBuilder : IIndexAnnotationBuilder
         return Expression(expression.ToSql());
     }
 
+    /// <summary>Marks the most recently added part as sorting descending.</summary>
+    public ExpressionIndexBuilder Descending()
+    {
+        if (_parts.Count == 0)
+            throw new InvalidOperationException("Call Expression(...) before Descending().");
+
+        var last = _parts[^1];
+        _parts[^1] = new IndexPartDefinition
+                     {
+                         PropertyPath = last.PropertyPath,
+                         Expression   = last.Expression,
+                         Descending   = true
+                     };
+        return this;
+    }
+
     /// <summary>Marks the index as unique.</summary>
     public ExpressionIndexBuilder IsUnique(bool unique = true)
     {

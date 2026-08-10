@@ -22,6 +22,10 @@
     </ItemGroup>
 
     <ItemGroup>
+        <InternalsVisibleTo Include="EFCore.ComplexIndexes.Tests" />
+    </ItemGroup>
+
+    <ItemGroup>
         <None Include="build/EFCore.ComplexIndexes.PostgreSQL.targets"
               Pack="true"
               PackagePath="build/" />

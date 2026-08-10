@@ -80,4 +80,29 @@ public class NpgsqlExpressionIndexSqlTests
         StringAssert.Contains(sql, "INCLUDE (name)");
         StringAssert.Contains(sql, "NULLS NOT DISTINCT");
     }
+
+    [TestMethod(DisplayName = "Renders DESC on descending column and expression parts")]
+    public void Renders_descending_parts()
+    {
+        var op = ExpressionIndex("ix4", "person",
+                                 new ResolvedIndexPart(false, "name", Descending: true),
+                                 new ResolvedIndexPart(true,  "lower(email)", Descending: true),
+                                 new ResolvedIndexPart(false, "id"));
+
+        var sql = GenerateSql(op);
+
+        StringAssert.Contains(sql, "(name DESC, (lower(email)) DESC, id)");
+    }
+
+    [TestMethod(DisplayName = "ExpressionIndexBuilder.Descending marks the most recent part")]
+    public void Builder_descending_marks_last_part()
+    {
+        var builder = new EFCore.ComplexIndexes.PostgreSQL.ExpressionIndexBuilder();
+        builder.Expression("country").Expression("lower(email)").Descending();
+
+        var parts = builder.Parts;
+        Assert.HasCount(2, parts);
+        Assert.IsFalse(parts[0].Descending);
+        Assert.IsTrue(parts[1].Descending);
+    }
 }

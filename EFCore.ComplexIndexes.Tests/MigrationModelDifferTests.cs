@@ -478,4 +478,143 @@ public class MigrationsModelDifferTests : IDisposable
 
     private class EmptyModelContext(
         DbContextOptions<EmptyModelContext> options) : DbContext(options);
+
+    // ── Entity-level single-column indexes and same-column dedup semantics (v5) ──
+
+    private class EntityLevelSingleIndexContext(
+        DbContextOptions<EntityLevelSingleIndexContext> options) : DbContext(options)
+    {
+        public DbSet<PersonV1> People => Set<PersonV1>();
+
+        protected override void OnModelCreating(ModelBuilder modelBuilder) =>
+            modelBuilder.Entity<PersonV1>(builder =>
+            {
+                builder.ToTable("person");
+                builder.HasKey(x => x.Id);
+                builder.ComplexProperty(x => x.EmailAddress, c => c.Property(x => x.Value).HasColumnName("email_address"));
+                builder.HasComplexIndex(x => x.EmailAddress.Value, isUnique: true);
+            });
+    }
+
+    [TestMethod(DisplayName = "Entity-level single-column index resolves the complex member")]
+    public void Entity_level_single_column_index_is_created()
+    {
+        var target     = BuildRelationalModel<EntityLevelSingleIndexContext>();
+        var operations = GetDifferences(source: null, target: target);
+
+        var createIndex = Assert.ContainsSingle(operations.OfType<CreateIndexOperation>());
+        Assert.AreEqual("email_address", Assert.ContainsSingle(createIndex.Columns));
+        Assert.IsTrue(createIndex.IsUnique);
+        Assert.AreEqual("IX_person_email_address", createIndex.Name);
+    }
+
+    private class EntityLevelDescendingIndexContext(
+        DbContextOptions<EntityLevelDescendingIndexContext> options) : DbContext(options)
+    {
+        public DbSet<PersonV1> People => Set<PersonV1>();
+
+        protected override void OnModelCreating(ModelBuilder modelBuilder) =>
+            modelBuilder.Entity<PersonV1>(builder =>
+            {
+                builder.ToTable("person");
+                builder.HasKey(x => x.Id);
+                builder.Property(x => x.Name).HasColumnName("name");
+                builder.ComplexProperty(x => x.EmailAddress, c => c.Property(x => x.Value).HasColumnName("email_address"));
+                builder.HasComplexIndex(x => DbOrder.Desc(x.Name));
+            });
+    }
+
+    [TestMethod(DisplayName = "Entity-level single-column index honors DbOrder.Desc")]
+    public void Entity_level_single_column_index_supports_descending()
+    {
+        var target     = BuildRelationalModel<EntityLevelDescendingIndexContext>();
+        var operations = GetDifferences(source: null, target: target);
+
+        var createIndex = Assert.ContainsSingle(operations.OfType<CreateIndexOperation>());
+        Assert.AreEqual("name", Assert.ContainsSingle(createIndex.Columns));
+        Assert.IsNotNull(createIndex.IsDescending);
+        Assert.IsTrue(createIndex.IsDescending!.SequenceEqual([true]));
+    }
+
+    // The soft-delete pattern: a unique filtered index and a plain index over the same column.
+    private class TwoFilteredIndexesContext(
+        DbContextOptions<TwoFilteredIndexesContext> options) : DbContext(options)
+    {
+        public DbSet<PersonV1> People => Set<PersonV1>();
+
+        protected override void OnModelCreating(ModelBuilder modelBuilder) =>
+            modelBuilder.Entity<PersonV1>(builder =>
+            {
+                builder.ToTable("person");
+                builder.HasKey(x => x.Id);
+                builder.ComplexProperty(x => x.EmailAddress, c => c.Property(x => x.Value).HasColumnName("email_address"));
+                builder.HasComplexIndex(x => x.EmailAddress.Value, isUnique: true, filter: "deleted_at IS NULL", indexName: "ux_person_email_active");
+                builder.HasComplexIndex(x => x.EmailAddress.Value, indexName: "ix_person_email_all");
+            });
+    }
+
+    [TestMethod(DisplayName = "Same column with different filters yields two coexisting indexes")]
+    public void Same_column_with_different_filters_coexists_when_named()
+    {
+        var target     = BuildRelationalModel<TwoFilteredIndexesContext>();
+        var operations = GetDifferences(source: null, target: target);
+
+        var creates = operations.OfType<CreateIndexOperation>().OrderBy(o => o.Name).ToList();
+        Assert.HasCount(2, creates);
+        Assert.AreEqual("ix_person_email_all",    creates[0].Name);
+        Assert.IsNull(creates[0].Filter);
+        Assert.AreEqual("ux_person_email_active", creates[1].Name);
+        Assert.AreEqual("deleted_at IS NULL",     creates[1].Filter);
+        Assert.IsTrue(creates[1].IsUnique);
+    }
+
+    private class UnnamedFilteredSiblingsContext(
+        DbContextOptions<UnnamedFilteredSiblingsContext> options) : DbContext(options)
+    {
+        public DbSet<PersonV1> People => Set<PersonV1>();
+
+        protected override void OnModelCreating(ModelBuilder modelBuilder) =>
+            modelBuilder.Entity<PersonV1>(builder =>
+            {
+                builder.ToTable("person");
+                builder.HasKey(x => x.Id);
+                builder.ComplexProperty(x => x.EmailAddress, c => c.Property(x => x.Value).HasColumnName("email_address"));
+                builder.HasComplexIndex(x => x.EmailAddress.Value, filter: "deleted_at IS NULL");
+                builder.HasComplexIndex(x => x.EmailAddress.Value);
+            });
+    }
+
+    [TestMethod(DisplayName = "Same column with different filters requires explicit names")]
+    public void Same_column_with_different_filters_requires_names()
+    {
+        Assert.ThrowsExactly<ArgumentException>(() => BuildRelationalModel<UnnamedFilteredSiblingsContext>());
+    }
+
+    private class RedeclaredCompositeContext(
+        DbContextOptions<RedeclaredCompositeContext> options) : DbContext(options)
+    {
+        public DbSet<PersonV1> People => Set<PersonV1>();
+
+        protected override void OnModelCreating(ModelBuilder modelBuilder) =>
+            modelBuilder.Entity<PersonV1>(builder =>
+            {
+                builder.ToTable("person");
+                builder.HasKey(x => x.Id);
+                builder.Property(x => x.Name).HasColumnName("name");
+                builder.ComplexProperty(x => x.EmailAddress, c => c.Property(x => x.Value).HasColumnName("email_address"));
+                builder.HasComplexCompositeIndex(x => new { x.Name, x.EmailAddress.Value });
+                builder.HasComplexCompositeIndex(x => new { x.Name, x.EmailAddress.Value }, isUnique: true, indexName: "ux_person_name_email");
+            });
+    }
+
+    [TestMethod(DisplayName = "Re-declaring the same column set with the same filter updates the index")]
+    public void Redeclaring_same_column_set_updates_index()
+    {
+        var target     = BuildRelationalModel<RedeclaredCompositeContext>();
+        var operations = GetDifferences(source: null, target: target);
+
+        var createIndex = Assert.ContainsSingle(operations.OfType<CreateIndexOperation>());
+        Assert.AreEqual("ux_person_name_email", createIndex.Name);
+        Assert.IsTrue(createIndex.IsUnique);
+    }
 }

@@ -31,15 +31,24 @@ public class CustomMigrationsModelDiffer(
         IRelationalModel? target
     )
     {
-        var operations = base.GetDifferences(source, target).ToList();
+        var operations = base.GetDifferences(source, target);
 
         var sourceIndexes = ExtractAllIndexDescriptors(source);
         var targetIndexes = ExtractAllIndexDescriptors(target);
+
+        if (sourceIndexes.Count == 0 && targetIndexes.Count == 0)
+            return operations;
+
         var droppedTables = operations
                            .OfType<DropTableOperation>()
                            .Select(o => (o.Name, o.Schema))
                            .ToHashSet();
 
+        // Placed before the base operations: an index that moves between a native HasIndex and a
+        // complex-index declaration surfaces as a base-emitted CreateIndex plus our DropIndex of the
+        // same name, and a removed complex property surfaces as a base DropColumn that would take
+        // the index down with it — in both cases the drop must run first.
+        var drops = new List<MigrationOperation>();
         foreach (var src in sourceIndexes)
         {
             if (droppedTables.Contains((src.TableName, src.Schema)))
@@ -47,15 +56,17 @@ public class CustomMigrationsModelDiffer(
 
             if (!targetIndexes.Contains(src))
             {
-                operations.Add(new DropIndexOperation
-                               {
-                                   Name   = src.IndexName,
-                                   Table  = src.TableName,
-                                   Schema = src.Schema
-                               });
+                drops.Add(new DropIndexOperation
+                          {
+                              Name   = src.IndexName,
+                              Table  = src.TableName,
+                              Schema = src.Schema
+                          });
             }
         }
 
+        // Placed after the base operations, so newly added columns exist before their indexes.
+        var creates = new List<MigrationOperation>();
         foreach (var tgt in targetIndexes)
         {
             if (sourceIndexes.Contains(tgt)) continue;
@@ -77,7 +88,7 @@ public class CustomMigrationsModelDiffer(
             if (tgt.Parts.Any(p => p.Descending))
                 op.IsDescending = [.. tgt.Parts.Select(p => p.Descending)];
 
-            // Forward all extra annotations — provider SQL generators handle their own
+            // Forward the whitelisted provider annotations — provider SQL generators handle their own
             foreach (var (key, value) in tgt.ProviderAnnotations)
                 op.AddAnnotation(key, value);
 
@@ -85,13 +96,26 @@ public class CustomMigrationsModelDiffer(
             if (tgt.HasExpression)
                 op.AddAnnotation(ComplexIndexAnnotations.IndexParts, IndexPartsSerializer.Serialize(tgt.Parts));
 
-            operations.Add(op);
+            creates.Add(op);
         }
 
-        return operations;
+        if (drops.Count == 0 && creates.Count == 0)
+            return operations;
+
+        return [.. drops, .. operations, .. creates];
     }
 
-    private static HashSet<IndexDescriptor> ExtractAllIndexDescriptors(IRelationalModel? relationalModel)
+    /// <summary>
+    /// Decides whether a property-level annotation is carried onto the emitted
+    /// <see cref="CreateIndexOperation"/> as a provider index option. The core package forwards
+    /// nothing; provider satellites override this to whitelist exactly the index-option keys their
+    /// SQL generator renders (e.g. <c>Npgsql:IndexMethod</c>). A whitelist keeps EF column facets
+    /// (<c>Relational:ColumnName</c>, <c>Relational:ColumnType</c>, …) from leaking into index
+    /// operations, where snapshot/code-model asymmetries caused phantom drop/create churn.
+    /// </summary>
+    protected virtual bool IsForwardedIndexAnnotation(string annotationName) => false;
+
+    private HashSet<IndexDescriptor> ExtractAllIndexDescriptors(IRelationalModel? relationalModel)
     {
         var result = new HashSet<IndexDescriptor>();
         if (relationalModel is null) return result;
@@ -109,25 +133,7 @@ public class CustomMigrationsModelDiffer(
         return result;
     }
 
-    private static readonly HashSet<string> CoreAnnotationKeys =
-    [
-        ComplexIndexAnnotations.IsIndexed,
-        ComplexIndexAnnotations.IsUnique,
-        ComplexIndexAnnotations.Filter,
-        ComplexIndexAnnotations.IndexName,
-        ComplexIndexAnnotations.CompositeIndexes
-    ];
-
-    // EF relational column-facet annotations that are meaningless on an index operation. The
-    // snapshot model serializes the column type (HasColumnType) so it carries Relational:ColumnType,
-    // while the code model leaves it implicit (no annotation). Collecting it would make the source
-    // and target descriptors differ for every complex index, producing phantom drop/create churn.
-    private static readonly HashSet<string> NonIndexColumnAnnotationKeys =
-    [
-        "Relational:ColumnType"
-    ];
-
-    private static void ScanForSingleColumnIndexes(
+    private void ScanForSingleColumnIndexes(
         ITypeBase                typeBase,
         string                   tableName,
         string?                  schema,
@@ -139,7 +145,7 @@ public class CustomMigrationsModelDiffer(
         ScanForSingleColumnIndexes(typeBase, tableName, schema, storeObject, results);
     }
 
-    private static void ScanForSingleColumnIndexes(
+    private void ScanForSingleColumnIndexes(
         ITypeBase                typeBase,
         string                   tableName,
         string?                  schema,
@@ -152,20 +158,24 @@ public class CustomMigrationsModelDiffer(
             if (property.FindAnnotation(ComplexIndexAnnotations.IsIndexed)?.Value is not true)
                 continue;
 
-            var columnName = property.GetColumnName(storeObject);
-            if (columnName is null)
-                continue;
+            var columnName = property.GetColumnName(storeObject)
+                          ?? throw new InvalidOperationException(
+                                 $"The property '{property.Name}' on '{typeBase.Name}' is marked with " +
+                                 $"HasComplexIndex but has no column mapping for table '{tableName}'. " +
+                                 "A property mapped to JSON (or not mapped to this table) cannot carry " +
+                                 "a complex index; use an expression index over the JSON column instead.");
 
             var isUnique = property.FindAnnotation(ComplexIndexAnnotations.IsUnique)?.Value is true;
             var filter   = property.FindAnnotation(ComplexIndexAnnotations.Filter)?.Value as string;
             var indexName = property.FindAnnotation(ComplexIndexAnnotations.IndexName)?.Value as string
                          ?? $"IX_{tableName}_{columnName}";
 
-            // Collect provider annotations, skipping core keys and non-index column facets
+            // Collect only whitelisted provider index options; everything else on the property is a
+            // column facet that does not belong on an index operation.
             var providerAnnotations = new Dictionary<string, object?>();
             foreach (var ann in property.GetAnnotations())
             {
-                if (!CoreAnnotationKeys.Contains(ann.Name) && !NonIndexColumnAnnotationKeys.Contains(ann.Name))
+                if (IsForwardedIndexAnnotation(ann.Name))
                     providerAnnotations[ann.Name] = ann.Value;
             }
 

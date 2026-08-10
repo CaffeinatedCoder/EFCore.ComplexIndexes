@@ -39,6 +39,10 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
         NpgsqlAnnotations.NullsDistinct
     ];
 
+    /// <summary>Forwards exactly the Npgsql index-option annotations Npgsql's SQL generator renders.</summary>
+    protected override bool IsForwardedIndexAnnotation(string annotationName)
+        => SupportedNpgsqlAnnotations.Contains(annotationName);
+
     public override IReadOnlyList<MigrationOperation> GetDifferences(
         IRelationalModel? source,
         IRelationalModel? target
@@ -61,7 +65,18 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
             }
         }
 
-        return ApplyTemporalConstraints(operations, source, target, typeMappingSource);
+        operations = ApplyTemporalConstraints(operations, source, target, typeMappingSource, out var temporalNeedsExtension);
+        operations = ApplyExclusionConstraints(operations, source, target, out var exclusionNeedsExtension);
+
+        // One shared CREATE EXTENSION for temporal and exclusion constraints alike.
+        if ((temporalNeedsExtension || exclusionNeedsExtension) && ShouldInjectExtension(target))
+        {
+            var withExtension = operations.ToList();
+            withExtension.Insert(0, new SqlOperation { Sql = $"CREATE EXTENSION IF NOT EXISTS {NpgsqlTemporalAnnotations.BtreeGistExtension};" });
+            operations = withExtension;
+        }
+
+        return operations;
     }
 
     // Diffs the temporal UNIQUE constraints and temporal FOREIGN KEY constraints declared on entity
@@ -71,9 +86,12 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
         IReadOnlyList<MigrationOperation> operations,
         IRelationalModel?                 source,
         IRelationalModel?                 target,
-        IRelationalTypeMappingSource      typeMappingSource
+        IRelationalTypeMappingSource      typeMappingSource,
+        out bool                          needsBtreeGist
     )
     {
+        needsBtreeGist = false;
+
         var sourceConstraints = BuildDescriptors(source, typeMappingSource);
         var targetConstraints = BuildDescriptors(target, typeMappingSource);
         var sourceForeignKeys = BuildForeignKeyDescriptors(source, typeMappingSource, sourceConstraints);
@@ -88,7 +106,6 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
                            .OfType<DropTableOperation>()
                            .Select(o => (o.Name, o.Schema))
                            .ToHashSet();
-        var addedTemporal = false;
 
         foreach (var src in sourceForeignKeys)
         {
@@ -135,7 +152,7 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
                      };
             op.AddAnnotation(NpgsqlTemporalAnnotations.WithoutOverlaps, tgt.PeriodColumn);
             result.Add(op);
-            addedTemporal = true;
+            needsBtreeGist = true;
         }
 
         foreach (var tgt in targetForeignKeys)
@@ -160,11 +177,154 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
             result.Add(op);
         }
 
-        if (addedTemporal && ShouldInjectExtension(target))
-            result.Insert(0, new SqlOperation { Sql = $"CREATE EXTENSION IF NOT EXISTS {NpgsqlTemporalAnnotations.BtreeGistExtension};" });
-
         return result;
     }
+
+    // Diffs the EXCLUDE constraints declared via HasExclusionConstraint and emits their DDL as raw
+    // SQL operations (EF has no exclusion-constraint operation type). The DDL is fully rendered at
+    // design time, so no runtime SQL-generator wiring is needed. Drops are placed before the base EF
+    // operations, adds after — mirroring the index and temporal ordering.
+    private static IReadOnlyList<MigrationOperation> ApplyExclusionConstraints(
+        IReadOnlyList<MigrationOperation> operations,
+        IRelationalModel?                 source,
+        IRelationalModel?                 target,
+        out bool                          needsBtreeGist
+    )
+    {
+        needsBtreeGist = false;
+
+        var sourceConstraints = BuildExclusionDescriptors(source);
+        var targetConstraints = BuildExclusionDescriptors(target);
+
+        if (sourceConstraints.Count == 0 && targetConstraints.Count == 0)
+            return operations;
+
+        var droppedTables = operations
+                           .OfType<DropTableOperation>()
+                           .Select(o => (o.Name, o.Schema))
+                           .ToHashSet();
+
+        var drops = new List<MigrationOperation>();
+        foreach (var src in sourceConstraints)
+        {
+            if (targetConstraints.Contains(src) || droppedTables.Contains((src.Table, src.Schema)))
+                continue;
+
+            drops.Add(new SqlOperation
+                      {
+                          Sql = $"ALTER TABLE {QuoteQualified(src.Table, src.Schema)} DROP CONSTRAINT {Quote(src.Name)};"
+                      });
+        }
+
+        var adds = new List<MigrationOperation>();
+        foreach (var tgt in targetConstraints)
+        {
+            if (sourceConstraints.Contains(tgt))
+                continue;
+
+            adds.Add(new SqlOperation { Sql = BuildAddExclusionSql(tgt) });
+
+            // Scalar equality elements under gist need the btree_gist operator classes.
+            if (tgt.Method == "gist" && tgt.Parts.Any(p => p.Operator == "="))
+                needsBtreeGist = true;
+        }
+
+        if (drops.Count == 0 && adds.Count == 0)
+            return operations;
+
+        return [.. drops, .. operations, .. adds];
+    }
+
+    private static HashSet<ExclusionDescriptor> BuildExclusionDescriptors(IRelationalModel? model)
+    {
+        var set = new HashSet<ExclusionDescriptor>();
+        if (model is null) return set;
+
+        foreach (var entityType in model.Model.GetEntityTypes())
+        {
+            if (entityType.FindAnnotation(NpgsqlExclusionAnnotations.Constraints)?.Value is not string json
+             || string.IsNullOrEmpty(json))
+                continue;
+
+            var table = entityType.GetTableName();
+            if (table is null) continue;
+
+            var schema      = entityType.GetSchema();
+            var storeObject = StoreObjectIdentifier.Table(table, schema);
+
+            foreach (var def in ExclusionConstraintSerializer.Deserialize(json))
+            {
+                var parts = new List<ResolvedExclusionPart>(def.Parts.Count);
+                foreach (var part in def.Parts)
+                {
+                    if (part.IsExpression)
+                    {
+                        parts.Add(new ResolvedExclusionPart(true, part.Expression!, part.Operator));
+                        continue;
+                    }
+
+                    var property = ResolveProperty(entityType, part.PropertyPath!)
+                                ?? throw new InvalidOperationException(
+                                       $"Could not resolve exclusion constraint property '{part.PropertyPath}' on entity '{entityType.Name}'.");
+
+                    var column = property.GetColumnName(storeObject)
+                              ?? throw new InvalidOperationException(
+                                     $"Exclusion constraint property '{part.PropertyPath}' on entity '{entityType.Name}' has no column mapping for table '{table}'.");
+
+                    parts.Add(new ResolvedExclusionPart(false, column, part.Operator));
+                }
+
+                var name = def.Name ?? $"EX_{table}_{string.Join("_", parts.Select(ExclusionPartToken))}";
+
+                set.Add(new ExclusionDescriptor(
+                    table,
+                    schema,
+                    name,
+                    parts,
+                    def.Method ?? "gist",
+                    def.Filter,
+                    def.Deferrable,
+                    def.InitiallyDeferred));
+            }
+        }
+
+        return set;
+    }
+
+    private static string BuildAddExclusionSql(ExclusionDescriptor constraint)
+    {
+        var elements = constraint.Parts.Select(p =>
+            $"{(p.IsExpression ? $"({p.Value})" : Quote(p.Value))} WITH {p.Operator}");
+
+        var sql = $"ALTER TABLE {QuoteQualified(constraint.Table, constraint.Schema)} " +
+                  $"ADD CONSTRAINT {Quote(constraint.Name)} EXCLUDE USING {constraint.Method} " +
+                  $"({string.Join(", ", elements)})";
+
+        if (!string.IsNullOrEmpty(constraint.Filter))
+            sql += $" WHERE ({constraint.Filter})";
+
+        if (constraint.Deferrable)
+            sql += constraint.InitiallyDeferred ? " DEFERRABLE INITIALLY DEFERRED" : " DEFERRABLE";
+
+        return sql + ";";
+    }
+
+    // Reduces an element to its alphanumeric characters for the default constraint name
+    // (e.g. lower(email) -> loweremail); column names pass through.
+    private static string ExclusionPartToken(ResolvedExclusionPart part)
+    {
+        if (!part.IsExpression)
+            return part.Value;
+
+        var token = new string([.. part.Value.Where(char.IsLetterOrDigit)]);
+        return token.Length > 0 ? token : "expr";
+    }
+
+    private static string Quote(string identifier)
+        => $"\"{identifier.Replace("\"", "\"\"")}\"";
+
+    private static string QuoteQualified(string table, string? schema)
+        => schema is null ? Quote(table) : $"{Quote(schema)}.{Quote(table)}";
 
     private static HashSet<TemporalDescriptor> BuildDescriptors(
         IRelationalModel?            model,
@@ -375,10 +535,26 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
         => $"FK_{dependentTable}_{principalTable}_{string.Join("_", dependentColumns)}_{dependentPeriodColumn}";
 
     private static IEntityType? ResolveEntityType(IModel model, string entityTypeName)
-        => model.GetEntityTypes()
-                .FirstOrDefault(e => e.Name == entityTypeName
-                                  || e.ClrType.FullName == entityTypeName
-                                  || e.ClrType.Name == entityTypeName);
+    {
+        var exact = model.GetEntityTypes()
+                         .Where(e => e.Name == entityTypeName || e.ClrType.FullName == entityTypeName)
+                         .ToList();
+
+        if (exact.Count > 0)
+            return exact[0];
+
+        // Bare CLR-name fallback: refuse to guess when several entities share the short name.
+        var byShortName = model.GetEntityTypes()
+                               .Where(e => e.ClrType.Name == entityTypeName)
+                               .ToList();
+
+        if (byShortName.Count > 1)
+            throw new InvalidOperationException(
+                $"The temporal foreign key principal entity name '{entityTypeName}' is ambiguous; it matches: " +
+                $"{string.Join(", ", byShortName.Select(e => e.Name))}. Use the full CLR type name.");
+
+        return byShortName.SingleOrDefault();
+    }
 
     private static void ValidatePeriodIsRangeOrMultirangeType(
         IProperty                    property,
@@ -473,6 +649,44 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
             hash.Add(Name);
             foreach (var column in KeyColumns) hash.Add(column);
             hash.Add(PeriodColumn);
+            return hash.ToHashCode();
+        }
+    }
+
+    private sealed record ResolvedExclusionPart(bool IsExpression, string Value, string Operator);
+
+    private sealed record ExclusionDescriptor(
+        string                               Table,
+        string?                              Schema,
+        string                               Name,
+        IReadOnlyList<ResolvedExclusionPart> Parts,
+        string                               Method,
+        string?                              Filter,
+        bool                                 Deferrable,
+        bool                                 InitiallyDeferred)
+    {
+        public bool Equals(ExclusionDescriptor? other) =>
+            other is not null
+         && Table             == other.Table
+         && Schema            == other.Schema
+         && Name              == other.Name
+         && Method            == other.Method
+         && Filter            == other.Filter
+         && Deferrable        == other.Deferrable
+         && InitiallyDeferred == other.InitiallyDeferred
+         && Parts.SequenceEqual(other.Parts);
+
+        public override int GetHashCode()
+        {
+            var hash = new HashCode();
+            hash.Add(Table);
+            hash.Add(Schema);
+            hash.Add(Name);
+            foreach (var part in Parts) hash.Add(part);
+            hash.Add(Method);
+            hash.Add(Filter);
+            hash.Add(Deferrable);
+            hash.Add(InitiallyDeferred);
             return hash.ToHashCode();
         }
     }

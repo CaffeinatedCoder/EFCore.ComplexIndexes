@@ -60,6 +60,44 @@ public static class ComplexIndexExtensions
         where TEntity : class
     {
         /// <summary>
+        /// Configures a single-column index declared at the entity level. Unlike the property-level
+        /// <c>HasComplexIndex</c> (which holds one index per property), entity-level declarations can
+        /// give the same column several differently-filtered indexes — name them explicitly. The
+        /// selector may reach into complex properties (e.g. <c>x => x.Email.Value</c>) and may be
+        /// wrapped in <see cref="DbOrder.Desc{T}"/>.
+        /// </summary>
+        public EntityTypeBuilder<TEntity> HasComplexIndex(
+            Expression<Func<TEntity, object?>> property,
+            bool                               isUnique  = false,
+            string?                            filter    = null,
+            string?                            indexName = null
+        )
+        {
+            var part       = ExtractSinglePart(property.Body);
+            var definition = ComplexIndexExtensions.BuildCompositeDefinition([part], isUnique, filter, indexName, providerAnnotations: null);
+            ComplexIndexStorage.AddOrReplace(builder, definition);
+
+            return builder;
+        }
+
+        /// <summary>
+        /// Configures a single-column index at the entity level using a builder callback.
+        /// Provider-specific options are available as extension methods on
+        /// <see cref="ComplexIndexBuilder"/> from the corresponding satellite package.
+        /// </summary>
+        public EntityTypeBuilder<TEntity> HasComplexIndex(
+            Expression<Func<TEntity, object?>> property,
+            Action<ComplexIndexBuilder>        configure
+        )
+        {
+            var part       = ExtractSinglePart(property.Body);
+            var definition = ComplexIndexExtensions.BuildDefinitionFromBuilder([part], configure);
+            ComplexIndexStorage.AddOrReplace(builder, definition);
+
+            return builder;
+        }
+
+        /// <summary>
         /// Configures a multi-column composite index for the entity type. Per-column sort direction
         /// can be declared with <see cref="DbOrder.Desc{T}"/> (e.g. <c>x => new { x.A, DbOrder.Desc(x.B) }</c>).
         /// </summary>
@@ -74,7 +112,7 @@ public static class ComplexIndexExtensions
             EntityTypeBuilder<TEntity>.RequireComposite(parts);
 
             var definition = ComplexIndexExtensions.BuildCompositeDefinition(parts, isUnique, filter, indexName, providerAnnotations: null);
-            EntityTypeBuilder<TEntity>.StoreOrReplace(builder, parts, definition);
+            ComplexIndexStorage.AddOrReplace(builder, definition);
 
             return builder;
         }
@@ -92,26 +130,8 @@ public static class ComplexIndexExtensions
             var parts = ExtractIndexParts(columns);
             EntityTypeBuilder<TEntity>.RequireComposite(parts);
 
-            var indexBuilder = new ComplexIndexBuilder();
-            configure(indexBuilder);
-
-            var annotations = indexBuilder.Annotations;
-
-            var providerAnnotations = annotations
-                                     .Where(kv => kv.Key != ComplexIndexAnnotations.IsUnique
-                                               && kv.Key != ComplexIndexAnnotations.Filter
-                                               && kv.Key != ComplexIndexAnnotations.IndexName)
-                                     .ToDictionary(kv => kv.Key, kv => kv.Value);
-
-            var definition = ComplexIndexExtensions.BuildCompositeDefinition(
-                parts,
-                annotations.TryGetValue(ComplexIndexAnnotations.IsUnique, out var u) && u is true,
-                annotations.GetValueOrDefault(ComplexIndexAnnotations.Filter) as string,
-                annotations.GetValueOrDefault(ComplexIndexAnnotations.IndexName) as string,
-                providerAnnotations.Count > 0 ? providerAnnotations : null
-            );
-
-            EntityTypeBuilder<TEntity>.StoreOrReplace(builder, parts, definition);
+            var definition = ComplexIndexExtensions.BuildDefinitionFromBuilder(parts, configure);
+            ComplexIndexStorage.AddOrReplace(builder, definition);
 
             return builder;
         }
@@ -122,37 +142,37 @@ public static class ComplexIndexExtensions
                 throw new ArgumentException(
                     """
                     Composite index requires at least two properties.
-                    Use HasComplexIndex on a single property instead.
+                    Use HasComplexIndex instead: on the complex property builder, or the
+                    entity-level HasComplexIndex(x => x.Complex.Prop, ...) overload.
                     """
                 );
         }
+    }
 
-        private static void StoreOrReplace(
-            EntityTypeBuilder<TEntity> entityTypeBuilder,
-            List<IndexPartDefinition>  parts,
-            CompositeIndexDefinition   definition
-        )
-        {
-            var pathKey  = parts.Select(p => p.PropertyPath).ToList();
-            var existing = EntityTypeBuilder<TEntity>.GetExistingCompositeDefinitions(entityTypeBuilder);
+    // Reads the callback's annotations apart into the core index facets and the provider options.
+    private static CompositeIndexDefinition BuildDefinitionFromBuilder(
+        List<IndexPartDefinition>   parts,
+        Action<ComplexIndexBuilder> configure
+    )
+    {
+        var indexBuilder = new ComplexIndexBuilder();
+        configure(indexBuilder);
 
-            // Replace any existing definition over the same column set, regardless of direction.
-            existing.RemoveAll(d => d.EffectiveParts.Select(p => p.PropertyPath).SequenceEqual(pathKey));
-            existing.Add(definition);
+        var annotations = indexBuilder.Annotations;
 
-            entityTypeBuilder.HasAnnotation(ComplexIndexAnnotations.CompositeIndexes, CompositeIndexSerializer.Serialize(existing));
-        }
+        var providerAnnotations = annotations
+                                 .Where(kv => kv.Key != ComplexIndexAnnotations.IsUnique
+                                           && kv.Key != ComplexIndexAnnotations.Filter
+                                           && kv.Key != ComplexIndexAnnotations.IndexName)
+                                 .ToDictionary(kv => kv.Key, kv => kv.Value);
 
-        private static List<CompositeIndexDefinition> GetExistingCompositeDefinitions(EntityTypeBuilder<TEntity> entityTypeBuilder)
-        {
-            var annotation = entityTypeBuilder
-                            .Metadata
-                            .FindAnnotation(ComplexIndexAnnotations.CompositeIndexes);
-
-            return annotation?.Value is string json && !string.IsNullOrEmpty(json)
-                       ? CompositeIndexSerializer.Deserialize(json)
-                       : [];
-        }
+        return BuildCompositeDefinition(
+            parts,
+            annotations.TryGetValue(ComplexIndexAnnotations.IsUnique, out var u) && u is true,
+            annotations.GetValueOrDefault(ComplexIndexAnnotations.Filter) as string,
+            annotations.GetValueOrDefault(ComplexIndexAnnotations.IndexName) as string,
+            providerAnnotations.Count > 0 ? providerAnnotations : null
+        );
     }
 
     // Stores ascending-only composite indexes in the legacy column-path form (so snapshots written
