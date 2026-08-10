@@ -95,4 +95,47 @@ public class NpgsqlAnnotationForwardingTests
         Assert.IsNull(createIndex.FindAnnotation("Relational:ColumnName"));
         Assert.IsNull(createIndex.FindAnnotation("Relational:ColumnType"));
     }
+
+    // ── INCLUDE path resolution (v5) ──
+
+    private class EmailAddress
+    {
+        public string Value { get; set; } = "";
+    }
+
+    private class Contact
+    {
+        public Guid         Id    { get; set; }
+        public string       Name  { get; set; } = "";
+        public EmailAddress Email { get; set; } = new();
+    }
+
+    private class IncludePathsContext(DbContextOptions<IncludePathsContext> options) : DbContext(options)
+    {
+        public DbSet<Contact> Contacts => Set<Contact>();
+
+        protected override void OnModelCreating(ModelBuilder modelBuilder) =>
+            modelBuilder.Entity<Contact>(b =>
+            {
+                b.ToTable("contacts");
+                b.HasKey(x => x.Id);
+                b.Property(x => x.Name).HasColumnName("display_name");
+                b.ComplexProperty(x => x.Email, c => c.Property(x => x.Value).HasColumnName("email"));
+                // "Name" and "Email.Value" are property paths; "raw_col" resolves to nothing and
+                // passes through verbatim as a column name.
+                b.HasComplexIndex(x => x.Email.Value, ix => ix
+                    .HasName("ix_contacts_email")
+                    .IncludeProperties("Name", "Email.Value", "raw_col"));
+            });
+    }
+
+    [TestMethod(DisplayName = "INCLUDE entries resolve as property paths with verbatim fallback")]
+    public void Include_entries_resolve_property_paths()
+    {
+        var operations = GetDifferences(source: null, target: BuildRelationalModel<IncludePathsContext>());
+
+        var createIndex = Assert.ContainsSingle(operations.OfType<CreateIndexOperation>());
+        var include     = (string[])createIndex["Npgsql:IndexInclude"]!;
+        Assert.IsTrue(include.SequenceEqual(["display_name", "email", "raw_col"]));
+    }
 }

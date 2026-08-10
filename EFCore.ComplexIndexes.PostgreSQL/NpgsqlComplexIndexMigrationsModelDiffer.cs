@@ -43,6 +43,19 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
     protected override bool IsForwardedIndexAnnotation(string annotationName)
         => SupportedNpgsqlAnnotations.Contains(annotationName);
 
+    /// <summary>PostgreSQL renames indexes standalone (<c>ALTER INDEX … RENAME TO</c>).</summary>
+    protected override bool CanRenameIndexes => true;
+
+    /// <summary>Resolves property paths inside INCLUDE lists to column names (verbatim fallback).</summary>
+    protected override object? TransformIndexAnnotation(
+        IEntityType           entityType,
+        string                annotationName,
+        object?               value,
+        StoreObjectIdentifier storeObject
+    ) => annotationName == NpgsqlAnnotations.IndexInclude
+             ? ResolveIncludeList(entityType, value, storeObject)
+             : base.TransformIndexAnnotation(entityType, annotationName, value, storeObject);
+
     /// <summary>
     /// Resolves an index part whose path traverses a complex property mapped to JSON
     /// (<c>ToJson()</c>) into a PostgreSQL extraction expression, e.g.

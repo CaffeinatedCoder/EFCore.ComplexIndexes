@@ -428,8 +428,10 @@ public class MigrationsModelDifferTests : IDisposable
 
         var createIndex = Assert.ContainsSingle(operations.OfType<CreateIndexOperation>());
         Assert.AreEqual("person", createIndex.Table);
-        // Columns must be non-empty (EF rejects an empty list); it carries the verbatim part value.
-        Assert.AreEqual("lower(name)", Assert.ContainsSingle(createIndex.Columns));
+        // Columns must be non-empty (EF rejects an empty list); it carries the verbatim part value
+        // plus the wiring sentinel, so a missing custom generator fails loudly instead of applying
+        // a broken index.
+        Assert.IsTrue(createIndex.Columns.SequenceEqual(["lower(name)", CustomMigrationsModelDiffer.RuntimeWiringSentinel]));
         Assert.AreEqual("IX_person_lowername", createIndex.Name);
 
         var partsJson = createIndex.FindAnnotation(ComplexIndexAnnotations.IndexParts)?.Value as string;
@@ -647,9 +649,11 @@ public class MigrationsModelDifferTests : IDisposable
         var operations = GetDifferences(source: null, target: target);
 
         var createIndex = Assert.ContainsSingle(operations.OfType<CreateIndexOperation>());
-        Assert.IsTrue(createIndex.Columns.SequenceEqual(["name", "email_address"]));
+        // Nulls ordering needs the custom generator, so the wiring sentinel rides along in Columns —
+        // without it, the stock generator would apply the index silently minus the NULLS clause.
+        Assert.IsTrue(createIndex.Columns.SequenceEqual(["name", "email_address", CustomMigrationsModelDiffer.RuntimeWiringSentinel]));
         Assert.IsNotNull(createIndex.IsDescending);
-        Assert.IsTrue(createIndex.IsDescending!.SequenceEqual([false, true]));
+        Assert.IsTrue(createIndex.IsDescending!.SequenceEqual([false, true, false]));
 
         // NULLS FIRST/LAST has no slot on the native operation, so the ordered parts must ride along.
         var partsJson = createIndex.FindAnnotation(ComplexIndexAnnotations.IndexParts)?.Value as string;

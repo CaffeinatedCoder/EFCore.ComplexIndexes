@@ -62,6 +62,20 @@ except known keys": column facets (`Relational:ColumnName`, `Relational:ColumnTy
 scaffolded migrations that way, and snapshot/code-model asymmetries caused phantom drop/create
 churn (see `PhantomIndexChurnTests`).
 
+### Diff polish: renames and the wiring sentinel
+
+The differ recognizes two churn cases: a drop/create pair identical except for the name becomes a
+`RenameIndexOperation` when `CanRenameIndexes` is true (Npgsql and SqlServer satellites; core
+default false — SQLite's generator can't rename annotation-only indexes), and source indexes on
+tables the base operations rename are compared under their new table identity (drops still target
+the old name, since they run before the rename). Indexes that need the custom generator
+(`RequiresPartsAnnotation`) get `CustomMigrationsModelDiffer.RuntimeWiringSentinel` appended to
+`Columns`: the custom generator renders from the parts annotation and ignores `Columns`, while the
+stock generator fails loudly at apply time — deliberate, because a column-only NULLS-ordered index
+would otherwise apply silently minus its NULLS clause. INCLUDE lists are transformed via
+`TransformIndexAnnotation` → `ResolveIncludeList`: entries resolve as property paths with verbatim
+column-name fallback.
+
 ### Index identity and dedup
 
 `ComplexIndexStorage.AddOrReplace` is the single store for entity-level definitions: same ordered

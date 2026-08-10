@@ -26,6 +26,15 @@ public class CustomMigrationsModelDiffer(
         commandBatchPreparerDependencies
     )
 {
+    /// <summary>
+    /// Appended as a fake trailing column when an index requires the package's custom SQL generator
+    /// (expression parts or NULLS ordering). The custom generator renders from the parts annotation
+    /// and ignores <c>Columns</c>; if the stock generator gets the operation instead — i.e. the
+    /// runtime wiring is missing — <c>CREATE INDEX</c> fails loudly with this name in the error
+    /// message rather than applying a silently wrong index.
+    /// </summary>
+    public const string RuntimeWiringSentinel = "__requires_UseNpgsqlComplexIndexes__";
+
     public override IReadOnlyList<MigrationOperation> GetDifferences(
         IRelationalModel? source,
         IRelationalModel? target
@@ -44,33 +53,74 @@ public class CustomMigrationsModelDiffer(
                            .Select(o => (o.Name, o.Schema))
                            .ToHashSet();
 
+        // Tables the base operations rename: compare source indexes under their *new* table
+        // identity so a renamed table doesn't drop and recreate every index it carries. Drops still
+        // execute against the old name — they run before the rename.
+        var renamedTables = new Dictionary<(string Name, string? Schema), (string Name, string? Schema)>();
+        foreach (var rename in operations.OfType<RenameTableOperation>())
+            renamedTables[(rename.Name, rename.Schema)] = (rename.NewName ?? rename.Name, rename.NewSchema ?? rename.Schema);
+
+        // Normalized descriptor → the original (table, schema) a drop must target.
+        var normalizedSource = new Dictionary<IndexDescriptor, (string Table, string? Schema)>();
+        foreach (var src in sourceIndexes)
+        {
+            var normalized = renamedTables.TryGetValue((src.TableName, src.Schema), out var to)
+                                 ? src with { TableName = to.Name, Schema = to.Schema }
+                                 : src;
+            normalizedSource.TryAdd(normalized, (src.TableName, src.Schema));
+        }
+
+        var pendingDrops = normalizedSource.Keys
+                                           .Where(src => !targetIndexes.Contains(src)
+                                                      && !droppedTables.Contains(normalizedSource[src]))
+                                           .ToList();
+
+        var pendingCreates = targetIndexes.Where(tgt => !normalizedSource.ContainsKey(tgt)).ToList();
+
+        // A drop/create pair that differs only by name is a rename — cheap DDL instead of an index
+        // rebuild — on providers whose generator can rename these indexes standalone.
+        var renames = new List<MigrationOperation>();
+        if (CanRenameIndexes)
+        {
+            for (var i = pendingDrops.Count - 1; i >= 0; i--)
+            {
+                var dropped = pendingDrops[i];
+                var renamed = pendingCreates.FirstOrDefault(c => (dropped with { IndexName = c.IndexName }).Equals(c));
+                if (renamed is null)
+                    continue;
+
+                renames.Add(new RenameIndexOperation
+                            {
+                                Name    = dropped.IndexName,
+                                NewName = renamed.IndexName,
+                                Table   = renamed.TableName,
+                                Schema  = renamed.Schema
+                            });
+                pendingDrops.RemoveAt(i);
+                pendingCreates.Remove(renamed);
+            }
+        }
+
         // Placed before the base operations: an index that moves between a native HasIndex and a
         // complex-index declaration surfaces as a base-emitted CreateIndex plus our DropIndex of the
         // same name, and a removed complex property surfaces as a base DropColumn that would take
         // the index down with it — in both cases the drop must run first.
         var drops = new List<MigrationOperation>();
-        foreach (var src in sourceIndexes)
+        foreach (var src in pendingDrops)
         {
-            if (droppedTables.Contains((src.TableName, src.Schema)))
-                continue;
-
-            if (!targetIndexes.Contains(src))
-            {
-                drops.Add(new DropIndexOperation
-                          {
-                              Name   = src.IndexName,
-                              Table  = src.TableName,
-                              Schema = src.Schema
-                          });
-            }
+            var (table, schema) = normalizedSource[src];
+            drops.Add(new DropIndexOperation
+                      {
+                          Name   = src.IndexName,
+                          Table  = table,
+                          Schema = schema
+                      });
         }
 
         // Placed after the base operations, so newly added columns exist before their indexes.
         var creates = new List<MigrationOperation>();
-        foreach (var tgt in targetIndexes)
+        foreach (var tgt in pendingCreates)
         {
-            if (sourceIndexes.Contains(tgt)) continue;
-
             var op = new CreateIndexOperation
                      {
                          Name     = tgt.IndexName,
@@ -79,14 +129,19 @@ public class CustomMigrationsModelDiffer(
                          // EF's MigrationBuilder.CreateIndex rejects an empty column list, so for
                          // expression indexes we fill Columns with the verbatim part values (the
                          // provider SQL generator renders from the IndexParts annotation instead).
-                         Columns  = [.. tgt.Parts.Select(p => p.Value)],
+                         // The sentinel makes a missing runtime wiring fail loudly at apply time.
+                         Columns = tgt.RequiresPartsAnnotation
+                                       ? [.. tgt.Parts.Select(p => p.Value), RuntimeWiringSentinel]
+                                       : [.. tgt.Parts.Select(p => p.Value)],
                          IsUnique = tgt.IsUnique,
                          Filter   = tgt.Filter
                      };
 
             // null means all-ascending — leave it so existing ascending indexes don't churn.
             if (tgt.Parts.Any(p => p.Descending))
-                op.IsDescending = [.. tgt.Parts.Select(p => p.Descending)];
+                op.IsDescending = tgt.RequiresPartsAnnotation
+                                      ? [.. tgt.Parts.Select(p => p.Descending), false]
+                                      : [.. tgt.Parts.Select(p => p.Descending)];
 
             // Forward the whitelisted provider annotations — provider SQL generators handle their own
             foreach (var (key, value) in tgt.ProviderAnnotations)
@@ -101,11 +156,19 @@ public class CustomMigrationsModelDiffer(
             creates.Add(op);
         }
 
-        if (drops.Count == 0 && creates.Count == 0)
+        if (drops.Count == 0 && renames.Count == 0 && creates.Count == 0)
             return operations;
 
-        return [.. drops, .. operations, .. creates];
+        return [.. drops, .. operations, .. renames, .. creates];
     }
+
+    /// <summary>
+    /// Whether name-only index changes are emitted as <see cref="RenameIndexOperation"/> instead of
+    /// drop + create. Off in the core: not every provider can rename these indexes standalone
+    /// (SQLite's generator recreates a renamed index from the relational model, where
+    /// annotation-declared indexes don't exist). The PostgreSQL and SQL Server satellites enable it.
+    /// </summary>
+    protected virtual bool CanRenameIndexes => false;
 
     /// <summary>
     /// Decides whether a property-level annotation is carried onto the emitted
@@ -116,6 +179,34 @@ public class CustomMigrationsModelDiffer(
     /// operations, where snapshot/code-model asymmetries caused phantom drop/create churn.
     /// </summary>
     protected virtual bool IsForwardedIndexAnnotation(string annotationName) => false;
+
+    /// <summary>
+    /// Transforms a forwarded provider-annotation value before it is compared and stamped onto the
+    /// index operation. Satellites use this to resolve property paths inside their option values —
+    /// e.g. INCLUDE lists — to column names. The default returns the value unchanged.
+    /// </summary>
+    protected virtual object? TransformIndexAnnotation(
+        IEntityType           entityType,
+        string                annotationName,
+        object?               value,
+        StoreObjectIdentifier storeObject
+    ) => value;
+
+    /// <summary>
+    /// Resolves each entry of an INCLUDE-style column list: an entry that matches a property path
+    /// (including complex members) becomes its mapped column name; anything else passes through
+    /// verbatim as a column name, so pre-v5 declarations keep working.
+    /// </summary>
+    protected static object? ResolveIncludeList(IEntityType entityType, object? value, StoreObjectIdentifier storeObject)
+    {
+        if (value is string || value is not System.Collections.IEnumerable enumerable)
+            return value;
+
+        return enumerable.Cast<object?>()
+                         .Select(entry => entry?.ToString() ?? "")
+                         .Select(entry => ResolveColumnName(entityType, entry, storeObject) ?? entry)
+                         .ToArray();
+    }
 
     /// <summary>
     /// Called for an index part whose property path does not resolve to a table column — typically
@@ -204,7 +295,7 @@ public class CustomMigrationsModelDiffer(
             foreach (var ann in property.GetAnnotations())
             {
                 if (IsForwardedIndexAnnotation(ann.Name))
-                    providerAnnotations[ann.Name] = ann.Value;
+                    providerAnnotations[ann.Name] = TransformIndexAnnotation(rootEntityType, ann.Name, ann.Value, storeObject);
             }
 
             results.Add(new IndexDescriptor(tableName, schema, [part], indexName, isUnique, filter, providerAnnotations));
@@ -266,6 +357,8 @@ public class CustomMigrationsModelDiffer(
             var indexName = def.IndexName ?? $"IX_{tableName}_{string.Join("_", parts.Select(BuildPartToken))}";
 
             var normalized = NormalizeProviderAnnotations(def.ProviderAnnotations);
+            foreach (var key in normalized.Keys.ToList())
+                normalized[key] = TransformIndexAnnotation(entityType, key, normalized[key], storeObject);
 
             results.Add(
                 new IndexDescriptor(
@@ -334,7 +427,8 @@ public class CustomMigrationsModelDiffer(
         return token.Length > 0 ? token : "expr";
     }
 
-    private static string? ResolveColumnName(
+    /// <summary>Resolves a dotted property path (complex members included) to its column name, or null.</summary>
+    protected static string? ResolveColumnName(
         IEntityType           entityType,
         string                dotPath,
         StoreObjectIdentifier storeObject

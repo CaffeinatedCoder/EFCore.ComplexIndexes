@@ -118,6 +118,11 @@ builder.HasComplexCompositeIndex(
 
 Null ordering has no slot on EF's native index operation, so these indexes render through the package's PostgreSQL SQL generator — they require the one-time `UseNpgsqlComplexIndexes()` wiring, and the SQL Server differ rejects the markers (SQL Server has no `NULLS FIRST/LAST` syntax).
 
+> **Forgot the wiring?** Indexes that need the custom generator (expression parts, NULLS ordering)
+> carry a sentinel entry `__requires_UseNpgsqlComplexIndexes__` in the scaffolded column list. The
+> custom generator ignores it; the stock generator fails **loudly** with that name in the error —
+> instead of applying a silently wrong index.
+
 ### PostgreSQL index methods on a complex property
 
 Use the builder-callback overload to reach the PostgreSQL-specific options (GIN, GiST, BRIN, SP-GiST, Hash, operator classes, `INCLUDE`, concurrent creation, nulls-distinct):
@@ -464,6 +469,10 @@ expression-index DDL — model a persisted computed column and index that) and
 - **New:** JSON member indexes for `ToJson()` complex properties.
 - **New:** `NULLS FIRST`/`NULLS LAST` via `DbOrder.NullsFirst/NullsLast` and `ExpressionIndexBuilder.NullsFirst()/NullsLast()` (PostgreSQL).
 - **New:** the **EFCore.ComplexIndexes.SqlServer** satellite — clustered, covering, online, fill-factor, and sort-in-tempdb options.
+- **Changed:** `IncludeProperties(...)` entries are now resolved as property paths (complex members included) with verbatim column-name fallback — `IncludeProperties("Email.Value")` finds the real column.
+- **Changed:** a name-only index change now emits `RenameIndexOperation` (PostgreSQL, SQL Server) instead of dropping and rebuilding the index; the core default remains drop + create for providers that cannot rename standalone.
+- **Changed:** renaming a table no longer drops and recreates the complex indexes it carries.
+- **Changed:** indexes requiring the custom PostgreSQL generator carry a loud sentinel column, so a missing `UseNpgsqlComplexIndexes()` fails at apply time with an actionable error instead of applying a silently wrong index.
 
 ---
 

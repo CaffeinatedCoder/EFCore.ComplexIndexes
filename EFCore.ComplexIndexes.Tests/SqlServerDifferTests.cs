@@ -86,10 +86,12 @@ public class SqlServerDifferTests
             modelBuilder.Entity<Person>(b =>
             {
                 MapPerson(b);
+                // Include entries are property paths since v5 ("Name" resolves to its column);
+                // unknown entries still pass through verbatim as column names.
                 b.HasComplexIndex(x => x.Email.Value, ix => ix
                     .IsUnique()
                     .HasName("ux_person_email")
-                    .IncludeProperties("name")
+                    .IncludeProperties("Name")
                     .IsCreatedOnline()
                     .HasFillFactor(80));
             });

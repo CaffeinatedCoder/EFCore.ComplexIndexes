@@ -42,6 +42,19 @@ public class SqlServerComplexIndexMigrationsModelDiffer(
     protected override bool IsForwardedIndexAnnotation(string annotationName)
         => SupportedSqlServerAnnotations.Contains(annotationName);
 
+    /// <summary>SQL Server renames indexes standalone (<c>sp_rename</c>).</summary>
+    protected override bool CanRenameIndexes => true;
+
+    /// <summary>Resolves property paths inside INCLUDE lists to column names (verbatim fallback).</summary>
+    protected override object? TransformIndexAnnotation(
+        IEntityType           entityType,
+        string                annotationName,
+        object?               value,
+        StoreObjectIdentifier storeObject
+    ) => annotationName == SqlServerAnnotations.Include
+             ? ResolveIncludeList(entityType, value, storeObject)
+             : base.TransformIndexAnnotation(entityType, annotationName, value, storeObject);
+
     public override IReadOnlyList<MigrationOperation> GetDifferences(
         IRelationalModel? source,
         IRelationalModel? target
