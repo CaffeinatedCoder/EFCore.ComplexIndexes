@@ -515,6 +515,14 @@ expression-index DDL — model a persisted computed column and index that) and
 
 ---
 
+## What changed in 5.0.3
+
+A packaging and documentation release. No behaviour changes to the differ or the generated SQL.
+
+- **Changed:** the EF Core dependency now declares an exclusive upper bound — `[10.0.0, 11.0.0)` on `Microsoft.EntityFrameworkCore.Abstractions` for the core package, and on the provider package for each satellite. This package subclasses `MigrationsModelDiffer` and calls internals EF marks as changeable without notice in any release, so an open-ended `>= 10.0.0` let NuGet resolve a future major where the differ can break — surfacing as a confusing `dotnet ef` failure in your project rather than anywhere visible from here. **Nothing changes for existing consumers:** NuGet resolves the lowest version in a range, so restore still picks 10.0.0. Adopting EF Core 11 will need a release that lifts the ceiling deliberately, once the differ has been tested against it.
+- **New:** the public API is now fully documented, so IntelliSense no longer comes up empty on the fluent API, the annotation keys, `CompositeIndexDefinition`, or `IndexPartDefinition`. The shipped `.xml` had 64 holes in it; `TreatWarningsAsErrors` now keeps it complete.
+- **Tests:** a consumer smoke test runs on every PR and on release. It packs the packages, installs them into a throwaway project created outside this repository, and runs a real `dotnet ef migrations add` — then asserts on the scaffolded content, because the failure it guards against is a migration that succeeds while silently omitting every index. Nothing previously exercised the delivery chain end to end: NuGet restore, the packaged `.targets` injecting the design-time attribute, EF's host discovering it, and the right differ winning.
+
 ## What changed in 5.0.2
 
 A review of the 5.0.1 tree turned up eleven issues. The first three produced migrations that

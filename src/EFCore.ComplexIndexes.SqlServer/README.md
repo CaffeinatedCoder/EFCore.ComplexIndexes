@@ -62,6 +62,13 @@ rather than producing DDL that cannot apply:
 
 ## Changelog
 
+### 5.0.3
+
+- **Changed:** the `Microsoft.EntityFrameworkCore.SqlServer` dependency is now `[10.0.0, 11.0.0)`.
+  This differ extends EF internals that carry no cross-major compatibility promise. Nothing changes
+  if you are on EF Core 10: NuGet resolves the lowest version in a range.
+- **New:** the public API is fully documented.
+
 ### 5.0.2
 
 - **Fixed:** clustered-index combinations SQL Server rejects are caught at `migrations add`

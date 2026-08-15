@@ -81,6 +81,21 @@ see the PostgreSQL package.
 
 ## Changelog
 
+### 5.0.3
+
+- **Changed:** the `Microsoft.EntityFrameworkCore.Abstractions` dependency is now `[10.0.0, 11.0.0)`.
+  This package subclasses `MigrationsModelDiffer` and calls internals EF marks as changeable without
+  notice in any release, so an open-ended floor let NuGet resolve a future major where the differ can
+  break — in your `dotnet ef` run, not anywhere visible from here. Nothing changes if you are on EF
+  Core 10: NuGet resolves the lowest version in a range, so restore still picks 10.0.0.
+- **New:** the public API is fully documented. The shipped `.xml` had 64 gaps, so IntelliSense came up
+  empty on parts of the fluent API, the annotation keys, `CompositeIndexDefinition` and
+  `IndexPartDefinition`.
+- **Tests:** a consumer smoke test packs the packages, installs them into a throwaway project outside
+  the repository, and runs a real `dotnet ef migrations add`, asserting on the scaffolded content —
+  the delivery chain (restore, `.targets` injection, design-time discovery, differ selection) was
+  previously only ever verified in pieces.
+
 ### 5.0.2
 
 - **Fixed:** the design-time migration differ is now selected deterministically when a provider
