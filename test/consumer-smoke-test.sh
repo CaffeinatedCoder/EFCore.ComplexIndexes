@@ -54,8 +54,15 @@ mkdir -p "$app"
 cd "$app"
 dotnet new console --framework net10.0 --output . --verbosity quiet >/dev/null
 
-# <clear/> matters: without it a same-named package on nuget.org could satisfy the restore and the
-# test would pass without ever touching the freshly built artifacts.
+# Source mapping, not just source ordering.
+#
+# This package's own ids must come from the local feed and nowhere else — the versions here also
+# exist on nuget.org, and a published 5.0.2 satisfying the restore would mean testing a package that
+# has nothing to do with the working tree. Everything else (EF Core, Npgsql) has to come from
+# nuget.org, so restricting the restore to the local feed is not an option either: that fails with
+# NU1101 on the transitive dependencies.
+#
+# <clear/> drops any machine-level sources that would otherwise be consulted.
 cat > nuget.config <<XML
 <?xml version="1.0" encoding="utf-8"?>
 <configuration>
@@ -64,6 +71,14 @@ cat > nuget.config <<XML
     <add key="local" value="$feed" />
     <add key="nuget.org" value="https://api.nuget.org/v3/index.json" />
   </packageSources>
+  <packageSourceMapping>
+    <packageSource key="local">
+      <package pattern="EFCore.ComplexIndexes*" />
+    </packageSource>
+    <packageSource key="nuget.org">
+      <package pattern="*" />
+    </packageSource>
+  </packageSourceMapping>
 </configuration>
 XML
 
@@ -103,15 +118,26 @@ public sealed class ShopContext : DbContext
 }
 CSHARP
 
-echo "==> Restoring the packed satellite from the local feed"
-dotnet add package EFCore.ComplexIndexes.PostgreSQL --version "$version" --source "$feed" >/dev/null
-dotnet add package Microsoft.EntityFrameworkCore.Design >/dev/null
+# Quiet while it works, but never silent when it does not: swallowing this output once hid an
+# NU1101 behind a bare "exit code 1" in CI. No --source flag here — that would override the source
+# mapping above and restrict the whole restore, transitive dependencies included, to the local feed.
+run() {
+    if ! output="$("$@" 2>&1)"; then
+        echo "FAILED: $*"
+        echo "$output" | sed 's/^/    /'
+        exit 1
+    fi
+}
 
-dotnet new tool-manifest >/dev/null
-dotnet tool install dotnet-ef --version "10.*" >/dev/null
+echo "==> Restoring the packed satellite from the local feed"
+run dotnet add package EFCore.ComplexIndexes.PostgreSQL --version "$version"
+run dotnet add package Microsoft.EntityFrameworkCore.Design
+
+run dotnet new tool-manifest
+run dotnet tool install dotnet-ef --version "10.*"
 
 echo "==> dotnet ef migrations add Initial"
-dotnet tool run dotnet-ef migrations add Initial >/dev/null
+run dotnet tool run dotnet-ef migrations add Initial
 
 migration="$(find Migrations -name '*_Initial.cs' | head -1)"
 [[ -n "$migration" ]] || { echo "FAIL: no migration was scaffolded"; exit 1; }
@@ -135,7 +161,7 @@ assert_contains 'Ship_City'                     "$migration" "complex property r
 # nothing: if the snapshot and the code model disagree, the indexes are dropped and recreated on
 # every single migration, which applies cleanly and is therefore invisible without this check.
 echo "==> dotnet ef migrations add NoChanges (must be empty)"
-dotnet tool run dotnet-ef migrations add NoChanges >/dev/null
+run dotnet tool run dotnet-ef migrations add NoChanges
 second="$(find Migrations -name '*_NoChanges.cs' | head -1)"
 
 if grep -qE 'migrationBuilder\.(CreateIndex|DropIndex|Sql|AddColumn|CreateTable)' "$second"; then
