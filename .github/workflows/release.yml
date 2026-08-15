@@ -103,8 +103,13 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: nupkg-${{ steps.version.outputs.version }}
-          path: dist/*.nupkg
+          path: |
+            dist/*.nupkg
+            dist/*.snupkg
 
+      # Only .nupkg is globbed — dotnet nuget push uploads the matching .snupkg alongside it
+      # automatically, so symbols need no separate step.
+      #
       # --skip-duplicate makes a re-run after a partial failure safe: already-published
       # packages are reported and skipped instead of failing the job.
       - name: Push to NuGet

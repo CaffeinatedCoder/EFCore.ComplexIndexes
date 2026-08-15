@@ -139,4 +139,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: nupkg
-          path: dist/*.nupkg
+          path: |
+            dist/*.nupkg
+            dist/*.snupkg

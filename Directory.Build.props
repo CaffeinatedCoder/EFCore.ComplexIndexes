@@ -7,5 +7,28 @@
         <GeneratePackageOnBuild>true</GeneratePackageOnBuild>
         <PackageProjectUrl>https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes</PackageProjectUrl>
         <RepositoryUrl>https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes</RepositoryUrl>
+        <RepositoryType>git</RepositoryType>
+    </PropertyGroup>
+
+    <!--
+        Debugging support for consumers.
+
+        Symbols ship as a separate .snupkg, which `dotnet nuget push` uploads alongside the .nupkg
+        automatically unless the no-symbols switch is passed, so the workflow needs no extra step.
+
+        Source Link is built into the .NET 8+ SDK — no package reference needed. PublishRepositoryUrl
+        stamps the repository and commit into the package so a debugger can fetch the exact sources;
+        EmbedUntrackedSources covers generated files that are not in git.
+
+        ContinuousIntegrationBuild is deliberately CI-only. It normalizes source paths for
+        reproducible builds, which is what you want in a published package but not on a laptop, where
+        it would break local step-into debugging of your own working copy. GitHub Actions sets CI=true.
+    -->
+    <PropertyGroup>
+        <IncludeSymbols>true</IncludeSymbols>
+        <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+        <PublishRepositoryUrl>true</PublishRepositoryUrl>
+        <EmbedUntrackedSources>true</EmbedUntrackedSources>
+        <ContinuousIntegrationBuild Condition="'$(CI)' == 'true'">true</ContinuousIntegrationBuild>
     </PropertyGroup>
 </Project>
