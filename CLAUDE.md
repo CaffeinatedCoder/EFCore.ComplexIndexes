@@ -26,6 +26,24 @@ Tests run in parallel at the method level (`Scope = ExecutionScope.MethodLevel`)
 PostgreSQL 18 Testcontainer and applies generated DDL for real; without Docker it needs excluding
 via `--filter "TestCategory!=Integration"`.
 
+Locally, no Docker means those tests go **inconclusive**. When the `CI` environment variable is set
+they **fail** instead — an unreachable container must not quietly retire the end-to-end layer while
+the build reports green.
+
+## CI
+
+`.github/workflows/dotnet.yml` runs on pushes and PRs to `main`: the unit suite across
+ubuntu/windows/macos (the matrix is there because the repository-convention tests do real path
+work), the integration suite on Linux only (Docker), then a pack job whose value is partly that
+packing *is* a check — a package declaring `PackageReadmeFile` without packing the file fails with
+NU5019.
+
+`.github/workflows/release.yml` publishes on a `v*` tag. `Directory.Build.props` stays the single
+source of truth: the tag is verified against it rather than driving it, packages are discovered from
+the pack output (so a future satellite needs no workflow edit), and pushes use `--skip-duplicate` so
+a re-run after a partial failure is safe. The release gate runs the full suite, which means
+`ChangelogConsistencyTests` blocks a version nothing documents. Needs a `NUGET_API_KEY` secret.
+
 ## Quality controls
 
 The signature failure here is a migration that scaffolds *and applies* cleanly while being

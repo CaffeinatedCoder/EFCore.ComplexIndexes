@@ -1,0 +1,135 @@
+# Publish to NuGet when a v* tag is pushed.
+#
+# Directory.Build.props is the single source of truth for the version — the tag is checked
+# against it rather than driving it, so a mistyped tag fails before anything is pushed.
+# The packages themselves are discovered from the pack output, so a future satellite package
+# is picked up without editing this file.
+#
+#   git tag v5.0.2 && git push origin v5.0.2
+#
+# Requires a NUGET_API_KEY repository secret.
+
+name: Release
+
+on:
+  push:
+    tags: [ "v*" ]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Build, test and pack, but do not push to NuGet"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  DOTNET_NOLOGO: true
+  DOTNET_CLI_TELEMETRY_OPTOUT: true
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: true
+  NUGET_SOURCE: https://api.nuget.org/v3/index.json
+
+jobs:
+  publish:
+    name: Publish
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 10.0.x
+
+      # MSBuild evaluation rather than parsing the XML, so the value is exactly what the build
+      # will stamp onto the packages.
+      - name: Resolve version
+        id: version
+        run: |
+          version="$(dotnet msbuild src/EFCore.ComplexIndexes/EFCore.ComplexIndexes.csproj -getProperty:Version)"
+          if [[ -z "$version" ]]; then
+            echo "::error::Could not evaluate the Version property."
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Version: $version"
+
+      - name: Verify the tag matches the package version
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          version="${{ steps.version.outputs.version }}"
+          if [[ "$tag" != "$version" ]]; then
+            echo "::error::Tag v$tag does not match Directory.Build.props ($version) — bump the version and re-tag rather than publishing a version nothing documents."
+            exit 1
+          fi
+
+      - name: Build
+        run: dotnet build -c Release
+
+      # The full suite gates the release, which also means ChangelogConsistencyTests runs:
+      # a version with no changelog entry in the root or package READMEs fails here.
+      # CI=true keeps the integration layer mandatory.
+      - name: Test
+        env:
+          CI: true
+        run: dotnet test -c Release --no-build
+
+      - name: Pack
+        run: dotnet pack -c Release --no-build -o dist
+
+      - name: Collect packages
+        run: |
+          shopt -s nullglob
+          packages=(dist/*."${{ steps.version.outputs.version }}".nupkg)
+          if [[ ${#packages[@]} -eq 0 ]]; then
+            echo "::error::No *.${{ steps.version.outputs.version }}.nupkg found in dist/."
+            exit 1
+          fi
+          printf 'Packages (%d):\n' "${#packages[@]}"
+          printf '    %s\n' "${packages[@]##*/}"
+
+      - name: Upload packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: nupkg-${{ steps.version.outputs.version }}
+          path: dist/*.nupkg
+
+      # --skip-duplicate makes a re-run after a partial failure safe: already-published
+      # packages are reported and skipped instead of failing the job.
+      - name: Push to NuGet
+        if: ${{ github.event_name == 'push' || !inputs.dry_run }}
+        env:
+          NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
+        run: |
+          if [[ -z "${NUGET_API_KEY:-}" ]]; then
+            echo "::error::NUGET_API_KEY secret is not set."
+            exit 1
+          fi
+          for package in dist/*."${{ steps.version.outputs.version }}".nupkg; do
+            echo "==> Pushing $(basename "$package")"
+            dotnet nuget push "$package" \
+              --api-key "$NUGET_API_KEY" \
+              --source "$NUGET_SOURCE" \
+              --skip-duplicate
+          done
+
+      - name: Summary
+        run: |
+          {
+            echo "### Released ${{ steps.version.outputs.version }}"
+            echo
+            for package in dist/*."${{ steps.version.outputs.version }}".nupkg; do
+              echo "- \`$(basename "$package")\`"
+            done
+          } >> "$GITHUB_STEP_SUMMARY"

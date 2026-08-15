@@ -52,11 +52,26 @@ public class PostgresIntegrationTests
     {
         get
         {
-            if (_connectionString is null)
-                Assert.Inconclusive(_unavailableReason ?? "Container not started.");
-            return _connectionString!;
+            if (_connectionString is not null)
+                return _connectionString;
+
+            var reason = _unavailableReason ?? "Container not started.";
+
+            // Locally, no Docker means "skip" — that is a reasonable default for a laptop. On CI it
+            // must be a hard failure: going inconclusive there lets a broken Docker setup quietly
+            // retire the entire end-to-end layer while the build stays green, which is the exact
+            // silent pass this suite exists to prevent.
+            if (RunningOnCi)
+                Assert.Fail($"Integration tests are mandatory on CI, but the database was unavailable. {reason}");
+
+            Assert.Inconclusive(reason);
+            return null!; // unreachable — Assert.Inconclusive throws
         }
     }
+
+    private static bool RunningOnCi =>
+        Environment.GetEnvironmentVariable("CI") is { Length: > 0 } value
+     && !string.Equals(value, "false", StringComparison.OrdinalIgnoreCase);
 
     // ── Harness: model → differ → SQL generator → live database ──
 

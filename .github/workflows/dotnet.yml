@@ -1,0 +1,142 @@
+# Build and test on every push to main and every PR.
+#
+# Split into two jobs on purpose: the unit suite runs on all three runner OSes, while the
+# integration suite needs Docker and so runs only on Linux.
+#
+# For information on GitHub Actions with .NET, see:
+# https://docs.github.com/en/actions/automating-builds-and-tests/building-and-testing-net
+
+name: .NET
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+# A new push to a PR makes the in-flight run pointless; main is never cancelled.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  DOTNET_NOLOGO: true
+  DOTNET_CLI_TELEMETRY_OPTOUT: true
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: true
+
+jobs:
+  test:
+    name: Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ ubuntu-latest, windows-latest, macos-latest ]
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Restore dependencies
+        run: dotnet restore
+
+      - name: Build
+        run: dotnet build -c Release --no-restore
+
+      # The matrix earns its keep here: the repository-convention tests do real path work
+      # (locating src/, reading .targets and README files), which is where separator handling
+      # differs between Windows and the Unix runners.
+      - name: Unit tests
+        run: >
+          dotnet test -c Release --no-build
+          --filter "TestCategory!=Integration"
+          --logger "trx;LogFileName=unit-${{ matrix.os }}.trx"
+          --results-directory TestResults
+
+      - name: Upload test results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-results-${{ matrix.os }}
+          path: TestResults/*.trx
+          if-no-files-found: ignore
+
+  integration:
+    name: Integration (PostgreSQL 18)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Restore dependencies
+        run: dotnet restore
+
+      - name: Build
+        run: dotnet build -c Release --no-restore
+
+      # CI=true turns an unavailable container into a failure instead of an inconclusive skip.
+      # Without it a broken Docker setup would retire the end-to-end layer and still report green.
+      - name: Integration tests
+        env:
+          CI: true
+        run: >
+          dotnet test -c Release --no-build
+          --filter "TestCategory=Integration"
+          --logger "trx;LogFileName=integration.trx"
+          --results-directory TestResults
+
+      - name: Upload test results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-results-integration
+          path: TestResults/*.trx
+          if-no-files-found: ignore
+
+  pack:
+    name: Pack
+    runs-on: ubuntu-latest
+    needs: [ test, integration ]
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 10.0.x
+
+      # Packing is itself a check: a package that declares PackageReadmeFile without packing the
+      # file fails here with NU5019, and satellites that lose their .targets ship silently broken.
+      - name: Pack
+        run: dotnet pack -c Release -o dist
+
+      - name: List package contents
+        run: |
+          for package in dist/*.nupkg; do
+            echo "=== $(basename "$package")"
+            unzip -l "$package" | awk '{ print "    " $NF }' | grep -E 'README|targets|\.dll$' || true
+          done
+
+      - name: Upload packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: nupkg
+          path: dist/*.nupkg
