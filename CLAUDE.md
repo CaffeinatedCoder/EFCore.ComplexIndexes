@@ -17,7 +17,7 @@ dotnet test --filter "ClassName=MigrationModelDifferTests"
 # Run a single test method
 dotnet test --filter "FullyQualifiedName~MigrationModelDifferTests.SingleIndex_IsCreated"
 
-# Pack NuGet packages (also runs on build due to GeneratePackageOnBuild=true)
+# Pack NuGet packages
 dotnet pack src/EFCore.ComplexIndexes/EFCore.ComplexIndexes.csproj
 ```
 

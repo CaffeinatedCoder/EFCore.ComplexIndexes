@@ -4,11 +4,18 @@
         <Authors>CaffeinatedCoder</Authors>
         <PackageLicenseExpression>MIT</PackageLicenseExpression>
         <GenerateDocumentationFile>true</GenerateDocumentationFile>
-        <GeneratePackageOnBuild>true</GeneratePackageOnBuild>
         <PackageProjectUrl>https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes</PackageProjectUrl>
         <RepositoryUrl>https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes</RepositoryUrl>
         <RepositoryType>git</RepositoryType>
     </PropertyGroup>
+
+    <!--
+        GeneratePackageOnBuild is deliberately NOT set. The SDK's pack targets prepend `Build` to
+        GenerateNuspecDependsOn only when NoBuild != true AND GeneratePackageOnBuild != true, so
+        turning it on silently makes plain `dotnet pack` behave as if the no-build switch had been
+        passed. That packs whatever happens to be in bin/ — stale output on a laptop, and NU5026 on
+        a clean checkout where bin/ is empty, which is how CI found it.
+    -->
 
     <!--
         Debugging support for consumers.
