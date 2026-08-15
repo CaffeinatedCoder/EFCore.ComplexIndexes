@@ -155,6 +155,15 @@ jobs:
             unzip -l "$package" | awk '{ print "    " $NF }' | grep -E 'README|targets|\.dll$' || true
           done
 
+      # The smoke test's *other* invocation mode. The `consumer` job runs it with no argument, where
+      # it packs its own feed; here it is handed a pre-built one, exactly as the release workflow
+      # does. The two are not interchangeable — packing pre-populates NUGET_PACKAGES with the
+      # solution's dependencies, and a restore that only works because of that side effect passes
+      # one way and fails the other. That difference broke a release, because until now nothing
+      # exercised this mode before release day.
+      - name: Consumer smoke test against the packed feed
+        run: ./test/consumer-smoke-test.sh dist
+
       # Generating here too means a broken SBOM step surfaces on a PR rather than on release day.
       - name: Generate SBOMs
         run: |
