@@ -9,7 +9,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 dotnet build EFCore.ComplexIndexes.slnx
 
 # Test
-dotnet test EFCore.ComplexIndexes.Tests/EFCore.ComplexIndexes.Tests.csproj
+dotnet test test/EFCore.ComplexIndexes.Tests/EFCore.ComplexIndexes.Tests.csproj
 
 # Run a single test class
 dotnet test --filter "ClassName=MigrationModelDifferTests"
@@ -17,14 +17,88 @@ dotnet test --filter "ClassName=MigrationModelDifferTests"
 # Run a single test method
 dotnet test --filter "FullyQualifiedName~MigrationModelDifferTests.SingleIndex_IsCreated"
 
-# Pack NuGet packages (also runs on build due to GeneratePackageOnBuild=true)
-dotnet pack EFCore.ComplexIndexes/EFCore.ComplexIndexes.csproj
+# Pack NuGet packages
+dotnet pack src/EFCore.ComplexIndexes/EFCore.ComplexIndexes.csproj
 ```
 
 Tests run in parallel at the method level (`Scope = ExecutionScope.MethodLevel`). The
 `PostgresIntegrationTests` class (`[TestCategory("Integration")]`, `[DoNotParallelize]`) spins up a
 PostgreSQL 18 Testcontainer and applies generated DDL for real; without Docker it needs excluding
 via `--filter "TestCategory!=Integration"`.
+
+Locally, no Docker means those tests go **inconclusive**. When the `CI` environment variable is set
+they **fail** instead — an unreachable container must not quietly retire the end-to-end layer while
+the build reports green.
+
+## CI
+
+`.github/workflows/dotnet.yml` runs on pushes and PRs to `main`: the unit suite across
+ubuntu/windows/macos (the matrix is there because the repository-convention tests do real path
+work), the integration suite on Linux only (Docker), then a pack job whose value is partly that
+packing *is* a check — a package declaring `PackageReadmeFile` without packing the file fails with
+NU5019.
+
+Both workflows generate a **CycloneDX SBOM per package** (`*.cdx.json`) alongside the nupkgs, via
+the `cyclonedx` tool pinned in `.config/dotnet-tools.json`. `--exclude-filter` drops
+`Microsoft.EntityFrameworkCore.Design` and its subtree: that reference is `PrivateAssets=all`, so
+without the filter the core package's SBOM would list ~45 MSBuild/Roslyn components against a nuspec
+declaring one, handing consumers vulnerability alerts for code they never receive.
+`PackagingConventionTests` asserts the filter still covers every `PrivateAssets=all` reference — an
+SBOM that misdescribes the package is worse than none. Publishing one is a courtesy: the CRA's SBOM
+duty falls on commercial consumers for their own products, not on this package.
+
+`.github/workflows/release.yml` publishes on a `v*` tag. `Directory.Build.props` stays the single
+source of truth: the tag is verified against it rather than driving it, packages are discovered from
+the pack output (so a future satellite needs no workflow edit), and pushes use `--skip-duplicate` so
+a re-run after a partial failure is safe. The release gate runs the full suite, which means
+`ChangelogConsistencyTests` blocks a version nothing documents.
+
+Publishing uses **Trusted Publishing (OIDC)** — there is deliberately no long-lived NuGet key in this
+repository. `NuGet/login@v1` exchanges the run's signed OIDC token for an API key valid one hour,
+issued only if the run matches the policy configured on nuget.org (owner + repository + workflow file
+name + environment). The one repository secret, `NUGET_USER`, holds the nuget.org *profile name*; it
+is not a credential and is a secret only to keep it out of build logs.
+
+The workflow is **two jobs**, and the split is the security boundary. `verify` builds, tests and
+packs with no `id-token` permission at all — nothing in it can mint a token. `publish` carries
+`id-token: write`, is gated on the `nuget` environment, and only downloads and pushes what `verify`
+already produced. So a reviewer is asked after the suite has passed rather than before, no token
+exists until they approve, and the artifact published is the one that was tested.
+
+Three things must stay in sync or the policy stops matching — by design, so fix the policy rather
+than working around it: the workflow **file name** (`release.yml`), the **environment** name
+(`nuget`, declared on the `publish` job *and* in the nuget.org policy), and the repository owner/name.
+
+## Quality controls
+
+The signature failure here is a migration that scaffolds *and applies* cleanly while being
+semantically wrong — no exception, no failed apply, just a database that does not enforce what the
+model declared. Three of the eleven issues found in the 5.0.1 audit were that shape. The controls
+below exist because ordinary review does not catch it.
+
+**Convention tests** enforce what is otherwise invisible until a consumer installs the package:
+
+| Test class | Guards |
+|---|---|
+| `ChangelogConsistencyTests` | The changelog lives in four files (root README + one per package). Asserts the shipped version is documented, no README runs ahead of `Directory.Build.props`, package changelogs are a subset of the root's, and sections are newest-first. |
+| `PackagingConventionTests` | Every package ships its own README as `PackageReadmeFile`; `.targets` ship to both `build/` and `buildTransitive/`, reference a real `IDesignTimeServices` in their own assembly, and set `ForProvider` on satellites but not on core. |
+| `BuilderApiParityTests` | Every key in a satellite's annotation whitelist is reachable from a builder method. `SqlServer:DataCompression` sat whitelisted with no API for a full release; this catches that class of drift by invoking every builder extension and diffing the keys it sets. |
+
+**`MigrationHarness`** (under `test/…/Harness/`) is the shared rig: build a model from a
+`DbContext`, construct any differ, render operations through either the stock provider generator or
+this package's. Investigating a suspected differ bug should be three lines, not a re-derived
+40-line setup. `NpgsqlSql(operations, complexIndexWiring: false)` is the one that matters most — it
+shows what a consumer who forgot `UseNpgsqlComplexIndexes()` actually gets.
+
+**Skills** in `.claude/skills/`:
+
+- `migration-safety-review` — the domain review lens: silent degradation across the design-time and
+  runtime seams, definition-store identity keys, name collisions, provider scoping, annotation flow,
+  snapshot churn, operation ordering. Use when touching a differ, a SQL generator, a whitelist, a
+  definition store, a `.targets`, or before a release.
+- `verify-the-guard` — revert the source fix and confirm the new test fails. This caught a test of
+  mine during the audit that asserted nothing (the two declarations it set up deduplicated into one,
+  so no exception was ever possible) and it passed against broken code.
 
 ## Architecture
 
@@ -34,12 +108,16 @@ This library fills a gap in EF Core 10.0 migrations: EF Core can model complex p
 
 | Project | Purpose |
 |---------|---------|
-| `EFCore.ComplexIndexes` | Core library — provider-agnostic fluent API and migration differ |
-| `EFCore.ComplexIndexes.PostgreSQL` | Satellite package — Npgsql index methods (GIN, GiST, BRIN, Hash, SP-GiST), expression/JSON/LINQ indexes, temporal + exclusion constraints |
-| `EFCore.ComplexIndexes.SqlServer` | Satellite package — clustered/covering/online/fill-factor options; rejects expression parts and NULLS ordering with clear errors |
-| `EFCore.ComplexIndexes.Tests` | MSTest suite covering path extraction, serialization, and migration diffing |
+| `src/EFCore.ComplexIndexes` | Core library — provider-agnostic fluent API and migration differ |
+| `src/EFCore.ComplexIndexes.PostgreSQL` | Satellite package — Npgsql index methods (GIN, GiST, BRIN, Hash, SP-GiST), expression/JSON/LINQ indexes, temporal + exclusion constraints |
+| `src/EFCore.ComplexIndexes.SqlServer` | Satellite package — clustered/covering/online/fill-factor options; rejects expression parts and NULLS ordering with clear errors |
+| `test/EFCore.ComplexIndexes.Tests` | MSTest suite covering path extraction, serialization, and migration diffing |
 
-Shared NuGet metadata and the package version live in `Directory.Build.props`.
+Shipping projects live under `src/`, the test project under `test/`; the `.slnx` groups them into
+matching solution folders. Shared NuGet metadata and the package version live in the root
+`Directory.Build.props`, which still applies to every project beneath it. Each shipping project
+carries its own `README.md`, packed as that package's NuGet landing page — keep the per-package
+changelogs in sync with the root `README.md` when releasing.
 
 ### How it works end-to-end
 
@@ -89,12 +167,45 @@ names would collide). Single-column indexes exist in two forms: property-level (
 stored as property annotations) and entity-level `HasComplexIndex(x => x.Complex.Prop, …)`
 (stored as a one-part composite definition — use this for multiple filtered indexes per column).
 
+Names are validated at **two** levels, because neither alone is sufficient. `AddOrReplace` rejects
+an explicit name already used on the same entity (fast feedback at the declaration), and the
+differ's `ValidateUniqueIndexNames` rejects duplicate resolved names per table — the only place
+that sees across the two stores (property-level annotations vs the entity-level list) and knows the
+*default* names, which depend on resolved column names. It validates the **target model only**: a
+snapshot that already contains a collision must stay diffable, or the model could never be fixed.
+Without these, two same-named declarations scaffolded fine and failed at apply time with 42P07.
+
+`NpgsqlExclusionConstraintExtensions.Store` follows the identical rule — ordered elements
+(operators ignored, as direction is for indexes) **plus filter**, with the same
+both-must-be-named guard, plus the same two-level name-uniqueness validation
+(`ValidateUniqueExclusionNames`). **The filter has to stay in the identity key**: filtered overlap
+protection is the entire reason the EXCLUDE API exists, and keying on elements alone silently
+discarded all but the last declaration, so "no overlap among active rows" + "no overlap among
+revoked rows" collapsed to one constraint. Name collisions matter more here than for indexes:
+every ADD is preceded by `DROP CONSTRAINT IF EXISTS`, so a duplicate name does not fail at apply
+time — the second constraint silently replaces the first.
+
 ### Two integration seams: design-time vs. runtime
 
 There are two distinct hook points, and it matters which one a feature uses:
 
 - **Design-time** (`IDesignTimeServices` via the `.targets`-injected attribute) replaces `IMigrationsModelDiffer`. This runs during `dotnet ef migrations add` and is auto-wired — consumers do nothing.
 - **Runtime** (`IMigrationsSqlGenerator`) converts operations to SQL when migrations are *applied*. This is **not** auto-wired; consumers opt in with `optionsBuilder.UseNpgsqlComplexIndexes()` (a `ReplaceService` helper).
+
+Anything that depends on the runtime seam silently degrades when a consumer forgets the wiring, so
+**prefer rendering DDL at design time** (a `SqlOperation` baked into the migration) whenever the
+statement can be built from resolved column names — that is why exclusion *and* temporal
+constraints take that route. The runtime seam is reserved for cases where EF's own operation type
+is the only way to express the change (expression indexes, `NULLS FIRST/LAST`), and those carry the
+`RuntimeWiringSentinel` so a missing wiring fails loudly instead of applying something wrong.
+
+Selecting the design-time differ is deliberately order-independent (`ComplexIndexDesignTimeRegistration`).
+A satellite consumer gets *two* `DesignTimeServicesReferenceAttribute`s — the satellite's, plus the
+core package's riding along through `buildTransitive` — and EF simply enumerates them, resolving
+last-registration-wins. So the satellites' `.targets` set `ForProvider` (EF skips a satellite
+entirely when diffing another provider's context), the satellite registration removes any core
+registration, and the core registration backs off when a satellite differ is already present.
+Registering with a bare `AddSingleton` on both sides picks a differ by luck of NuGet's restore order.
 
 Most index metadata (GIN/operators/include/etc.) flows as *real Npgsql annotation keys* (`Npgsql:IndexMethod`, …) on the `CreateIndexOperation`, so Npgsql's own runtime SQL generator renders it — this package never touches SQL generation for those. Expression indexes are the exception (see below).
 
@@ -141,7 +252,10 @@ EXCLUDE constraints do. Definitions (`ExclusionConstraintDefinition`: ordered pa
 property path *or* verbatim expression plus an operator; method defaulting to gist; filter; name;
 deferrability) are JSON-stored under `CustomExclusion:Constraints`. Unlike expression indexes, the
 differ renders the full `ALTER TABLE … ADD CONSTRAINT … EXCLUDE …` / `DROP CONSTRAINT` DDL as
-`SqlOperation`s at **design time** — no runtime `UseNpgsqlComplexIndexes()` wiring involved. Every
+`SqlOperation`s at **design time** — no runtime `UseNpgsqlComplexIndexes()` wiring involved (as of
+v5.0.2 temporal constraints and temporal FKs are rendered the same way, for the same reason; the
+generator's `AddUniqueConstraintOperation`/`AddForeignKeyOperation` overrides remain only so
+migrations scaffolded before that change still render). Every
 ADD is preceded by `DROP CONSTRAINT IF EXISTS` in the same `SqlOperation` (and standalone drops use
 `IF EXISTS`), so adopting a same-named hand-written constraint applies without 42P07 and a
 re-applied migration self-heals. The snapshot round trip is covered end-to-end by
@@ -152,15 +266,34 @@ snapshot is stale (`--no-build`, stale migrations assembly), not a differ bug. T
 `UseBtreeGist()` / `SuppressTemporalExtensionAutoInjection()` switches) and triggers when a gist
 constraint has an `=` element.
 
+### Provider validation is scoped, never a list sweep
+
+Satellites reject what their provider cannot express by overriding
+`ValidateCreateIndexOperation(CreateIndexOperation)`, which the core calls for each operation *it*
+builds from a complex-index declaration. Never validate by iterating the finished operation list:
+it also holds the operations the base EF differ emitted for native `HasIndex` declarations, and
+policing those turns any provider index option the satellite doesn't happen to know about into a
+hard failure of the consumer's whole `migrations add` — for indexes that never touched this package.
+The check has to exist because entity-level provider annotations reach the operation *unfiltered*
+(only the property-level path goes through `IsForwardedIndexAnnotation`), so `.UseGin()` on a SQL
+Server model is caught, while a native `HasIndex(...).HasMethod("gin")` is left alone.
+
 ### Key extension points
 
-- **Adding a new provider**: Subclass `CustomMigrationsModelDiffer` (override `IsForwardedIndexAnnotation`, optionally `ResolveUnmappedPart`/`ResolveTemplatePart`), implement `IDesignTimeServices` to replace the differ, and ship a `.targets` file that injects the attribute. The PostgreSQL project is the full-featured reference; the SQL Server project is the minimal one (whitelist + validation, no custom SQL generator).
+- **Adding a new provider**: Subclass `CustomMigrationsModelDiffer` (override `IsForwardedIndexAnnotation`, optionally `ValidateCreateIndexOperation`/`ResolveUnmappedPart`/`ResolveTemplatePart`), implement `IDesignTimeServices` to replace the differ, and ship a `.targets` file that injects the attribute (with `ForProvider` set). The PostgreSQL project is the full-featured reference; the SQL Server project is the minimal one (whitelist + validation, no custom SQL generator).
 - **New index options**: Add constants to `ComplexIndexAnnotations.cs` (or `NpgsqlAnnotations.cs`), expose them via `ComplexIndexBuilder`, and read them in the differ when constructing `CreateIndexOperation`.
 
 ### Expression path extraction
 
 `ComplexIndexExtensions` parses anonymous-type lambda expressions (`x => new { x.Name, x.Address.City }`) by recursively walking `MemberExpression` chains to produce dotted property paths. These paths are then matched against the EF Core metadata model to resolve column names.
 
+Every extraction entry point threads the lambda's `ParameterExpression` down to `ExtractSinglePart`,
+which requires the member chain to bottom out at exactly that parameter. This is not optional
+politeness: a captured variable or static member (`x => captured.Name`) produces a perfectly
+well-formed path — `"captured.Name"` — that no property lookup can ever match, so without the check
+the mistake surfaces much later as an opaque "could not resolve property path" from the differ.
+`NpgsqlLinqIndexTranslator.TryGetPath` has always done the same check; core now matches it.
+
 ### Per-column sort direction (`DbOrder.Asc`/`DbOrder.Desc`)
 
-`DbOrder.Asc`/`Desc` are identity marker functions; `ExtractSinglePart` peels them (and `Convert` boxing) off the expression in any order to record a `Descending` flag per part. Unlike expression indexes, descending columns are **provider-agnostic and need no satellite work**: the differ maps direction onto the native `CreateIndexOperation.IsDescending` (`bool[]`), which every relational provider renders. The differ leaves `IsDescending` **null** when all parts are ascending, so existing ascending indexes don't churn. To avoid snapshot churn, `HasComplexCompositeIndex` keeps writing the legacy `PropertyPaths` form when every column is ascending and only switches to the ordered `Parts` form when a descending column is present. Note: wrapping a member in `DbOrder.Desc(...)` makes it a method call, so C# requires naming it in the anonymous type (`new { x.A, B = DbOrder.Desc(x.B) }`).
+`DbOrder.Asc`/`Desc` are identity marker functions; `ExtractSinglePart` peels them (and `Convert` boxing) off the expression in any order to record a `Descending` flag per part. Markers of *different* kinds compose (`NullsLast(Desc(x))`); markers of the *same* kind do not — `Asc(Desc(x))` throws rather than letting one win, since silently picking either sorts the index opposite to what was written. Parts are copied via `IndexPartDefinition.WithSortOptions`, which lives on the type so a new member can't be dropped by a caller rebuilding a part by hand (`Template` was lost that way). Unlike expression indexes, descending columns are **provider-agnostic and need no satellite work**: the differ maps direction onto the native `CreateIndexOperation.IsDescending` (`bool[]`), which every relational provider renders. The differ leaves `IsDescending` **null** when all parts are ascending, so existing ascending indexes don't churn. To avoid snapshot churn, `HasComplexCompositeIndex` keeps writing the legacy `PropertyPaths` form when every column is ascending and only switches to the ordered `Parts` form when a descending column is present. Note: wrapping a member in `DbOrder.Desc(...)` makes it a method call, so C# requires naming it in the anonymous type (`new { x.A, B = DbOrder.Desc(x.B) }`).

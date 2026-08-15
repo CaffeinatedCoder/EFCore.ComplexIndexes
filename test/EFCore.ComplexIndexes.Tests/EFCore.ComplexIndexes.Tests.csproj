@@ -1,0 +1,38 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+    <PropertyGroup>
+        <TargetFramework>net10.0</TargetFramework>
+        <LangVersion>latest</LangVersion>
+        <ImplicitUsings>enable</ImplicitUsings>
+        <Nullable>enable</Nullable>
+        <IsPackable>false</IsPackable>
+        <NoWarn>$(NoWarn);1591</NoWarn>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="10.0.11" />
+        <PackageReference Include="Microsoft.EntityFrameworkCore.SqlServer" Version="10.0.0" />
+        <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="10.0.0" />
+        <!-- Design-time services (snapshot code generation) as a regular library reference:
+             the snapshot round-trip tests drive the real `migrations add` pipeline in-process. -->
+        <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.0">
+            <PrivateAssets>none</PrivateAssets>
+            <IncludeAssets>all</IncludeAssets>
+        </PackageReference>
+        <PackageReference Include="MSTest" Version="4.3.3" />
+        <PackageReference Include="Testcontainers.PostgreSql" Version="4.14.0" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <Using Include="Microsoft.VisualStudio.TestTools.UnitTesting"/>
+        <!-- Generated model snapshots reference internal test context types via [DbContext(typeof(...))]. -->
+        <InternalsVisibleTo Include="SnapshotRoundTrip.Generated"/>
+    </ItemGroup>
+
+    <ItemGroup>
+      <ProjectReference Include="..\..\src\EFCore.ComplexIndexes\EFCore.ComplexIndexes.csproj" />
+      <ProjectReference Include="..\..\src\EFCore.ComplexIndexes.PostgreSQL\EFCore.ComplexIndexes.PostgreSQL.csproj" />
+      <ProjectReference Include="..\..\src\EFCore.ComplexIndexes.SqlServer\EFCore.ComplexIndexes.SqlServer.csproj" />
+    </ItemGroup>
+
+</Project>

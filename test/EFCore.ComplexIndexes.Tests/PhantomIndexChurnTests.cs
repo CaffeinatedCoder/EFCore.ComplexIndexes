@@ -1,0 +1,202 @@
+using Microsoft.Data.Sqlite;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Migrations;
+using Microsoft.EntityFrameworkCore.Migrations.Operations;
+using Microsoft.EntityFrameworkCore.Storage;
+using Microsoft.EntityFrameworkCore.Update.Internal;
+
+namespace EFCore.ComplexIndexes.Tests;
+
+/// <summary>
+/// Regression tests for the phantom complex-index churn: every <c>migrations add</c> re-creating
+/// identical indexes. Two independent causes:
+/// (1) the diff collects ALL non-core property annotations, so the snapshot model's serialized
+///     <c>Relational:ColumnType</c> (absent on the code model) makes every complex index differ;
+/// (2) array-valued provider annotations (e.g. operator classes) are compared/hashed by reference,
+///     so structurally-equal indexes never match.
+/// </summary>
+[TestClass]
+public class PhantomIndexChurnTests : IDisposable
+{
+    private readonly SqliteConnection _connection;
+
+    public PhantomIndexChurnTests()
+    {
+        _connection = new SqliteConnection("DataSource=:memory:");
+        _connection.Open();
+    }
+
+    public void Dispose() => _connection.Dispose();
+
+    private IRelationalModel BuildRelationalModel<TContext>() where TContext : DbContext
+        => MigrationHarness.SqliteModel<TContext>(_connection);
+
+    // Uses the local subclass, not the plain core differ: the array-comparison behaviour under test
+    // only shows up once the Test:* keys are actually forwarded onto the index operation.
+    private IReadOnlyList<MigrationOperation> GetDifferences(IRelationalModel? source, IRelationalModel? target)
+        => MigrationHarness.Diff<TestAnnotationDiffer>(
+               MigrationHarness.SqliteOptions(_connection), source, target);
+
+    // Since v5 the core differ forwards only whitelisted annotation keys (satellites override the
+    // whitelist); the array-comparison behavior under test needs the Test:* keys let through.
+    private sealed class TestAnnotationDiffer(
+        IRelationalTypeMappingSource     typeMappingSource,
+        IMigrationsAnnotationProvider    migrationsAnnotationProvider,
+        IRelationalAnnotationProvider    relationalAnnotationProvider,
+        IRowIdentityMapFactory           rowIdentityMapFactory,
+        CommandBatchPreparerDependencies commandBatchPreparerDependencies)
+        : CustomMigrationsModelDiffer(
+            typeMappingSource,
+            migrationsAnnotationProvider,
+            relationalAnnotationProvider,
+            rowIdentityMapFactory,
+            commandBatchPreparerDependencies)
+    {
+        protected override bool IsForwardedIndexAnnotation(string annotationName)
+            => annotationName.StartsWith("Test:", StringComparison.Ordinal);
+    }
+
+    private class EmptyContext(DbContextOptions options) : DbContext(options);
+
+    private class Address
+    {
+        public string Value { get; set; } = "";
+    }
+
+    private class Person
+    {
+        public Guid Id { get; set; }
+        public Address Address { get; set; } = new();
+    }
+
+    // Index with an array-valued provider annotation (e.g. operator classes).
+    private class ArrayAnnotationContext(DbContextOptions<ArrayAnnotationContext> options) : DbContext(options)
+    {
+        public DbSet<Person> People => Set<Person>();
+
+        protected override void OnModelCreating(ModelBuilder modelBuilder) =>
+            modelBuilder.Entity<Person>(b =>
+            {
+                b.ToTable("person");
+                b.HasKey(x => x.Id);
+                b.ComplexProperty(x => x.Address, c =>
+                    c.Property(x => x.Value).HasColumnName("value")
+                     .HasComplexIndex(ix => ix.HasAnnotation("Test:Operators", new[] { "op_a", "op_b" })));
+            });
+    }
+
+    // Identical index/value as ArrayAnnotationContext, but a distinct context type — so EF's
+    // per-context model cache yields a separate model (and a separate array instance), exactly as
+    // the snapshot model and code model differ at `migrations add` time.
+    private class ArrayAnnotationCloneContext(DbContextOptions<ArrayAnnotationCloneContext> options) : DbContext(options)
+    {
+        public DbSet<Person> People => Set<Person>();
+
+        protected override void OnModelCreating(ModelBuilder modelBuilder) =>
+            modelBuilder.Entity<Person>(b =>
+            {
+                b.ToTable("person");
+                b.HasKey(x => x.Id);
+                b.ComplexProperty(x => x.Address, c =>
+                    c.Property(x => x.Value).HasColumnName("value")
+                     .HasComplexIndex(ix => ix.HasAnnotation("Test:Operators", new[] { "op_a", "op_b" })));
+            });
+    }
+
+    // Same index, different array value — a genuine change that MUST still be detected.
+    private class ArrayAnnotationChangedContext(DbContextOptions<ArrayAnnotationChangedContext> options) : DbContext(options)
+    {
+        public DbSet<Person> People => Set<Person>();
+
+        protected override void OnModelCreating(ModelBuilder modelBuilder) =>
+            modelBuilder.Entity<Person>(b =>
+            {
+                b.ToTable("person");
+                b.HasKey(x => x.Id);
+                b.ComplexProperty(x => x.Address, c =>
+                    c.Property(x => x.Value).HasColumnName("value")
+                     .HasComplexIndex(ix => ix.HasAnnotation("Test:Operators", new[] { "op_a", "op_c" })));
+            });
+    }
+
+    // Mimics the SNAPSHOT model: column type serialized via HasColumnType.
+    private class ExplicitColumnTypeContext(DbContextOptions<ExplicitColumnTypeContext> options) : DbContext(options)
+    {
+        public DbSet<Person> People => Set<Person>();
+
+        protected override void OnModelCreating(ModelBuilder modelBuilder) =>
+            modelBuilder.Entity<Person>(b =>
+            {
+                b.ToTable("person");
+                b.HasKey(x => x.Id);
+                b.ComplexProperty(x => x.Address, c =>
+                    c.Property(x => x.Value).HasColumnName("value").HasColumnType("TEXT")
+                     .HasComplexIndex(isUnique: true));
+            });
+    }
+
+    // Mimics the CODE model: column type left to convention (no explicit annotation).
+    private class ConventionColumnTypeContext(DbContextOptions<ConventionColumnTypeContext> options) : DbContext(options)
+    {
+        public DbSet<Person> People => Set<Person>();
+
+        protected override void OnModelCreating(ModelBuilder modelBuilder) =>
+            modelBuilder.Entity<Person>(b =>
+            {
+                b.ToTable("person");
+                b.HasKey(x => x.Id);
+                b.ComplexProperty(x => x.Address, c =>
+                    c.Property(x => x.Value).HasColumnName("value")
+                     .HasComplexIndex(isUnique: true));
+            });
+    }
+
+    [TestMethod(DisplayName = "Array-valued annotation: identical models produce no index operations")]
+    public void Array_annotation_no_change_produces_no_operations()
+    {
+        var source = BuildRelationalModel<ArrayAnnotationContext>();
+        var target = BuildRelationalModel<ArrayAnnotationCloneContext>();
+
+        var operations = GetDifferences(source, target);
+
+        Assert.IsEmpty(operations.OfType<CreateIndexOperation>());
+        Assert.IsEmpty(operations.OfType<DropIndexOperation>());
+    }
+
+    [TestMethod(DisplayName = "ColumnType asymmetry (snapshot vs code model) produces no index operations")]
+    public void ColumnType_asymmetry_produces_no_operations()
+    {
+        var source = BuildRelationalModel<ExplicitColumnTypeContext>();
+        var target = BuildRelationalModel<ConventionColumnTypeContext>();
+
+        var operations = GetDifferences(source, target);
+
+        Assert.IsEmpty(operations.OfType<CreateIndexOperation>());
+        Assert.IsEmpty(operations.OfType<DropIndexOperation>());
+    }
+
+    [TestMethod(DisplayName = "Array-valued annotation: a changed value is still detected")]
+    public void Array_annotation_value_change_is_detected()
+    {
+        var source = BuildRelationalModel<ArrayAnnotationContext>();
+        var target = BuildRelationalModel<ArrayAnnotationChangedContext>();
+
+        var operations = GetDifferences(source, target);
+
+        Assert.IsNotEmpty(operations.OfType<CreateIndexOperation>());
+        Assert.IsNotEmpty(operations.OfType<DropIndexOperation>());
+    }
+
+    [TestMethod(DisplayName = "Column facets (HasColumnName/HasColumnType) never leak onto the index operation")]
+    public void Column_facets_are_not_forwarded()
+    {
+        var target     = BuildRelationalModel<ExplicitColumnTypeContext>();
+        var operations = GetDifferences(source: null, target: target);
+
+        var createIndex = Assert.ContainsSingle(operations.OfType<CreateIndexOperation>());
+        Assert.IsNull(createIndex.FindAnnotation("Relational:ColumnName"));
+        Assert.IsNull(createIndex.FindAnnotation("Relational:ColumnType"));
+    }
+}
