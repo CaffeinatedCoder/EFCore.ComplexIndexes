@@ -22,6 +22,14 @@
         passes depends on advisories published upstream rather than on anything in this commit; as an
         error it would break unrelated CI runs at unpredictable moments. It must stay visible, so it
         is exempted rather than suppressed with NoWarn.
+
+        As of 5.0.2 it fires for System.Security.Cryptography.Xml 9.0.0, reached only through
+        Microsoft.EntityFrameworkCore.Design -> Microsoft.Build.Tasks.Core. That reference is
+        PrivateAssets=all, so the package never declares it and consumers never restore it: the
+        exposure is limited to machines building this repository. Bumping Design to 10.0.11 clears
+        the warning but drags the direct Abstractions reference up with it (NU1605 rejects the
+        downgrade), which would raise the consumer's EF Core floor from 10.0.0 to 10.0.11. Keeping
+        the floor low is worth more than silencing a warning that describes no consumer risk.
     -->
     <PropertyGroup>
         <WarningsNotAsErrors>NU1901;NU1902;NU1903;NU1904</WarningsNotAsErrors>
