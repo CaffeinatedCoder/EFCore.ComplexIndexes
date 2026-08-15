@@ -1,6 +1,6 @@
 ---
 name: verify-the-guard
-description: Prove a regression test actually fails without its fix, by reverting the source change and re-running. Use whenever adding a test alongside a bug fix or a new validation in this repo, before reporting the work as done.
+description: Prove a guard actually fails without the thing it guards — revert the source fix, or break the mechanism for packaging and design-time wiring where there is no source fix to revert. Use whenever adding a test alongside a bug fix or a new validation in this repo, and whenever a check's subject is delivery rather than code, before reporting the work as done.
 ---
 
 # Verify the guard
@@ -55,6 +55,43 @@ working tree with a partially reverted fix.
   compile error usually means the test depends on API introduced by the fix — restructure it to
   exercise behaviour that exists either way, or accept that it is a feature test rather than a
   regression test and say so.
+
+## When the guard's subject is delivery, not code
+
+Packaging and design-time wiring have no one-line source fix to revert. The counterfactual is to
+**break the mechanism** — neuter a `.targets`, drop a whitelist entry, hand the script a different
+kind of input — and confirm the guard notices. Three traps, all of which produced a green run
+against a deliberately broken build on 2026-08-15:
+
+**The mechanism is redundant.** A satellite consumer gets two `DesignTimeServicesReferenceAttribute`s
+— the satellite's and the core package's, riding along through `buildTransitive`. Neuter either one
+alone and migrations still scaffold correctly, because the survivor covers it. Break them
+**separately**, and expect the single-break case to pass; that is the design, not a failure.
+
+**The assertion may not discriminate.** Entity-level provider annotations reach the operation
+unfiltered, so `Npgsql:IndexMethod` and `SqlServer:FillFactor` appear whether the satellite differ
+ran or the core one did. Asserting on them proves the package installed, not that the right differ
+won. Pin a satellite with something only it does: an exclusion constraint for Npgsql (design-time
+DDL the core differ has never heard of), and for SQL Server a **rejection** — a clustered complex
+index must fail at `migrations add`, so scaffolding cleanly is the failure.
+
+**The conditions carry the bug.** Re-running the same command proves nothing; vary the axis the
+check silently depends on. A cold checkout instead of a warm `bin/`. A pre-built feed instead of one
+the script packs itself — packing populates `NUGET_PACKAGES` as a side effect, and a restore that
+only works because of it passes one way and fails the other. A private package cache instead of the
+global one, which otherwise serves a same-versioned package from an earlier build, or from
+nuget.org, in place of the one just built.
+
+## Ways a guard passes vacuously
+
+Worth checking before believing a green run:
+
+- It asserted on something both the correct and broken paths produce (see above).
+- It read a cached or previously published artifact rather than the one just built.
+- It greps for a phrase that no longer occurs, because the phrase was reworded. Assert the match
+  succeeded, so a reword fails loudly instead of quietly testing nothing.
+- Its setup collapsed: two declarations meant to collide deduplicated into one, so the exception
+  under test was never possible.
 
 ## Tests that legitimately pass either way
 
