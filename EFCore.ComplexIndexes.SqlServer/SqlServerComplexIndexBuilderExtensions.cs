@@ -1,3 +1,5 @@
+using Microsoft.EntityFrameworkCore;
+
 namespace EFCore.ComplexIndexes.SqlServer;
 
 /// <summary>
@@ -30,6 +32,10 @@ public static class SqlServerComplexIndexBuilderExtensions
     /// <summary>Sorts intermediate results in tempdb during index creation.</summary>
     public static TBuilder SortInTempDb<TBuilder>(this TBuilder builder, bool sortInTempDb = true) where TBuilder : IIndexAnnotationBuilder
         => builder.Set(SqlServerAnnotations.SortInTempDb, sortInTempDb);
+
+    /// <summary>Sets the index's data compression (<c>NONE</c>, <c>ROW</c>, or <c>PAGE</c>).</summary>
+    public static TBuilder UseDataCompression<TBuilder>(this TBuilder builder, DataCompressionType dataCompression) where TBuilder : IIndexAnnotationBuilder
+        => builder.Set(SqlServerAnnotations.DataCompression, dataCompression);
 
     private static TBuilder Set<TBuilder>(this TBuilder builder, string key, object? value) where TBuilder : IIndexAnnotationBuilder
     {

@@ -51,14 +51,7 @@ public sealed class ExpressionIndexBuilder : IIndexAnnotationBuilder
         if (_parts.Count == 0)
             throw new InvalidOperationException($"Call Expression(...) before {modifier}().");
 
-        var last = _parts[^1];
-        _parts[^1] = new IndexPartDefinition
-                     {
-                         PropertyPath = last.PropertyPath,
-                         Expression   = last.Expression,
-                         Descending   = descending ?? last.Descending,
-                         NullSort     = nullSort   ?? last.NullSort
-                     };
+        _parts[^1] = _parts[^1].WithSortOptions(descending, nullSort);
         return this;
     }
 

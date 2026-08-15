@@ -38,7 +38,7 @@ public static class NpgsqlExclusionConstraintExtensions
         )
         {
             var equalityPaths = NpgsqlTemporalConstraintExtensions.ExtractPaths(equalityColumns);
-            var overlapPath   = ComplexIndexExtensions.ExtractSinglePath(overlapsColumn.Body);
+            var overlapPath   = ComplexIndexExtensions.ExtractSinglePath(overlapsColumn);
 
             if (equalityPaths.Count == 0)
                 throw new ArgumentException("An exclusion constraint requires at least one equality column.", nameof(equalityColumns));
@@ -73,20 +73,58 @@ public static class NpgsqlExclusionConstraintExtensions
         }
     }
 
-    // Re-declaring a constraint over the same ordered elements (operators ignored) replaces it.
+    /// <summary>
+    /// Stores <paramref name="definition"/> in the entity's exclusion-constraint annotation, using
+    /// the same identity rule as <c>ComplexIndexStorage.AddOrReplace</c> does for indexes: same
+    /// ordered elements (operators ignored) + same filter → replace; same elements + a
+    /// <em>different</em> filter → coexist as separate partial constraints.
+    /// </summary>
+    /// <remarks>
+    /// The filter has to be part of the identity. Filtered overlap protection is the whole reason
+    /// this API exists over <c>UNIQUE … WITHOUT OVERLAPS</c>, and "no overlap among active grants"
+    /// plus "no overlap among revoked grants" is one constraint per filter over the same columns —
+    /// keying on the elements alone silently kept only the last declaration.
+    /// Coexisting constraints must both be named: the default <c>EX_{table}_{columns}</c> name is
+    /// derived from the elements alone, so the two would collide in the database.
+    /// </remarks>
     private static EntityTypeBuilder<TEntity> Store<TEntity>(
         EntityTypeBuilder<TEntity>    builder,
         ExclusionConstraintDefinition definition
     ) where TEntity : class
     {
         var existing = GetExisting(builder);
-        existing.RemoveAll(d => d.Parts.Select(p => (p.PropertyPath, p.Expression))
-                                 .SequenceEqual(definition.Parts.Select(p => (p.PropertyPath, p.Expression))));
+        existing.RemoveAll(d => HasSameElements(d, definition) && d.Filter == definition.Filter);
+
+        var unnamedSibling = existing.FirstOrDefault(
+            d => HasSameElements(d, definition) && (d.Name is null || definition.Name is null));
+
+        if (unnamedSibling is not null)
+            throw new ArgumentException(
+                $"Two exclusion constraints over the same elements ({DescribeElements(definition)}) with " +
+                "different filters must both have explicit names — the default names would collide in the database.");
+
+        // Worse here than for indexes: each ADD CONSTRAINT is preceded by DROP CONSTRAINT IF EXISTS,
+        // so a reused name does not fail at apply time — the second constraint silently drops and
+        // replaces the first.
+        if (definition.Name is not null && existing.Any(d => d.Name == definition.Name))
+            throw new ArgumentException(
+                $"The exclusion constraint name '{definition.Name}' is already used by another constraint " +
+                "on this entity. Constraint names must be unique per table.");
+
         existing.Add(definition);
 
         builder.HasAnnotation(NpgsqlExclusionAnnotations.Constraints, ExclusionConstraintSerializer.Serialize(existing));
         return builder;
     }
+
+    // Operators are deliberately ignored, mirroring how index identity ignores DbOrder direction:
+    // re-declaring the same elements updates the operators rather than adding a second constraint.
+    private static bool HasSameElements(ExclusionConstraintDefinition a, ExclusionConstraintDefinition b)
+        => a.Parts.Select(p => (p.PropertyPath, p.Expression))
+            .SequenceEqual(b.Parts.Select(p => (p.PropertyPath, p.Expression)));
+
+    private static string DescribeElements(ExclusionConstraintDefinition definition)
+        => string.Join(", ", definition.Parts.Select(p => p.PropertyPath ?? p.Expression));
 
     private static List<ExclusionConstraintDefinition> GetExisting(EntityTypeBuilder entityTypeBuilder)
     {
@@ -119,7 +157,7 @@ public sealed class ExclusionConstraintBuilder<TEntity> where TEntity : class
         ArgumentException.ThrowIfNullOrWhiteSpace(@operator);
         _parts.Add(new ExclusionPartDefinition
                    {
-                       PropertyPath = ComplexIndexExtensions.ExtractSinglePath(column.Body),
+                       PropertyPath = ComplexIndexExtensions.ExtractSinglePath(column),
                        Operator     = @operator
                    });
         return this;

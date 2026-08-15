@@ -21,17 +21,17 @@ EF Core 8.0 introduced complex properties, but migration tooling doesn't automat
 - **JSON Member Indexes** *(PostgreSQL)*: Index members of complex properties mapped with `ToJson()` — the same `HasComplexIndex` declaration becomes a `(col ->> 'Member')` expression index automatically
 - **Temporal Constraints** *(PostgreSQL 18)*: Declare `UNIQUE … WITHOUT OVERLAPS` constraints to guarantee no two rows occupy overlapping time periods — the database enforces scheduling integrity for you
 - **Exclusion Constraints** *(PostgreSQL)*: Declare `EXCLUDE USING gist (… WITH =, … WITH &&) WHERE (…)` constraints — filtered overlap protection (e.g. ignore soft-deleted rows), on any supported PostgreSQL version
-- **SQL Server Options** *(SQL Server)*: Clustered, covering (`INCLUDE`), online-built, and fill-factor index options on complex-property indexes — rendered by the stock SQL Server generator, no runtime wiring
+- **SQL Server Options** *(SQL Server)*: Clustered, covering (`INCLUDE`), online-built, fill-factor, and data-compression index options on complex-property indexes — rendered by the stock SQL Server generator, no runtime wiring
 
 | Package | NuGet | Description |
 |---|---|---|
 | **EFCore.ComplexIndexes** | [![nuget](https://img.shields.io/nuget/v/EFCore.ComplexIndexes.svg)](https://www.nuget.org/packages/EFCore.ComplexIndexes/) | Core library — single-column, composite, unique, and filtered indexes on complex type properties. Works with any EF Core relational provider. |
 | **EFCore.ComplexIndexes.PostgreSQL** | [![nuget](https://img.shields.io/nuget/v/EFCore.ComplexIndexes.PostgreSQL.svg)](https://www.nuget.org/packages/EFCore.ComplexIndexes.PostgreSQL/) | PostgreSQL extensions via [Npgsql](https://www.npgsql.org/efcore/) — adds GIN, GiST, BRIN, SP-GiST, and Hash index methods, operator classes, covering indexes (`INCLUDE`), concurrent creation, nulls-distinct control, `NULLS FIRST/LAST`, **expression (functional) indexes** (raw SQL and **typed LINQ**), **JSON member indexes**, **temporal `UNIQUE` constraints (`WITHOUT OVERLAPS`)**, and **exclusion constraints (`EXCLUDE`)**. |
-| **EFCore.ComplexIndexes.SqlServer** | [![nuget](https://img.shields.io/nuget/v/EFCore.ComplexIndexes.SqlServer.svg)](https://www.nuget.org/packages/EFCore.ComplexIndexes.SqlServer/) | SQL Server extensions — clustered/nonclustered control, covering indexes (`INCLUDE`), online index builds, fill factor, and sort-in-tempdb on complex-property indexes. Rendered by the stock SQL Server generator; no runtime wiring. |
+| **EFCore.ComplexIndexes.SqlServer** | [![nuget](https://img.shields.io/nuget/v/EFCore.ComplexIndexes.SqlServer.svg)](https://www.nuget.org/packages/EFCore.ComplexIndexes.SqlServer/) | SQL Server extensions — clustered/nonclustered control, covering indexes (`INCLUDE`), online index builds, fill factor, sort-in-tempdb, and data compression on complex-property indexes. Rendered by the stock SQL Server generator; no runtime wiring. |
 
 > **Which package do I need?**
 > Install only the **core** package if you use SQLite or any provider where the default B-tree index type is sufficient.
-> Add the **PostgreSQL** package for PostgreSQL-specific index types, expression/JSON indexes, or temporal/exclusion constraints; add the **SQL Server** package for clustered/covering/online/fill-factor options. Both include the core automatically.
+> Add the **PostgreSQL** package for PostgreSQL-specific index types, expression/JSON indexes, or temporal/exclusion constraints; add the **SQL Server** package for clustered/covering/online/fill-factor/compression options. Both include the core automatically.
 
 ---
 
@@ -257,7 +257,7 @@ ordering semantics use `HasExpressionIndex` with an explicit cast.
 
 ### Temporal `UNIQUE` constraints (`WITHOUT OVERLAPS`) — PostgreSQL 18
 
-> Requires `UseNpgsqlComplexIndexes()` (see [Getting started](#expression-indexes-postgresql--one-time-setup)).
+> No runtime wiring required — the DDL is rendered at design time into the migration itself.
 > Available as an extension on `EntityTypeBuilder<TEntity>`, so it works on any entity — complex or not.
 
 PostgreSQL 18 introduced `WITHOUT OVERLAPS` for unique constraints — a long-requested feature for scheduling, booking, and versioning scenarios. Instead of only checking *"is this exact value already present?"*, the database enforces *"no two rows for the same key have overlapping time periods"*.
@@ -328,7 +328,7 @@ Re-declaring a temporal constraint on the same key + period replaces the previou
 
 ### Temporal foreign keys (`PERIOD`) — PostgreSQL 18
 
-> Requires `UseNpgsqlComplexIndexes()` because PostgreSQL's temporal FK syntax needs custom migration SQL rendering.
+> No runtime wiring required — the `PERIOD` DDL is rendered at design time into the migration itself.
 
 `HasTemporalForeignKey` adds PostgreSQL 18 temporal referential integrity. The scalar key columns are matched by equality, and the dependent period must be fully covered by matching principal periods.
 
@@ -427,7 +427,20 @@ Selectors resolve complex-property members to their mapped columns, exactly like
 Scalar equality elements under `gist` need the `btree_gist` extension — the differ injects
 `CREATE EXTENSION IF NOT EXISTS btree_gist` automatically, shared with temporal constraints and
 governed by the same `UseBtreeGist()` / `SuppressTemporalExtensionAutoInjection()` switches.
-Re-declaring a constraint over the same elements replaces it; removing the declaration emits a
+Constraint identity is the ordered elements **plus the filter** (operators are ignored, so
+re-declaring updates them). Re-declaring the same elements with the same filter replaces the
+constraint; the same elements with a *different* filter give you two coexisting partial
+constraints — which is the point of the feature:
+
+```csharp
+b.HasExclusionConstraint(x => x.GranteeId, x => x.Period,
+                         filter: "revoked_at IS NULL",     name: "ex_grant_active");
+b.HasExclusionConstraint(x => x.GranteeId, x => x.Period,
+                         filter: "revoked_at IS NOT NULL", name: "ex_grant_revoked");
+```
+
+Coexisting constraints must both be named: the default `EX_{table}_{columns}` name is derived from
+the elements alone, so the two would collide in the database. Removing a declaration emits a
 `DROP CONSTRAINT` in the next migration.
 
 **Adopting hand-written constraints:** the generated `ADD CONSTRAINT` is preceded by
@@ -463,7 +476,7 @@ builder.HasComplexIndex(x => x.Email.Value, ix => ix
 //   INCLUDE ([name]) WITH (FILLFACTOR = 80, ONLINE = ON);
 ```
 
-`IsClustered()` and `SortInTempDb()` are also available. Filtered indexes (`filter:`) and
+`IsClustered()`, `SortInTempDb()`, and `UseDataCompression(DataCompressionType.Page)` are also available. Filtered indexes (`filter:`) and
 `DbOrder.Desc` work out of the box, since both ride on EF's native operation. Two deliberate
 rejections with clear errors at `migrations add`: expression parts (SQL Server has no
 expression-index DDL — model a persisted computed column and index that) and
@@ -497,6 +510,19 @@ expression-index DDL — model a persisted computed column and index that) and
 - **Changed:** renaming a table no longer drops and recreates the complex indexes it carries.
 - **Changed:** indexes requiring the custom PostgreSQL generator carry a loud sentinel column, so a missing `UseNpgsqlComplexIndexes()` fails at apply time with an actionable error instead of applying a silently wrong index.
 
+### 5.0.2
+
+- **Fixed:** temporal `UNIQUE … WITHOUT OVERLAPS` constraints and temporal foreign keys are now rendered at design time, like exclusion constraints, and no longer need `UseNpgsqlComplexIndexes()`. Previously a consumer without that wiring got a plain `UNIQUE (key, period)` — valid DDL that applied cleanly and silently dropped the entire non-overlap guarantee. Migrations scaffolded before this change keep working: the SQL generator still renders the old stamped operations.
+- **New:** `UseDataCompression(DataCompressionType)` on SQL Server complex indexes — the annotation was already forwarded but had no way to set it.
+- **Fixed:** `DbOrder.Asc` now marks a column ascending, and combining it with `DbOrder.Desc` (or `NullsFirst` with `NullsLast`) throws instead of silently picking one. Repeating the same marker is still fine.
+- **Fixed:** an `Npgsql:IndexSortOrder`/`IndexNullSortOrder` annotation on an index that also carries per-part sort options is now rejected rather than silently ignored by the package's SQL generator.
+- **Fixed:** `CompositeIndexDefinition` equality compares array-valued provider annotations (operator classes, INCLUDE lists) by content instead of by reference.
+- **Fixed:** provider validation no longer inspects index operations this package did not create. The satellites previously swept every `CreateIndexOperation` in the migration, so a plain native `HasIndex` carrying a provider option outside the satellite's whitelist would have failed the entire `migrations add` — harmless with today's providers, but it tied your migrations to the exact index-option set each satellite knows about.
+- **Fixed:** index, temporal-constraint, and exclusion-constraint selectors that read a captured variable or static member instead of the lambda parameter (`x => captured.Name`) now throw at the declaration, naming the offending selector — previously they produced an unmatchable property path that failed much later with an opaque resolution error.
+- **Fixed:** duplicate index and exclusion-constraint names are now rejected instead of producing a migration that fails at apply time (42P07) — or, for exclusion constraints, one that applies silently and leaves only the last constraint standing. Reusing an explicit name throws at the declaration; collisions between default names, or between a property-level and an entity-level declaration, throw during `migrations add`.
+- **Fixed:** exclusion-constraint identity now includes the filter, so two `EXCLUDE` constraints over the same columns with different predicates coexist (both must be named) instead of the second silently replacing the first — the filtered-overlap case the API exists for. Re-declaring with the same filter still updates in place.
+- **Fixed:** the design-time differ is now selected deterministically. A satellite package's `DesignTimeServicesReferenceAttribute` is scoped to its provider (`ForProvider`), and the core registration backs off when a satellite is present — previously, because the core package's attribute rides along transitively and EF resolves last-registration-wins, NuGet's restore order decided which differ ran. A solution referencing two satellites could hand one provider's model to the other provider's differ, silently dropping its index options.
+
 ---
 
-The package integrates seamlessly with EF Core's design-time tooling. Apart from the one-time `UseNpgsqlComplexIndexes()` call for PostgreSQL-specific SQL generation, there is no additional ceremony — just configure and migrate.
+The package integrates seamlessly with EF Core's design-time tooling. Apart from the one-time `UseNpgsqlComplexIndexes()` call required by expression indexes and `NULLS FIRST/LAST`, there is no additional ceremony — just configure and migrate.

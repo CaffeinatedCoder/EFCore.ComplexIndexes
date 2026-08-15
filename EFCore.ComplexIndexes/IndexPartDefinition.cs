@@ -39,6 +39,25 @@ public sealed class IndexPartDefinition : IEquatable<IndexPartDefinition>
 
     [JsonIgnore] public bool IsTemplate => Template is not null;
 
+    /// <summary>
+    /// Returns a copy of this part with the given sort options applied; null arguments keep the
+    /// current value.
+    /// </summary>
+    /// <remarks>
+    /// Lives next to the properties on purpose. Callers that rebuild a part by hand silently drop
+    /// whichever member they forget — <c>Template</c> was dropped this way — and the loss only
+    /// surfaces much later as an index rendered without its expression.
+    /// </remarks>
+    internal IndexPartDefinition WithSortOptions(bool? descending = null, DbNullSort? nullSort = null)
+        => new()
+           {
+               PropertyPath = PropertyPath,
+               Expression   = Expression,
+               Template     = Template,
+               Descending   = descending ?? Descending,
+               NullSort     = nullSort   ?? NullSort
+           };
+
     public bool Equals(IndexPartDefinition? other) =>
         other is not null
      && PropertyPath == other.PropertyPath

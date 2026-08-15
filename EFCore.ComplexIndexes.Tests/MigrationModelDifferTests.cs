@@ -592,6 +592,72 @@ public class MigrationsModelDifferTests : IDisposable
         Assert.ThrowsExactly<ArgumentException>(() => BuildRelationalModel<UnnamedFilteredSiblingsContext>());
     }
 
+    // Both named — but named the *same*, which the "must be named" guard alone happily accepted.
+    private class DuplicateExplicitNameContext(
+        DbContextOptions<DuplicateExplicitNameContext> options) : DbContext(options)
+    {
+        public DbSet<PersonV1> People => Set<PersonV1>();
+
+        protected override void OnModelCreating(ModelBuilder modelBuilder) =>
+            modelBuilder.Entity<PersonV1>(builder =>
+            {
+                builder.ToTable("person");
+                builder.HasKey(x => x.Id);
+                builder.ComplexProperty(x => x.EmailAddress, c => c.Property(x => x.Value).HasColumnName("email_address"));
+                builder.HasComplexIndex(x => x.EmailAddress.Value, filter: "deleted_at IS NULL", indexName: "ix_dup");
+                builder.HasComplexIndex(x => x.EmailAddress.Value, filter: "deleted_at IS NOT NULL", indexName: "ix_dup");
+            });
+    }
+
+    [TestMethod(DisplayName = "Reusing one explicit index name for two indexes is rejected")]
+    public void Duplicate_explicit_index_name_is_rejected()
+    {
+        var ex = Assert.ThrowsExactly<ArgumentException>(BuildRelationalModel<DuplicateExplicitNameContext>);
+
+        StringAssert.Contains(ex.Message, "'ix_dup' is already used");
+    }
+
+    // The property-level store and the entity-level store cannot see each other, so both emit an
+    // index over email_address under the same default name — two CREATE INDEX statements, 42P07.
+    private class PropertyAndEntityLevelContext(
+        DbContextOptions<PropertyAndEntityLevelContext> options) : DbContext(options)
+    {
+        public DbSet<PersonV1> People => Set<PersonV1>();
+
+        protected override void OnModelCreating(ModelBuilder modelBuilder) =>
+            modelBuilder.Entity<PersonV1>(builder =>
+            {
+                builder.ToTable("person");
+                builder.HasKey(x => x.Id);
+                builder.ComplexProperty(x => x.EmailAddress,
+                                        c => c.Property(x => x.Value)
+                                              .HasColumnName("email_address")
+                                              .HasComplexIndex());
+                builder.HasComplexIndex(x => x.EmailAddress.Value, isUnique: true);
+            });
+    }
+
+    [TestMethod(DisplayName = "Property-level and entity-level indexes colliding on the default name are rejected")]
+    public void Colliding_default_index_names_are_rejected()
+    {
+        var ex = Assert.ThrowsExactly<InvalidOperationException>(
+            () => GetDifferences(source: null, target: BuildRelationalModel<PropertyAndEntityLevelContext>()));
+
+        StringAssert.Contains(ex.Message, "both resolve to the name 'IX_person_email_address'");
+        StringAssert.Contains(ex.Message, "UNIQUE");
+    }
+
+    // A collision already baked into the snapshot must not block diffing a fixed model.
+    [TestMethod(DisplayName = "A colliding source model can still be diffed to a fixed target")]
+    public void Colliding_source_model_stays_diffable()
+    {
+        var operations = GetDifferences(
+            source: BuildRelationalModel<PropertyAndEntityLevelContext>(),
+            target: BuildRelationalModel<EntityLevelSingleIndexContext>());
+
+        Assert.IsNotNull(operations);
+    }
+
     private class RedeclaredCompositeContext(
         DbContextOptions<RedeclaredCompositeContext> options) : DbContext(options)
     {

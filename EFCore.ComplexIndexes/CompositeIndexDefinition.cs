@@ -46,7 +46,7 @@ public sealed class CompositeIndexDefinition : IEquatable<CompositeIndexDefiniti
             foreach (var (key, value) in ProviderAnnotations.OrderBy(kv => kv.Key))
             {
                 hash.Add(key);
-                hash.Add(value);
+                AnnotationValues.AddValue(ref hash, value);
             }
         }
 
@@ -61,7 +61,7 @@ public sealed class CompositeIndexDefinition : IEquatable<CompositeIndexDefiniti
         foreach (var (key, value) in a)
         {
             if (!b.TryGetValue(key, out var otherValue)) return false;
-            if (!Equals(value, otherValue)) return false;
+            if (!AnnotationValues.ValuesEqual(value, otherValue)) return false;
         }
         return true;
     }

@@ -15,8 +15,9 @@ namespace EFCore.ComplexIndexes.PostgreSQL;
 /// <remarks>
 /// Temporal constraints over scalar columns require the <c>btree_gist</c> extension. The differ
 /// injects <c>CREATE EXTENSION IF NOT EXISTS btree_gist</c> automatically; call <c>UseBtreeGist</c>
-/// for explicit control or <c>SuppressTemporalExtensionAutoInjection</c> to opt out. Rendering the
-/// <c>WITHOUT OVERLAPS</c> clause requires runtime wiring via <c>UseNpgsqlComplexIndexes()</c>.
+/// for explicit control or <c>SuppressTemporalExtensionAutoInjection</c> to opt out. Like exclusion
+/// constraints, the DDL is rendered at design time into the migration, so no runtime
+/// <c>UseNpgsqlComplexIndexes()</c> wiring is required.
 /// </remarks>
 public static class NpgsqlTemporalConstraintExtensions
 {
@@ -34,7 +35,7 @@ public static class NpgsqlTemporalConstraintExtensions
         )
         {
             var keys       = ExtractPaths(keyColumns);
-            var periodPath = ComplexIndexExtensions.ExtractSinglePath(period.Body);
+            var periodPath = ComplexIndexExtensions.ExtractSinglePath(period);
 
             if (keys.Count == 0)
                 throw new ArgumentException("A temporal constraint requires at least one key column.", nameof(keyColumns));
@@ -74,8 +75,8 @@ public static class NpgsqlTemporalConstraintExtensions
         {
             var dependentKeys      = ExtractPaths(dependentKeyColumns);
             var principalKeys      = ExtractPaths(principalKeyColumns);
-            var dependentPeriodPath = ComplexIndexExtensions.ExtractSinglePath(dependentPeriod.Body);
-            var principalPeriodPath = ComplexIndexExtensions.ExtractSinglePath(principalPeriod.Body);
+            var dependentPeriodPath = ComplexIndexExtensions.ExtractSinglePath(dependentPeriod);
+            var principalPeriodPath = ComplexIndexExtensions.ExtractSinglePath(principalPeriod);
 
             if (dependentKeys.Count == 0)
                 throw new ArgumentException("A temporal foreign key requires at least one dependent key column.", nameof(dependentKeyColumns));
@@ -172,8 +173,10 @@ public static class NpgsqlTemporalConstraintExtensions
         while (body is UnaryExpression { NodeType: ExpressionType.Convert } unary)
             body = unary.Operand;
 
+        var root = expression.Parameters[0];
+
         return body is NewExpression newExpression
-                   ? [.. newExpression.Arguments.Select(ComplexIndexExtensions.ExtractSinglePath)]
-                   : [ComplexIndexExtensions.ExtractSinglePath(body)];
+                   ? [.. newExpression.Arguments.Select(a => ComplexIndexExtensions.ExtractSinglePath(a, root))]
+                   : [ComplexIndexExtensions.ExtractSinglePath(body, root)];
     }
 }

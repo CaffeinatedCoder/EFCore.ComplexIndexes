@@ -1,3 +1,4 @@
+using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata;
 using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Migrations.Operations;
@@ -45,59 +46,71 @@ public class SqlServerComplexIndexMigrationsModelDiffer(
     /// <summary>SQL Server renames indexes standalone (<c>sp_rename</c>).</summary>
     protected override bool CanRenameIndexes => true;
 
-    /// <summary>Resolves property paths inside INCLUDE lists to column names (verbatim fallback).</summary>
+    /// <summary>
+    /// Resolves property paths inside INCLUDE lists to column names (verbatim fallback), and
+    /// restores the data-compression enum after its JSON round trip.
+    /// </summary>
     protected override object? TransformIndexAnnotation(
         IEntityType           entityType,
         string                annotationName,
         object?               value,
         StoreObjectIdentifier storeObject
-    ) => annotationName == SqlServerAnnotations.Include
-             ? ResolveIncludeList(entityType, value, storeObject)
-             : base.TransformIndexAnnotation(entityType, annotationName, value, storeObject);
+    ) => annotationName switch
+         {
+             SqlServerAnnotations.Include         => ResolveIncludeList(entityType, value, storeObject),
+             SqlServerAnnotations.DataCompression => CoerceDataCompression(value),
+             _                                    => base.TransformIndexAnnotation(entityType, annotationName, value, storeObject)
+         };
 
-    public override IReadOnlyList<MigrationOperation> GetDifferences(
-        IRelationalModel? source,
-        IRelationalModel? target
-    )
+    // Entity-level index definitions are stored as JSON, which flattens the enum to a number. SQL
+    // Server's generator reads this option as DataCompressionType? — a boxed int reads back as null,
+    // so the option would silently vanish from the generated DDL.
+    private static object? CoerceDataCompression(object? value) => value switch
     {
-        var operations = base.GetDifferences(source, target);
+        DataCompressionType                                                                   => value,
+        int i                                                                                 => (DataCompressionType)i,
+        long l                                                                                => (DataCompressionType)l,
+        string s when Enum.TryParse<DataCompressionType>(s, ignoreCase: true, out var parsed) => parsed,
+        _                                                                                     => value
+    };
 
-        foreach (var op in operations.OfType<CreateIndexOperation>())
+    /// <summary>
+    /// Rejects complex-index declarations SQL Server cannot express: PostgreSQL index options,
+    /// expression parts, and <c>NULLS FIRST</c>/<c>NULLS LAST</c> ordering.
+    /// </summary>
+    protected override void ValidateCreateIndexOperation(CreateIndexOperation operation)
+    {
+        foreach (var annotation in operation.GetAnnotations())
         {
-            foreach (var annotation in op.GetAnnotations())
-            {
-                if (annotation.Name.StartsWith("Npgsql:", StringComparison.Ordinal))
-                {
-                    throw new InvalidOperationException(
-                        $"Index '{op.Name}' carries the PostgreSQL annotation '{annotation.Name}', but the model " +
-                        "is diffed with the SQL Server satellite. Use the EFCore.ComplexIndexes.SqlServer options instead."
-                    );
-                }
-            }
-
-            if (op[ComplexIndexAnnotations.IndexParts] is not string partsJson)
-                continue;
-
-            var parts = IndexPartsSerializer.Deserialize(partsJson);
-
-            if (parts.Any(p => p.IsExpression))
+            if (annotation.Name.StartsWith("Npgsql:", StringComparison.Ordinal))
             {
                 throw new InvalidOperationException(
-                    $"Index '{op.Name}' contains a SQL expression part. SQL Server has no expression-index DDL — " +
-                    "model the expression as a persisted computed column and index that column instead."
-                );
-            }
-
-            if (parts.Any(p => p.NullSort != DbNullSort.Default))
-            {
-                throw new InvalidOperationException(
-                    $"Index '{op.Name}' declares NULLS FIRST/LAST ordering, which SQL Server does not support. " +
-                    "Remove the DbOrder.NullsFirst/NullsLast marker."
+                    $"Complex index '{operation.Name}' carries the PostgreSQL annotation '{annotation.Name}', but the " +
+                    "model is diffed with the SQL Server satellite. Use the EFCore.ComplexIndexes.SqlServer options instead."
                 );
             }
         }
 
-        return operations;
+        if (operation[ComplexIndexAnnotations.IndexParts] is not string partsJson)
+            return;
+
+        var parts = IndexPartsSerializer.Deserialize(partsJson);
+
+        if (parts.Any(p => p.IsExpression))
+        {
+            throw new InvalidOperationException(
+                $"Complex index '{operation.Name}' contains a SQL expression part. SQL Server has no expression-index " +
+                "DDL — model the expression as a persisted computed column and index that column instead."
+            );
+        }
+
+        if (parts.Any(p => p.NullSort != DbNullSort.Default))
+        {
+            throw new InvalidOperationException(
+                $"Complex index '{operation.Name}' declares NULLS FIRST/LAST ordering, which SQL Server does not " +
+                "support. Remove the DbOrder.NullsFirst/NullsLast marker."
+            );
+        }
     }
 }
 

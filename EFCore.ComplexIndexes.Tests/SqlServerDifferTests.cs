@@ -175,4 +175,29 @@ public class SqlServerDifferTests
 
         StringAssert.Contains(exception.Message, "NULLS FIRST/LAST");
     }
+
+    private class DataCompressionContext(DbContextOptions<DataCompressionContext> options) : DbContext(options)
+    {
+        public DbSet<Person> People => Set<Person>();
+
+        protected override void OnModelCreating(ModelBuilder modelBuilder) =>
+            modelBuilder.Entity<Person>(b =>
+            {
+                MapPerson(b);
+                b.HasComplexIndex(x => x.Email.Value, ix => ix
+                    .HasName("ix_person_email_compressed")
+                    .UseDataCompression(DataCompressionType.Page));
+            });
+    }
+
+    [TestMethod(DisplayName = "Data compression is forwarded and rendered by the stock generator")]
+    public void Data_compression_is_forwarded()
+    {
+        var operations = GetDifferences(source: null, target: BuildRelationalModel<DataCompressionContext>());
+
+        var createIndex = Assert.ContainsSingle(operations.OfType<CreateIndexOperation>());
+        Assert.AreEqual(DataCompressionType.Page, createIndex["SqlServer:DataCompression"]);
+
+        StringAssert.Contains(GenerateSql(operations), "DATA_COMPRESSION = PAGE");
+    }
 }

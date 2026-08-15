@@ -16,9 +16,7 @@ namespace EFCore.ComplexIndexes.Tests;
 [TestClass]
 public class NpgsqlTemporalForeignKeyDifferTests
 {
-    private const string DependentPeriod = "CustomTemporal:ForeignKeyDependentPeriod";
-    private const string PrincipalPeriod = "CustomTemporal:ForeignKeyPrincipalPeriod";
-    private const string DefaultName     = "FK_subscription_addons_subscriptions_subscription_id_active_during";
+    private const string DefaultName = "FK_subscription_addons_subscriptions_subscription_id_active_during";
 
     // ── Helpers ──
 
@@ -50,6 +48,13 @@ public class NpgsqlTemporalForeignKeyDifferTests
 
         return differ.GetDifferences(source, target);
     }
+
+    // Temporal DDL is rendered at design time, so adds show up as plain SqlOperations.
+    private static List<string> ForeignKeySql(IEnumerable<MigrationOperation> operations)
+        => [.. operations.OfType<SqlOperation>().Select(o => o.Sql).Where(s => s.Contains("FOREIGN KEY"))];
+
+    private static List<string> ConstraintSql(IEnumerable<MigrationOperation> operations)
+        => [.. operations.OfType<SqlOperation>().Select(o => o.Sql).Where(s => s.Contains("WITHOUT OVERLAPS"))];
 
     private class EmptyContext(DbContextOptions options) : DbContext(options);
 
@@ -404,19 +409,33 @@ public class NpgsqlTemporalForeignKeyDifferTests
 
     // ── Tests ──
 
-    [TestMethod(DisplayName = "Temporal foreign key emits a stamped AddForeignKeyOperation")]
+    [TestMethod(DisplayName = "Temporal foreign key emits fully rendered PERIOD DDL")]
     public void Temporal_foreign_key_emits_add_foreign_key()
     {
         var operations = GetDifferences(source: null, target: BuildRelationalModel<TemporalForeignKeyContext>());
 
-        var addForeignKey = Assert.ContainsSingle(operations.OfType<AddForeignKeyOperation>());
-        Assert.AreEqual("subscription_addons", addForeignKey.Table);
-        Assert.AreEqual("subscriptions",       addForeignKey.PrincipalTable);
-        Assert.AreEqual(DefaultName,           addForeignKey.Name);
-        Assert.IsTrue(addForeignKey.Columns.SequenceEqual(["subscription_id", "active_during"]));
-        Assert.IsTrue(addForeignKey.PrincipalColumns!.SequenceEqual(["subscription_id", "valid_during"]));
-        Assert.AreEqual("active_during", addForeignKey[DependentPeriod]);
-        Assert.AreEqual("valid_during",  addForeignKey[PrincipalPeriod]);
+        var sql = Assert.ContainsSingle(ForeignKeySql(operations));
+        Assert.AreEqual(
+            $"ALTER TABLE \"subscription_addons\" ADD CONSTRAINT \"{DefaultName}\" " +
+            "FOREIGN KEY (\"subscription_id\", PERIOD \"active_during\") " +
+            "REFERENCES \"subscriptions\" (\"subscription_id\", PERIOD \"valid_during\");",
+            sql);
+    }
+
+    [TestMethod(DisplayName = "Temporal DDL renders without the UseNpgsqlComplexIndexes wiring")]
+    public void Temporal_foreign_key_survives_missing_runtime_wiring()
+    {
+        var operations = GetDifferences(source: null, target: BuildRelationalModel<TemporalForeignKeyContext>());
+
+        var options = new DbContextOptionsBuilder().UseNpgsql("Host=localhost;Database=test").Options;
+        using var context = new EmptyContext(options);
+
+        var sql = string.Join("\n", context.GetService<IMigrationsSqlGenerator>()
+                                           .Generate(operations, model: null)
+                                           .Select(c => c.CommandText));
+
+        StringAssert.Contains(sql, "PERIOD \"active_during\"");
+        StringAssert.Contains(sql, "PERIOD \"valid_during\"");
     }
 
     [TestMethod(DisplayName = "Temporal foreign key is added after the principal temporal constraint")]
@@ -424,8 +443,8 @@ public class NpgsqlTemporalForeignKeyDifferTests
     {
         var operations = GetDifferences(source: null, target: BuildRelationalModel<TemporalForeignKeyContext>()).ToList();
 
-        var uniqueIndex = operations.FindIndex(o => o is AddUniqueConstraintOperation);
-        var fkIndex     = operations.FindIndex(o => o is AddForeignKeyOperation);
+        var uniqueIndex = operations.FindIndex(o => o is SqlOperation s && s.Sql.Contains("WITHOUT OVERLAPS"));
+        var fkIndex     = operations.FindIndex(o => o is SqlOperation s && s.Sql.Contains("FOREIGN KEY"));
 
         Assert.IsTrue(uniqueIndex >= 0);
         Assert.IsTrue(fkIndex     > uniqueIndex);
@@ -436,12 +455,12 @@ public class NpgsqlTemporalForeignKeyDifferTests
     {
         var operations = GetDifferences(source: null, target: BuildRelationalModel<TemporalNamedCompositeForeignKeyContext>());
 
-        var addForeignKey = Assert.ContainsSingle(operations.OfType<AddForeignKeyOperation>());
-        Assert.AreEqual("fk_addons_subscriptions_temporal", addForeignKey.Name);
-        Assert.IsTrue(addForeignKey.Columns.SequenceEqual(["tenant_id", "subscription_id", "active_during"]));
-        Assert.IsTrue(addForeignKey.PrincipalColumns!.SequenceEqual(["tenant_id", "subscription_id", "valid_during"]));
-        Assert.AreEqual("active_during", addForeignKey[DependentPeriod]);
-        Assert.AreEqual("valid_during",  addForeignKey[PrincipalPeriod]);
+        var sql = Assert.ContainsSingle(ForeignKeySql(operations));
+        Assert.AreEqual(
+            "ALTER TABLE \"subscription_addons\" ADD CONSTRAINT \"fk_addons_subscriptions_temporal\" " +
+            "FOREIGN KEY (\"tenant_id\", \"subscription_id\", PERIOD \"active_during\") " +
+            "REFERENCES \"subscriptions\" (\"tenant_id\", \"subscription_id\", PERIOD \"valid_during\");",
+            sql);
     }
 
     [TestMethod(DisplayName = "No-op temporal foreign key diff produces no FK operations")]
@@ -450,7 +469,7 @@ public class NpgsqlTemporalForeignKeyDifferTests
         var operations = GetDifferences(BuildRelationalModel<TemporalForeignKeyContext>(),
                                         BuildRelationalModel<TemporalForeignKeyContext>());
 
-        Assert.IsEmpty(operations.OfType<AddForeignKeyOperation>());
+        Assert.IsEmpty(ForeignKeySql(operations));
         Assert.IsEmpty(operations.OfType<DropForeignKeyOperation>());
     }
 
@@ -464,7 +483,7 @@ public class NpgsqlTemporalForeignKeyDifferTests
         var drop = Assert.ContainsSingle(operations.OfType<DropForeignKeyOperation>());
         Assert.AreEqual(DefaultName,           drop.Name);
         Assert.AreEqual("subscription_addons", drop.Table);
-        Assert.IsEmpty(operations.OfType<AddForeignKeyOperation>());
+        Assert.IsEmpty(ForeignKeySql(operations));
     }
 
     [TestMethod(DisplayName = "Renaming the principal temporal constraint becomes RENAME CONSTRAINT; the FK survives")]
@@ -477,9 +496,9 @@ public class NpgsqlTemporalForeignKeyDifferTests
         // ALTER TABLE … RENAME CONSTRAINT preserves dependents, so neither the constraint nor the
         // foreign key is rebuilt.
         Assert.IsEmpty(operations.OfType<DropForeignKeyOperation>());
-        Assert.IsEmpty(operations.OfType<AddForeignKeyOperation>());
+        Assert.IsEmpty(ForeignKeySql(operations));
         Assert.IsEmpty(operations.OfType<DropUniqueConstraintOperation>());
-        Assert.IsEmpty(operations.OfType<AddUniqueConstraintOperation>());
+        Assert.IsEmpty(ConstraintSql(operations));
 
         var rename = Assert.ContainsSingle(operations.OfType<SqlOperation>());
         Assert.AreEqual(
@@ -550,7 +569,7 @@ public class NpgsqlTemporalForeignKeyDifferTests
             source: BuildRelationalModel<TemporalPrincipalOnlyContext>(),
             target: BuildRelationalModel<TemporalForeignKeyContext>());
 
-        Assert.ContainsSingle(operations.OfType<AddForeignKeyOperation>());
+        Assert.ContainsSingle(ForeignKeySql(operations));
         Assert.IsFalse(operations.OfType<SqlOperation>().Any(o => o.Sql.Contains("btree_gist")));
     }
 

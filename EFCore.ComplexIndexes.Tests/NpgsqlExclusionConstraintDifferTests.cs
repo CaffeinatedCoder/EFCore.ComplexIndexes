@@ -197,6 +197,93 @@ public class NpgsqlExclusionConstraintDifferTests
             });
     }
 
+    // The reason EXCLUDE exists over UNIQUE … WITHOUT OVERLAPS: one constraint per filter over the
+    // same columns — no overlap among active grants, and none among revoked ones.
+    private class TwoFiltersExclusionContext(DbContextOptions<TwoFiltersExclusionContext> options) : DbContext(options)
+    {
+        public DbSet<RoleGrant> Grants => Set<RoleGrant>();
+        protected override void OnModelCreating(ModelBuilder modelBuilder)
+            => modelBuilder.Entity<RoleGrant>(b =>
+            {
+                MapGrant(b);
+                b.HasExclusionConstraint(x => x.GranteeId, x => x.Period,
+                                         filter: "revoked_at IS NULL",     name: "ex_grant_active");
+                b.HasExclusionConstraint(x => x.GranteeId, x => x.Period,
+                                         filter: "revoked_at IS NOT NULL", name: "ex_grant_revoked");
+            });
+    }
+
+    // Same elements, different filters, but the second is unnamed — the default names would collide.
+    private class TwoFiltersUnnamedContext(DbContextOptions<TwoFiltersUnnamedContext> options) : DbContext(options)
+    {
+        public DbSet<RoleGrant> Grants => Set<RoleGrant>();
+        protected override void OnModelCreating(ModelBuilder modelBuilder)
+            => modelBuilder.Entity<RoleGrant>(b =>
+            {
+                MapGrant(b);
+                b.HasExclusionConstraint(x => x.GranteeId, x => x.Period,
+                                         filter: "revoked_at IS NULL", name: "ex_grant_active");
+                b.HasExclusionConstraint(x => x.GranteeId, x => x.Period,
+                                         filter: "revoked_at IS NOT NULL");
+            });
+    }
+
+    // The same elements and the same filter declared twice — the second declaration wins.
+    private class RedeclaredExclusionContext(DbContextOptions<RedeclaredExclusionContext> options) : DbContext(options)
+    {
+        public DbSet<RoleGrant> Grants => Set<RoleGrant>();
+        protected override void OnModelCreating(ModelBuilder modelBuilder)
+            => modelBuilder.Entity<RoleGrant>(b =>
+            {
+                MapGrant(b);
+                b.HasExclusionConstraint(ex => ex.WithEquality(x => x.GranteeId)
+                                                 .WithOverlaps(x => x.Period)
+                                                 .HasFilter("revoked_at IS NULL")
+                                                 .HasName("ex_first"));
+                b.HasExclusionConstraint(ex => ex.WithEquality(x => x.GranteeId)
+                                                 .WithOverlaps(x => x.Period)
+                                                 .HasFilter("revoked_at IS NULL")
+                                                 .UseMethod("spgist")
+                                                 .HasName("ex_second"));
+            });
+    }
+
+    // Both named — the same. Silent at apply time: each ADD is preceded by DROP CONSTRAINT IF
+    // EXISTS, so the second constraint would just replace the first.
+    private class DuplicateNameExclusionContext(DbContextOptions<DuplicateNameExclusionContext> options) : DbContext(options)
+    {
+        public DbSet<RoleGrant> Grants => Set<RoleGrant>();
+        protected override void OnModelCreating(ModelBuilder modelBuilder)
+            => modelBuilder.Entity<RoleGrant>(b =>
+            {
+                MapGrant(b);
+                b.HasExclusionConstraint(x => x.GranteeId, x => x.Period,
+                                         filter: "revoked_at IS NULL",     name: "ex_dup");
+                b.HasExclusionConstraint(x => x.GranteeId, x => x.Period,
+                                         filter: "revoked_at IS NOT NULL", name: "ex_dup");
+            });
+    }
+
+    // Distinct declarations — one a column selector, one the same column written as raw SQL — so
+    // dedup keeps both. Their default names collide anyway: the name token strips non-alphanumerics
+    // from expressions, so "(granteeid)" reduces to the column's own token.
+    private class CollidingDefaultNamesContext(DbContextOptions<CollidingDefaultNamesContext> options) : DbContext(options)
+    {
+        public DbSet<RoleGrant> Grants => Set<RoleGrant>();
+        protected override void OnModelCreating(ModelBuilder modelBuilder)
+            => modelBuilder.Entity<RoleGrant>(b =>
+            {
+                b.ToTable("token_grants");
+                b.HasKey(x => x.Id);
+                b.Property(x => x.GranteeId).HasColumnName("granteeid");
+                b.Property(x => x.Period).HasColumnName("period");
+                b.HasExclusionConstraint(ex => ex.WithEquality(x => x.GranteeId)
+                                                 .WithOverlaps(x => x.Period));
+                b.HasExclusionConstraint(ex => ex.WithExpression("(granteeid)", "=")
+                                                 .WithOverlaps(x => x.Period));
+            });
+    }
+
     // Same constraint as FilteredExclusionContext under a different explicit name.
     private class RenamedConstraintContext(DbContextOptions<RenamedConstraintContext> options) : DbContext(options)
     {
@@ -373,6 +460,60 @@ public class NpgsqlExclusionConstraintDifferTests
         Assert.HasCount(2, sql);
         StringAssert.Contains(sql[0], "DROP CONSTRAINT IF EXISTS \"EX_role_grants_grantee_id_period\"");
         StringAssert.Contains(sql[1], "ADD CONSTRAINT \"ex_role_grant_active_v2\"");
+    }
+
+    [TestMethod(DisplayName = "Same elements with different filters yield two coexisting constraints")]
+    public void Different_filters_coexist()
+    {
+        var operations = GetDifferences(source: null, target: BuildRelationalModel<TwoFiltersExclusionContext>());
+
+        var sql = ExclusionSql(operations);
+        Assert.HasCount(2, sql, "Both filtered constraints must survive — keying identity on the "
+                              + "elements alone silently kept only the last declaration.");
+
+        Assert.ContainsSingle(sql.Where(s => s.Contains("\"ex_grant_active\"")
+                                          && s.Contains("WHERE (revoked_at IS NULL)")));
+        Assert.ContainsSingle(sql.Where(s => s.Contains("\"ex_grant_revoked\"")
+                                          && s.Contains("WHERE (revoked_at IS NOT NULL)")));
+    }
+
+    [TestMethod(DisplayName = "Same elements with different filters require explicit names")]
+    public void Different_filters_require_explicit_names()
+    {
+        var ex = Assert.ThrowsExactly<ArgumentException>(BuildRelationalModel<TwoFiltersUnnamedContext>);
+
+        StringAssert.Contains(ex.Message, "must both have explicit names");
+        StringAssert.Contains(ex.Message, "GranteeId, Period");
+    }
+
+    [TestMethod(DisplayName = "Re-declaring the same elements with the same filter updates the constraint")]
+    public void Same_filter_redeclaration_replaces()
+    {
+        var operations = GetDifferences(source: null, target: BuildRelationalModel<RedeclaredExclusionContext>());
+
+        var sql = Assert.ContainsSingle(ExclusionSql(operations));
+        StringAssert.Contains(sql, "\"ex_second\"");
+        StringAssert.Contains(sql, "EXCLUDE USING spgist");
+    }
+
+    [TestMethod(DisplayName = "Reusing one explicit constraint name for two constraints is rejected")]
+    public void Duplicate_explicit_constraint_name_is_rejected()
+    {
+        var ex = Assert.ThrowsExactly<ArgumentException>(BuildRelationalModel<DuplicateNameExclusionContext>);
+
+        StringAssert.Contains(ex.Message, "'ex_dup' is already used");
+    }
+
+    [TestMethod(DisplayName = "Constraints whose default names collide are rejected by the differ")]
+    public void Colliding_default_constraint_names_are_rejected()
+    {
+        // Only visible once elements are resolved to columns, so the declaration-time check cannot
+        // see it — and without the differ check it applies silently, the second constraint's
+        // DROP CONSTRAINT IF EXISTS quietly removing the first.
+        var ex = Assert.ThrowsExactly<InvalidOperationException>(
+            () => GetDifferences(source: null, target: BuildRelationalModel<CollidingDefaultNamesContext>()));
+
+        StringAssert.Contains(ex.Message, "both resolve to the name 'EX_token_grants_granteeid_period'");
     }
 
     [TestMethod(DisplayName = "Serializer round-trips all definition facets")]

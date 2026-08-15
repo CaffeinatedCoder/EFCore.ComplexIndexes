@@ -31,6 +31,14 @@ internal static class ComplexIndexStorage
                 $"Two indexes over the same parts ({DescribeParts(definition)}) with different filters " +
                 "must both have explicit index names — the default names would collide in the database.");
 
+        // Reusing one explicit name for two different indexes collides just as surely as two default
+        // names would. The differ catches this too, but only after the whole model is built — this
+        // reports it at the offending declaration.
+        if (definition.IndexName is not null && existing.Any(d => d.IndexName == definition.IndexName))
+            throw new ArgumentException(
+                $"The index name '{definition.IndexName}' is already used by another complex index on " +
+                "this entity. Index names must be unique per table.");
+
         existing.Add(definition);
         entityTypeBuilder.HasAnnotation(ComplexIndexAnnotations.CompositeIndexes, CompositeIndexSerializer.Serialize(existing));
     }

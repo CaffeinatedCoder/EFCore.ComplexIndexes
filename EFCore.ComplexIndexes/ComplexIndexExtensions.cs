@@ -73,7 +73,7 @@ public static class ComplexIndexExtensions
             string?                            indexName = null
         )
         {
-            var part       = ExtractSinglePart(property.Body);
+            var part       = ExtractSinglePart(property.Body, property.Parameters[0]);
             var definition = ComplexIndexExtensions.BuildCompositeDefinition([part], isUnique, filter, indexName, providerAnnotations: null);
             ComplexIndexStorage.AddOrReplace(builder, definition);
 
@@ -90,7 +90,7 @@ public static class ComplexIndexExtensions
             Action<ComplexIndexBuilder>        configure
         )
         {
-            var part       = ExtractSinglePart(property.Body);
+            var part       = ExtractSinglePart(property.Body, property.Parameters[0]);
             var definition = ComplexIndexExtensions.BuildDefinitionFromBuilder([part], configure);
             ComplexIndexStorage.AddOrReplace(builder, definition);
 
@@ -211,21 +211,28 @@ public static class ComplexIndexExtensions
                 """
             );
 
-        return [.. newExpr.Arguments.Select(ExtractSinglePart)];
+        return [.. newExpr.Arguments.Select(a => ExtractSinglePart(a, expression.Parameters[0]))];
     }
 
     internal static List<string> ExtractPropertyPaths<TEntity, TProperties>(Expression<Func<TEntity, TProperties>> expression)
         => [.. ExtractIndexParts(expression).Select(p => p.PropertyPath!)];
 
-    internal static string ExtractSinglePath(Expression expression) => ExtractSinglePart(expression).PropertyPath!;
+    internal static string ExtractSinglePath(LambdaExpression lambda)
+        => ExtractSinglePart(lambda.Body, lambda.Parameters[0]).PropertyPath!;
 
-    internal static IndexPartDefinition ExtractSinglePart(Expression expression)
+    internal static string ExtractSinglePath(Expression expression, ParameterExpression root)
+        => ExtractSinglePart(expression, root).PropertyPath!;
+
+    internal static IndexPartDefinition ExtractSinglePart(Expression expression, ParameterExpression root)
     {
-        var descending = false;
-        var nullSort   = DbNullSort.Default;
+        var         original   = expression;
+        bool?       descending = null;
+        DbNullSort? nullSort   = null;
 
         // Peel off Convert boxing and DbOrder marker functions (Asc/Desc/NullsFirst/NullsLast)
-        // in any order — they compose, e.g. DbOrder.NullsLast(DbOrder.Desc(x.B)).
+        // in any order — they compose, e.g. DbOrder.NullsLast(DbOrder.Desc(x.B)). Markers of the
+        // *same* kind do not compose: Asc(Desc(x)) is a contradiction, not a refinement, and
+        // silently letting one win produces an index sorted the opposite way from what was written.
         while (true)
         {
             if (expression is UnaryExpression { NodeType: ExpressionType.Convert } unary)
@@ -239,9 +246,18 @@ public static class ComplexIndexExtensions
             {
                 switch (call.Method.Name)
                 {
-                    case nameof(DbOrder.Desc):       descending = true;                break;
-                    case nameof(DbOrder.NullsFirst): nullSort   = DbNullSort.First;    break;
-                    case nameof(DbOrder.NullsLast):  nullSort   = DbNullSort.Last;     break;
+                    case nameof(DbOrder.Asc):
+                        descending = Combine(descending, false, original, "DbOrder.Asc/DbOrder.Desc");
+                        break;
+                    case nameof(DbOrder.Desc):
+                        descending = Combine(descending, true, original, "DbOrder.Asc/DbOrder.Desc");
+                        break;
+                    case nameof(DbOrder.NullsFirst):
+                        nullSort = Combine(nullSort, DbNullSort.First, original, "DbOrder.NullsFirst/DbOrder.NullsLast");
+                        break;
+                    case nameof(DbOrder.NullsLast):
+                        nullSort = Combine(nullSort, DbNullSort.Last, original, "DbOrder.NullsFirst/DbOrder.NullsLast");
+                        break;
                 }
 
                 expression = call.Arguments[0];
@@ -266,11 +282,31 @@ public static class ComplexIndexExtensions
                 """
             );
 
+        // The chain has to bottom out at the lambda's own parameter. A captured variable or a static
+        // member produces a perfectly well-formed dotted path here — `captured.Name` — that no
+        // property lookup can ever match, so without this the mistake surfaces much later as an
+        // opaque "could not resolve property path" from the differ, far from the declaration.
+        if (!ReferenceEquals(expression, root))
+            throw new ArgumentException(
+                $"The selector '{original}' does not start from the lambda parameter '{root.Name}'. "
+              + $"Selectors must reference the entity directly (e.g. {root.Name} => {root.Name}.Prop "
+              + $"or {root.Name} => {root.Name}.Complex.Prop); captured variables and static members "
+              + "do not map to a column."
+            );
+
         return new IndexPartDefinition
                {
                    PropertyPath = string.Join(".", segments),
-                   Descending   = descending,
-                   NullSort     = nullSort
+                   Descending   = descending ?? false,
+                   NullSort     = nullSort   ?? DbNullSort.Default
                };
     }
+
+    // Repeating the same marker is harmless; pairing it with its opposite is a contradiction.
+    private static T Combine<T>(T? existing, T value, Expression selector, string markers)
+        where T : struct
+        => existing is null || existing.Value.Equals(value)
+               ? value
+               : throw new ArgumentException(
+                     $"Conflicting {markers} markers on '{selector}'. A column can carry only one.");
 }

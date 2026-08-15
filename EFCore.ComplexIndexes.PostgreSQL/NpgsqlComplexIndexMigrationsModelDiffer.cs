@@ -12,7 +12,8 @@ namespace EFCore.ComplexIndexes.PostgreSQL;
 /// <summary>
 /// Extends <see cref="CustomMigrationsModelDiffer"/> to validate that provider annotations on complex
 /// index operations use recognized Npgsql keys, and to emit PostgreSQL 18 temporal <c>UNIQUE</c>
-/// constraints (<c>WITHOUT OVERLAPS</c>) declared via <c>HasTemporalConstraint</c>.
+/// constraints (<c>WITHOUT OVERLAPS</c>) declared via <c>HasTemporalConstraint</c>. Temporal and
+/// exclusion constraint DDL is rendered at design time, so neither needs runtime SQL-generator wiring.
 /// </summary>
 public class NpgsqlComplexIndexMigrationsModelDiffer(
     IRelationalTypeMappingSource     typeMappingSource,
@@ -45,6 +46,44 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
 
     /// <summary>PostgreSQL renames indexes standalone (<c>ALTER INDEX … RENAME TO</c>).</summary>
     protected override bool CanRenameIndexes => true;
+
+    /// <summary>
+    /// Rejects <c>Npgsql:*</c> index options this package does not render — typically an entity-level
+    /// declaration carrying an option the satellite has no support for, since entity-level provider
+    /// annotations reach the operation unfiltered (the property-level path is already whitelisted by
+    /// <see cref="IsForwardedIndexAnnotation"/>).
+    /// </summary>
+    protected override void ValidateCreateIndexOperation(CreateIndexOperation operation)
+    {
+        foreach (var annotation in operation.GetAnnotations())
+        {
+            if (annotation.Name.StartsWith("Npgsql:", StringComparison.Ordinal)
+             && !SupportedNpgsqlAnnotations.Contains(annotation.Name))
+            {
+                throw new InvalidOperationException(
+                    $"Unrecognized Npgsql index annotation '{annotation.Name}' on complex index '{operation.Name}'. " +
+                    $"Supported annotations: {string.Join(", ", SupportedNpgsqlAnnotations)}."
+                );
+            }
+        }
+
+        // Npgsql's own sort-order annotations and this package's per-part sort options are two ways
+        // to say the same thing, and an index routed through the parts annotation is rendered by
+        // this package's generator, which reads only the parts. Rather than silently dropping the
+        // annotation's half, refuse the ambiguity.
+        if (operation[ComplexIndexAnnotations.IndexParts] is null)
+            return;
+
+        foreach (var key in (string[])[NpgsqlAnnotations.IndexSortOrder, NpgsqlAnnotations.IndexNullSortOrder])
+        {
+            if (operation[key] is not null)
+                throw new InvalidOperationException(
+                    $"Complex index '{operation.Name}' carries '{key}' alongside per-part sort options. " +
+                    "Declare direction and null ordering with DbOrder.Asc/Desc/NullsFirst/NullsLast (or the " +
+                    $"ExpressionIndexBuilder equivalents) instead — '{key}' is not rendered for this index."
+                );
+        }
+    }
 
     /// <summary>Resolves property paths inside INCLUDE lists to column names (verbatim fallback).</summary>
     protected override object? TransformIndexAnnotation(
@@ -189,21 +228,6 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
     {
         var operations = base.GetDifferences(source, target);
 
-        foreach (var op in operations.OfType<CreateIndexOperation>())
-        {
-            foreach (var annotation in op.GetAnnotations())
-            {
-                if (annotation.Name.StartsWith("Npgsql:", StringComparison.Ordinal)
-                 && !SupportedNpgsqlAnnotations.Contains(annotation.Name))
-                {
-                    throw new InvalidOperationException(
-                        $"Unrecognized Npgsql index annotation '{annotation.Name}' on index '{op.Name}'. " +
-                        $"Supported annotations: {string.Join(", ", SupportedNpgsqlAnnotations)}."
-                    );
-                }
-            }
-        }
-
         operations = ApplyTemporalConstraints(operations, source, target, typeMappingSource, out var temporalNeedsExtension);
         operations = ApplyExclusionConstraints(operations, source, target, out var exclusionNeedsExtension);
 
@@ -219,8 +243,9 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
     }
 
     // Diffs the temporal UNIQUE constraints and temporal FOREIGN KEY constraints declared on entity
-    // types and emits standalone Add/Drop* operations. Temporal drops are placed before the base EF
-    // operations; temporal adds are placed after, with UNIQUE constraints before FOREIGN KEYs.
+    // types. Drops are emitted as EF's own Drop* operations (the stock generator renders those
+    // correctly) and placed before the base EF operations; adds are fully rendered DDL emitted as
+    // SqlOperations after them, with UNIQUE constraints before FOREIGN KEYs.
     private static IReadOnlyList<MigrationOperation> ApplyTemporalConstraints(
         IReadOnlyList<MigrationOperation> operations,
         IRelationalModel?                 source,
@@ -355,38 +380,50 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
 
         foreach (var tgt in pendingConstraintAdds)
         {
-            var op = new AddUniqueConstraintOperation
-                     {
-                         Name    = tgt.Name,
-                         Table   = tgt.Table,
-                         Schema  = tgt.Schema,
-                         Columns = [.. tgt.KeyColumns, tgt.PeriodColumn]
-                     };
-            op.AddAnnotation(NpgsqlTemporalAnnotations.WithoutOverlaps, tgt.PeriodColumn);
-            result.Add(op);
+            result.Add(new SqlOperation { Sql = BuildAddTemporalConstraintSql(tgt) });
             needsBtreeGist = true;
         }
 
         foreach (var tgt in pendingForeignKeyAdds)
-        {
-            var op = new AddForeignKeyOperation
-                     {
-                         Name             = tgt.Name,
-                         Table            = tgt.DependentTable,
-                         Schema           = tgt.DependentSchema,
-                         Columns          = [.. tgt.DependentColumns, tgt.DependentPeriodColumn],
-                         PrincipalTable   = tgt.PrincipalTable,
-                         PrincipalSchema  = tgt.PrincipalSchema,
-                         PrincipalColumns = [.. tgt.PrincipalColumns, tgt.PrincipalPeriodColumn],
-                         OnDelete         = ReferentialAction.NoAction,
-                         OnUpdate         = ReferentialAction.NoAction
-                     };
-            op.AddAnnotation(NpgsqlTemporalAnnotations.ForeignKeyDependentPeriod, tgt.DependentPeriodColumn);
-            op.AddAnnotation(NpgsqlTemporalAnnotations.ForeignKeyPrincipalPeriod, tgt.PrincipalPeriodColumn);
-            result.Add(op);
-        }
+            result.Add(new SqlOperation { Sql = BuildAddTemporalForeignKeySql(tgt) });
 
         return result;
+    }
+
+    // PostgreSQL requires the period (range) column last in the constraint's column list.
+    //
+    // Rendered here at design time — as raw SQL baked into the migration — rather than as an
+    // AddUniqueConstraintOperation the runtime SQL generator specializes. The operation-based route
+    // needed the UseNpgsqlComplexIndexes() wiring, and without it the stock Npgsql generator emitted
+    // a plain `UNIQUE (key, period)`: valid DDL that applies cleanly and silently drops the entire
+    // non-overlap guarantee. Exclusion constraints already render at design time for the same reason.
+    private static string BuildAddTemporalConstraintSql(TemporalDescriptor constraint)
+    {
+        var columns = constraint.KeyColumns
+                                .Select(Quote)
+                                .Append($"{Quote(constraint.PeriodColumn)} WITHOUT OVERLAPS");
+
+        return $"ALTER TABLE {QuoteQualified(constraint.Table, constraint.Schema)} " +
+               $"ADD CONSTRAINT {Quote(constraint.Name)} UNIQUE ({string.Join(", ", columns)});";
+    }
+
+    // Same reasoning as BuildAddTemporalConstraintSql: PostgreSQL requires the period column last on
+    // both sides, marked PERIOD. Temporal foreign keys are always NO ACTION.
+    private static string BuildAddTemporalForeignKeySql(TemporalForeignKeyDescriptor foreignKey)
+    {
+        var dependentColumns = foreignKey.DependentColumns
+                                         .Select(Quote)
+                                         .Append($"PERIOD {Quote(foreignKey.DependentPeriodColumn)}");
+
+        var principalColumns = foreignKey.PrincipalColumns
+                                         .Select(Quote)
+                                         .Append($"PERIOD {Quote(foreignKey.PrincipalPeriodColumn)}");
+
+        return $"ALTER TABLE {QuoteQualified(foreignKey.DependentTable, foreignKey.DependentSchema)} " +
+               $"ADD CONSTRAINT {Quote(foreignKey.Name)} " +
+               $"FOREIGN KEY ({string.Join(", ", dependentColumns)}) " +
+               $"REFERENCES {QuoteQualified(foreignKey.PrincipalTable, foreignKey.PrincipalSchema)} " +
+               $"({string.Join(", ", principalColumns)});";
     }
 
     // Diffs the EXCLUDE constraints declared via HasExclusionConstraint and emits their DDL as raw
@@ -404,6 +441,9 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
 
         var sourceConstraints = BuildExclusionDescriptors(source);
         var targetConstraints = BuildExclusionDescriptors(target);
+
+        // Target only — a snapshot that already contains a collision must stay diffable.
+        ValidateUniqueExclusionNames(targetConstraints);
 
         if (sourceConstraints.Count == 0 && targetConstraints.Count == 0)
             return operations;
@@ -479,6 +519,37 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
             return operations;
 
         return [.. drops, .. operations, .. renames, .. adds];
+    }
+
+    /// <summary>
+    /// Fails when two distinct exclusion constraints on one table resolve to the same name.
+    /// </summary>
+    /// <remarks>
+    /// Because every ADD is preceded by <c>DROP CONSTRAINT IF EXISTS</c>, such a pair does not fail
+    /// at apply time — the migration runs clean and the second constraint silently replaces the
+    /// first, leaving one of the declared guarantees unenforced. Catches collisions the declaration-
+    /// time check cannot see, such as two default names derived from different paths that resolve to
+    /// the same columns.
+    /// </remarks>
+    private static void ValidateUniqueExclusionNames(HashSet<ExclusionDescriptor> descriptors)
+    {
+        var collision = descriptors
+                       .GroupBy(d => (d.Table, d.Schema, d.Name))
+                       .FirstOrDefault(g => g.Count() > 1);
+
+        if (collision is null)
+            return;
+
+        throw new InvalidOperationException(
+            $"Two exclusion constraints on table '{collision.Key.Table}' both resolve to the name "
+          + $"'{collision.Key.Name}': {string.Join(" and ", collision.Select(Describe))}. "
+          + "Constraint names must be unique per table — give each declaration an explicit, distinct name.");
+
+        static string Describe(ExclusionDescriptor descriptor)
+        {
+            var elements = string.Join(", ", descriptor.Parts.Select(p => $"{p.Value} WITH {p.Operator}"));
+            return $"({elements}){(descriptor.Filter is null ? "" : $" WHERE {descriptor.Filter}")}";
+        }
     }
 
     // Tables the base operations rename, keyed by old identity.

@@ -105,9 +105,15 @@ public class NpgsqlComplexIndexSqlGenerator(
     }
 
     /// <summary>
-    /// Renders a temporal <c>UNIQUE</c> constraint (<c>… WITHOUT OVERLAPS</c>) declared via
-    /// <c>HasTemporalConstraint</c>; otherwise delegates to the base Npgsql generator.
+    /// Renders a temporal <c>UNIQUE</c> constraint (<c>… WITHOUT OVERLAPS</c>) from a stamped
+    /// <see cref="AddUniqueConstraintOperation"/>; otherwise delegates to the base Npgsql generator.
     /// </summary>
+    /// <remarks>
+    /// Kept for backward compatibility: the differ now bakes temporal DDL straight into the
+    /// migration as a <c>SqlOperation</c> (so the feature no longer depends on this wiring), but
+    /// migrations scaffolded before that change still call <c>AddUniqueConstraint(…)</c> with the
+    /// <c>CustomTemporal:WithoutOverlaps</c> annotation and must keep rendering correctly.
+    /// </remarks>
     protected override void Generate(
         AddUniqueConstraintOperation operation,
         IModel?                      model,
@@ -121,9 +127,13 @@ public class NpgsqlComplexIndexSqlGenerator(
     }
 
     /// <summary>
-    /// Renders a PostgreSQL 18 temporal foreign key (<c>FOREIGN KEY (..., PERIOD period)</c>);
-    /// otherwise delegates to the base Npgsql generator.
+    /// Renders a PostgreSQL 18 temporal foreign key (<c>FOREIGN KEY (..., PERIOD period)</c>) from a
+    /// stamped <see cref="AddForeignKeyOperation"/>; otherwise delegates to the base Npgsql generator.
     /// </summary>
+    /// <remarks>
+    /// Kept for backward compatibility with migrations scaffolded before temporal DDL moved to
+    /// design time — see the <see cref="AddUniqueConstraintOperation"/> overload.
+    /// </remarks>
     protected override void Generate(
         AddForeignKeyOperation      operation,
         IModel?                    model,

@@ -120,4 +120,37 @@ public class CompositeIndexSerializerTests
         Assert.DoesNotContain("name",   json);
         Assert.DoesNotContain("props",  json);
     }
+
+    [TestMethod(DisplayName = "Array-valued provider annotations compare by content, not reference")]
+    public void Array_annotations_compare_structurally()
+    {
+        static CompositeIndexDefinition Build() => new()
+        {
+            PropertyPaths       = ["A"],
+            ProviderAnnotations = new Dictionary<string, object?>
+                                  {
+                                      ["Npgsql:IndexOperators"] = new[] { "jsonb_path_ops" }
+                                  }
+        };
+
+        var left  = Build();
+        var right = Build();
+
+        // Separate arrays with identical contents: object.Equals would call these different, and
+        // any consumer diffing definitions would see phantom churn.
+        Assert.AreEqual(left, right);
+        Assert.AreEqual(left.GetHashCode(), right.GetHashCode());
+    }
+
+    [TestMethod(DisplayName = "A changed array-valued annotation is still detected")]
+    public void Changed_array_annotation_is_detected()
+    {
+        static CompositeIndexDefinition Build(string @operator) => new()
+        {
+            PropertyPaths       = ["A"],
+            ProviderAnnotations = new Dictionary<string, object?> { ["Npgsql:IndexOperators"] = new[] { @operator } }
+        };
+
+        Assert.AreNotEqual(Build("jsonb_path_ops"), Build("jsonb_ops"));
+    }
 }

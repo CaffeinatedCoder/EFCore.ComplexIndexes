@@ -14,7 +14,6 @@ namespace EFCore.ComplexIndexes.Tests;
 [TestClass]
 public class NpgsqlTemporalConstraintDifferTests
 {
-    private const string WithoutOverlaps       = "CustomTemporal:WithoutOverlaps";
     private const string CreateExtensionPrefix = "CREATE EXTENSION IF NOT EXISTS btree_gist";
     private const string DefaultName           = "AK_room_bookings_room_id_booked_during";
 
@@ -48,6 +47,10 @@ public class NpgsqlTemporalConstraintDifferTests
 
         return differ.GetDifferences(source, target);
     }
+
+    // The temporal constraint DDL is rendered at design time, so it shows up as a plain SqlOperation.
+    private static List<string> TemporalSql(IEnumerable<MigrationOperation> operations)
+        => [.. operations.OfType<SqlOperation>().Select(o => o.Sql).Where(s => s.Contains("WITHOUT OVERLAPS"))];
 
     private class EmptyContext(DbContextOptions options) : DbContext(options);
 
@@ -148,7 +151,7 @@ public class NpgsqlTemporalConstraintDifferTests
 
         Assert.IsNotEmpty(operations.OfType<RenameTableOperation>());
         Assert.IsEmpty(operations.OfType<DropUniqueConstraintOperation>());
-        Assert.IsEmpty(operations.OfType<AddUniqueConstraintOperation>());
+        Assert.IsEmpty(TemporalSql(operations));
 
         var rename = Assert.ContainsSingle(
             operations.OfType<SqlOperation>().Where(o => o.Sql.Contains("RENAME CONSTRAINT")));
@@ -161,16 +164,34 @@ public class NpgsqlTemporalConstraintDifferTests
         Assert.IsTrue(operations.IndexOf(rename) > operations.FindIndex(o => o is RenameTableOperation));
     }
 
-    [TestMethod(DisplayName = "Temporal constraint emits a stamped AddUniqueConstraintOperation")]
+    [TestMethod(DisplayName = "Temporal constraint emits fully rendered WITHOUT OVERLAPS DDL")]
     public void Temporal_constraint_emits_add_unique()
     {
         var operations = GetDifferences(source: null, target: BuildRelationalModel<TemporalContext>());
 
-        var addUnique = Assert.ContainsSingle(operations.OfType<AddUniqueConstraintOperation>());
-        Assert.AreEqual("room_bookings", addUnique.Table);
-        Assert.AreEqual(DefaultName,     addUnique.Name);
-        Assert.IsTrue(addUnique.Columns.SequenceEqual(["room_id", "booked_during"]));
-        Assert.AreEqual("booked_during", addUnique[WithoutOverlaps]);
+        var sql = Assert.ContainsSingle(TemporalSql(operations));
+        Assert.AreEqual(
+            $"ALTER TABLE \"room_bookings\" ADD CONSTRAINT \"{DefaultName}\" " +
+            "UNIQUE (\"room_id\", \"booked_during\" WITHOUT OVERLAPS);",
+            sql);
+    }
+
+    [TestMethod(DisplayName = "Temporal DDL renders without the UseNpgsqlComplexIndexes wiring")]
+    public void Temporal_constraint_survives_missing_runtime_wiring()
+    {
+        var operations = GetDifferences(source: null, target: BuildRelationalModel<TemporalContext>());
+
+        // The whole point of rendering at design time: a consumer who never calls
+        // UseNpgsqlComplexIndexes() must still get WITHOUT OVERLAPS, not a plain UNIQUE that
+        // applies cleanly and silently drops the non-overlap guarantee.
+        var options = new DbContextOptionsBuilder().UseNpgsql("Host=localhost;Database=test").Options;
+        using var context = new EmptyContext(options);
+
+        var sql = string.Join("\n", context.GetService<IMigrationsSqlGenerator>()
+                                           .Generate(operations, model: null)
+                                           .Select(c => c.CommandText));
+
+        StringAssert.Contains(sql, "WITHOUT OVERLAPS");
     }
 
     [TestMethod(DisplayName = "Temporal constraint auto-injects CREATE EXTENSION btree_gist first")]
@@ -189,7 +210,7 @@ public class NpgsqlTemporalConstraintDifferTests
         var operations = GetDifferences(source: null, target: BuildRelationalModel<TemporalSuppressedContext>());
 
         Assert.IsFalse(operations.OfType<SqlOperation>().Any(o => o.Sql.Contains("btree_gist")));
-        Assert.AreEqual("booked_during", Assert.ContainsSingle(operations.OfType<AddUniqueConstraintOperation>())[WithoutOverlaps]);
+        StringAssert.Contains(Assert.ContainsSingle(TemporalSql(operations)), "\"booked_during\" WITHOUT OVERLAPS");
     }
 
     [TestMethod(DisplayName = "Explicit UseBtreeGist suppresses duplicate injection")]
@@ -202,7 +223,7 @@ public class NpgsqlTemporalConstraintDifferTests
             "When the extension is declared, the differ must not inject its own CREATE EXTENSION."
         );
         // The constraint is still emitted.
-        Assert.ContainsSingle(operations.OfType<AddUniqueConstraintOperation>());
+        Assert.ContainsSingle(TemporalSql(operations));
     }
 
     [TestMethod(DisplayName = "Named multi-key temporal constraint resolves all columns")]
@@ -210,10 +231,11 @@ public class NpgsqlTemporalConstraintDifferTests
     {
         var operations = GetDifferences(source: null, target: BuildRelationalModel<TemporalNamedMultiKeyContext>());
 
-        var addUnique = Assert.ContainsSingle(operations.OfType<AddUniqueConstraintOperation>());
-        Assert.AreEqual("uq_booking_temporal", addUnique.Name);
-        Assert.IsTrue(addUnique.Columns.SequenceEqual(["Id", "room_id", "booked_during"]));
-        Assert.AreEqual("booked_during", addUnique[WithoutOverlaps]);
+        var sql = Assert.ContainsSingle(TemporalSql(operations));
+        Assert.AreEqual(
+            "ALTER TABLE \"room_bookings\" ADD CONSTRAINT \"uq_booking_temporal\" " +
+            "UNIQUE (\"Id\", \"room_id\", \"booked_during\" WITHOUT OVERLAPS);",
+            sql);
     }
 
     [TestMethod(DisplayName = "No-op diff produces no temporal operations")]
@@ -221,7 +243,7 @@ public class NpgsqlTemporalConstraintDifferTests
     {
         var operations = GetDifferences(BuildRelationalModel<TemporalContext>(), BuildRelationalModel<TemporalContext>());
 
-        Assert.IsEmpty(operations.OfType<AddUniqueConstraintOperation>());
+        Assert.IsEmpty(TemporalSql(operations));
         Assert.IsEmpty(operations.OfType<DropUniqueConstraintOperation>());
         Assert.IsFalse(operations.OfType<SqlOperation>().Any(o => o.Sql.Contains("btree_gist")));
     }
@@ -236,6 +258,6 @@ public class NpgsqlTemporalConstraintDifferTests
         var drop = Assert.ContainsSingle(operations.OfType<DropUniqueConstraintOperation>());
         Assert.AreEqual(DefaultName,     drop.Name);
         Assert.AreEqual("room_bookings", drop.Table);
-        Assert.IsEmpty(operations.OfType<AddUniqueConstraintOperation>());
+        Assert.IsEmpty(TemporalSql(operations));
     }
 }

@@ -1,7 +1,12 @@
 <Project>
     <ItemGroup>
+        <!-- _Parameter2 is DesignTimeServicesReferenceAttribute.ForProvider: EF skips this
+             registration entirely when diffing a context on a different provider, so a solution
+             that references several satellites (or a plain SQLite context alongside them) does not
+             get the wrong provider's differ. -->
         <AssemblyAttribute Include="Microsoft.EntityFrameworkCore.Design.DesignTimeServicesReferenceAttribute">
             <_Parameter1>EFCore.ComplexIndexes.PostgreSQL.NpgsqlComplexIndexDesignTimeServices, EFCore.ComplexIndexes.PostgreSQL</_Parameter1>
+            <_Parameter2>Npgsql.EntityFrameworkCore.PostgreSQL</_Parameter2>
         </AssemblyAttribute>
     </ItemGroup>
 </Project>

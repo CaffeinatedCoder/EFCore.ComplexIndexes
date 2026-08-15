@@ -45,6 +45,10 @@ public class CustomMigrationsModelDiffer(
         var sourceIndexes = ExtractAllIndexDescriptors(source);
         var targetIndexes = ExtractAllIndexDescriptors(target);
 
+        // Target only: the source is history. A snapshot that already contains a collision must
+        // still be diffable, or the model could never be fixed.
+        ValidateUniqueIndexNames(targetIndexes);
+
         if (sourceIndexes.Count == 0 && targetIndexes.Count == 0)
             return operations;
 
@@ -153,6 +157,8 @@ public class CustomMigrationsModelDiffer(
             if (tgt.RequiresPartsAnnotation)
                 op.AddAnnotation(ComplexIndexAnnotations.IndexParts, IndexPartsSerializer.Serialize(tgt.Parts));
 
+            ValidateCreateIndexOperation(op);
+
             creates.Add(op);
         }
 
@@ -161,6 +167,21 @@ public class CustomMigrationsModelDiffer(
 
         return [.. drops, .. operations, .. renames, .. creates];
     }
+
+    /// <summary>
+    /// Called for each <see cref="CreateIndexOperation"/> this differ emits, before it joins the
+    /// operation list. Provider satellites override this to reject declarations their provider
+    /// cannot express.
+    /// </summary>
+    /// <remarks>
+    /// Only operations built from complex-index declarations reach this method. Satellites must not
+    /// instead sweep the finished operation list: it also contains the operations the base EF differ
+    /// emitted for native <c>HasIndex</c> declarations, which are none of this package's business —
+    /// validating those turns any provider index option the satellite does not happen to know about
+    /// into a hard failure of the consumer's whole <c>migrations add</c>, for a model that never
+    /// touched this package.
+    /// </remarks>
+    protected virtual void ValidateCreateIndexOperation(CreateIndexOperation operation) { }
 
     /// <summary>
     /// Whether name-only index changes are emitted as <see cref="RenameIndexOperation"/> instead of
@@ -232,6 +253,39 @@ public class CustomMigrationsModelDiffer(
     ) => throw new InvalidOperationException(
              $"The index template '{part.Template}' on entity '{entityType.Name}' requires a provider " +
              "satellite differ (e.g. EFCore.ComplexIndexes.PostgreSQL) to resolve column references.");
+
+    /// <summary>
+    /// Fails when two distinct declarations resolve to the same index name on the same table.
+    /// </summary>
+    /// <remarks>
+    /// Such a pair emits two <c>CREATE INDEX</c> statements under one name — a migration that
+    /// scaffolds happily and then fails at apply time (PostgreSQL 42P07). This is the first point
+    /// where the collision is visible: the two stores (per-property annotations and the entity-level
+    /// definition list) cannot see each other, and default names are only known once property paths
+    /// have been resolved to real columns. Identical declarations are already collapsed by the
+    /// descriptor set, so only genuinely different indexes reach this check.
+    /// </remarks>
+    private static void ValidateUniqueIndexNames(HashSet<IndexDescriptor> descriptors)
+    {
+        var collision = descriptors
+                       .GroupBy(d => (d.TableName, d.Schema, d.IndexName))
+                       .FirstOrDefault(g => g.Count() > 1);
+
+        if (collision is null)
+            return;
+
+        throw new InvalidOperationException(
+            $"Two complex indexes on table '{collision.Key.TableName}' both resolve to the name "
+          + $"'{collision.Key.IndexName}': {string.Join(" and ", collision.Select(Describe))}. "
+          + "Index names must be unique per table — give each declaration an explicit, distinct name.");
+
+        static string Describe(IndexDescriptor descriptor)
+        {
+            var parts = string.Join(", ", descriptor.Parts.Select(p => p.Value));
+            var facets = descriptor.Filter is null ? "" : $" WHERE {descriptor.Filter}";
+            return $"({parts}){(descriptor.IsUnique ? " UNIQUE" : "")}{facets}";
+        }
+    }
 
     private HashSet<IndexDescriptor> ExtractAllIndexDescriptors(IRelationalModel? relationalModel)
     {
@@ -484,21 +538,10 @@ public class CustomMigrationsModelDiffer(
             foreach (var (key, value) in ProviderAnnotations)
             {
                 if (!other.ProviderAnnotations.TryGetValue(key, out var otherValue)) return false;
-                if (!AnnotationValueEquals(value, otherValue)) return false;
+                if (!AnnotationValues.ValuesEqual(value, otherValue)) return false;
             }
 
             return true;
-        }
-
-        // Annotation values may be arrays (e.g. operator classes / included columns). object.Equals
-        // compares arrays by reference, so structurally-equal values from two model builds never
-        // match — compare such values by sequence instead.
-        private static bool AnnotationValueEquals(object? a, object? b)
-        {
-            if (a is string || b is string) return Equals(a, b);
-            if (a is System.Collections.IEnumerable ea && b is System.Collections.IEnumerable eb)
-                return ea.Cast<object?>().SequenceEqual(eb.Cast<object?>());
-            return Equals(a, b);
         }
 
         public override int GetHashCode()
@@ -517,12 +560,7 @@ public class CustomMigrationsModelDiffer(
             foreach (var (key, value) in ProviderAnnotations.OrderBy(kv => kv.Key))
             {
                 hash.Add(key);
-
-                // Hash array contents (not the reference) to stay consistent with AnnotationValueEquals.
-                if (value is not string && value is System.Collections.IEnumerable seq)
-                    foreach (var item in seq) hash.Add(item);
-                else
-                    hash.Add(value);
+                AnnotationValues.AddValue(ref hash, value);
             }
 
             return hash.ToHashCode();

@@ -86,14 +86,13 @@ public class PostgresIntegrationTests
         return differ.GetDifferences(source, target);
     }
 
-    private static void Apply(IReadOnlyList<MigrationOperation> operations)
+    private static void Apply(IReadOnlyList<MigrationOperation> operations, bool wireUpGenerator = true)
     {
-        var options = new DbContextOptionsBuilder()
-                     .UseNpgsql(ConnectionString)
-                     .UseNpgsqlComplexIndexes()
-                     .Options;
+        var builder = new DbContextOptionsBuilder().UseNpgsql(ConnectionString);
+        if (wireUpGenerator)
+            builder.UseNpgsqlComplexIndexes();
 
-        using var context   = new EmptyContext(options);
+        using var context   = new EmptyContext(builder.Options);
         var       generator = context.GetService<IMigrationsSqlGenerator>();
         var       commands  = generator.Generate(operations, model: null);
 
@@ -108,6 +107,14 @@ public class PostgresIntegrationTests
 
     private static void Migrate<TContext>() where TContext : DbContext
         => Apply(GetDifferences(source: null, target: BuildRelationalModel<TContext>()));
+
+    /// <summary>
+    /// Applies with the <em>stock</em> Npgsql generator — no <c>UseNpgsqlComplexIndexes()</c>.
+    /// Features whose DDL is rendered at design time (temporal and exclusion constraints) must
+    /// still apply, and apply correctly.
+    /// </summary>
+    private static void MigrateWithoutRuntimeWiring<TContext>() where TContext : DbContext
+        => Apply(GetDifferences(source: null, target: BuildRelationalModel<TContext>()), wireUpGenerator: false);
 
     private static void Sql(string sql)
     {
@@ -173,6 +180,42 @@ public class PostgresIntegrationTests
 
         // Overlapping but revoked → excluded by the WHERE predicate, so it is allowed.
         Sql("INSERT INTO ig_role_grants (\"Id\", grantee_id, role_id, period, revoked_at) VALUES (4, 1, 1, '[2024-03-01,2024-09-01)', '2024-04-01')");
+    }
+
+    // Two constraints over the same columns, partitioned by their filters — the shape that a
+    // filter-blind identity rule used to collapse into one.
+    private class SplitGrantContext(DbContextOptions<SplitGrantContext> options) : DbContext(options)
+    {
+        public DbSet<RoleGrant> Grants => Set<RoleGrant>();
+
+        protected override void OnModelCreating(ModelBuilder modelBuilder) =>
+            modelBuilder.Entity<RoleGrant>(b =>
+            {
+                b.ToTable("ig_split_grants");
+                b.HasKey(x => x.Id);
+                b.Property(x => x.GranteeId).HasColumnName("grantee_id");
+                b.Property(x => x.RoleId).HasColumnName("role_id");
+                b.Property(x => x.Period).HasColumnName("period");
+                b.Property(x => x.RevokedAt).HasColumnName("revoked_at");
+                b.HasExclusionConstraint(x => x.GranteeId, x => x.Period,
+                                         filter: "revoked_at IS NULL",     name: "ex_ig_split_active");
+                b.HasExclusionConstraint(x => x.GranteeId, x => x.Period,
+                                         filter: "revoked_at IS NOT NULL", name: "ex_ig_split_revoked");
+            });
+    }
+
+    [TestMethod(DisplayName = "Two filtered exclusion constraints over the same columns both apply and enforce")]
+    public void Split_exclusion_constraints_both_enforce()
+    {
+        Migrate<SplitGrantContext>();
+
+        // Non-overlapping across the two partitions: an active grant and a revoked one may overlap.
+        Sql("INSERT INTO ig_split_grants (\"Id\", grantee_id, role_id, period) VALUES (1, 1, 1, '[2024-01-01,2024-06-01)')");
+        Sql("INSERT INTO ig_split_grants (\"Id\", grantee_id, role_id, period, revoked_at) VALUES (2, 1, 1, '[2024-03-01,2024-09-01)', '2024-04-01')");
+
+        // Each constraint still guards its own partition.
+        AssertRejected("INSERT INTO ig_split_grants (\"Id\", grantee_id, role_id, period) VALUES (3, 1, 1, '[2024-05-01,2024-08-01)')");
+        AssertRejected("INSERT INTO ig_split_grants (\"Id\", grantee_id, role_id, period, revoked_at) VALUES (4, 1, 1, '[2024-08-01,2024-10-01)', '2024-09-01')");
     }
 
     // Same table as GrantContext but without the declarative constraint — the "before adoption"
@@ -258,10 +301,13 @@ public class PostgresIntegrationTests
             });
     }
 
-    [TestMethod(DisplayName = "Temporal UNIQUE … WITHOUT OVERLAPS applies and enforces")]
+    [TestMethod(DisplayName = "Temporal UNIQUE … WITHOUT OVERLAPS applies and enforces without runtime wiring")]
     public void Temporal_constraint_enforces_without_overlaps()
     {
-        Migrate<BookingContext>();
+        // Deliberately no UseNpgsqlComplexIndexes(): the temporal DDL is baked into the migration at
+        // design time. Before that, the stock generator emitted a plain `UNIQUE (room_id,
+        // booked_during)` — valid DDL that applied cleanly and let the overlapping row below through.
+        MigrateWithoutRuntimeWiring<BookingContext>();
 
         Sql("INSERT INTO ig_bookings (\"Id\", room_id, booked_during) VALUES (1, 7, '[2024-01-01,2024-02-01)')");
         Sql("INSERT INTO ig_bookings (\"Id\", room_id, booked_during) VALUES (2, 7, '[2024-02-01,2024-03-01)')");
