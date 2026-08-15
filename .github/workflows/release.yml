@@ -7,7 +7,16 @@
 #
 #   git tag v5.0.2 && git push origin v5.0.2
 #
-# Requires a NUGET_API_KEY repository secret.
+# Publishing uses Trusted Publishing (OIDC): no long-lived API key exists in this repository.
+# GitHub signs a short-lived token proving which workflow in which repository is running,
+# nuget.org validates it against a policy you configure there, and issues an API key valid for
+# one hour. A compromise of this repository's secrets yields nothing that can publish.
+#
+# Setup, once:
+#   1. nuget.org → your account → Trusted Publishing → add a policy naming this repository
+#      owner, this repository, and this workflow file (release.yml).
+#   2. Add a NUGET_USER repository secret holding your nuget.org *profile name* — not the email
+#      address. This is not a credential; it is kept in a secret only to stay out of build logs.
 
 name: Release
 
@@ -42,6 +51,15 @@ jobs:
   publish:
     name: Publish
     runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      id-token: write   # lets GitHub mint the OIDC token nuget.org validates
+
+    # Optional hardening: if the nuget.org policy is scoped to a GitHub environment, declare the
+    # same one here. Pairing it with required reviewers turns a tag push into a queued release
+    # that a human has to approve.
+    # environment: nuget
 
     steps:
       - uses: actions/checkout@v6
@@ -107,20 +125,36 @@ jobs:
             dist/*.nupkg
             dist/*.snupkg
 
+      - name: Verify the publisher identity is configured
+        if: ${{ github.event_name == 'push' || !inputs.dry_run }}
+        env:
+          NUGET_USER: ${{ secrets.NUGET_USER }}
+        run: |
+          if [[ -z "${NUGET_USER:-}" ]]; then
+            echo "::error::NUGET_USER secret is not set — it must be your nuget.org profile name, not the email address."
+            exit 1
+          fi
+
+      # Exchanges this run's OIDC token for an API key that nuget.org issues against the trusted
+      # publishing policy, valid for one hour. The token is single-use and nothing is stored.
+      - name: NuGet login (OIDC)
+        id: login
+        if: ${{ github.event_name == 'push' || !inputs.dry_run }}
+        uses: NuGet/login@v1
+        with:
+          user: ${{ secrets.NUGET_USER }}
+
       # Only .nupkg is globbed — dotnet nuget push uploads the matching .snupkg alongside it
       # automatically, so symbols need no separate step.
       #
       # --skip-duplicate makes a re-run after a partial failure safe: already-published
-      # packages are reported and skipped instead of failing the job.
+      # packages are reported and skipped instead of failing the job. Note the temporary key
+      # expires an hour after login, so a much-delayed re-run needs a fresh workflow run.
       - name: Push to NuGet
         if: ${{ github.event_name == 'push' || !inputs.dry_run }}
         env:
-          NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
+          NUGET_API_KEY: ${{ steps.login.outputs.NUGET_API_KEY }}
         run: |
-          if [[ -z "${NUGET_API_KEY:-}" ]]; then
-            echo "::error::NUGET_API_KEY secret is not set."
-            exit 1
-          fi
           for package in dist/*."${{ steps.version.outputs.version }}".nupkg; do
             echo "==> Pushing $(basename "$package")"
             dotnet nuget push "$package" \

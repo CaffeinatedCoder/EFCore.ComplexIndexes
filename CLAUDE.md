@@ -42,7 +42,15 @@ NU5019.
 source of truth: the tag is verified against it rather than driving it, packages are discovered from
 the pack output (so a future satellite needs no workflow edit), and pushes use `--skip-duplicate` so
 a re-run after a partial failure is safe. The release gate runs the full suite, which means
-`ChangelogConsistencyTests` blocks a version nothing documents. Needs a `NUGET_API_KEY` secret.
+`ChangelogConsistencyTests` blocks a version nothing documents.
+
+Publishing uses **Trusted Publishing (OIDC)** — there is deliberately no long-lived NuGet key in this
+repository. `NuGet/login@v1` exchanges the run's signed OIDC token for an API key valid one hour,
+issued only if the run matches the policy configured on nuget.org (owner + repository + workflow
+file). The job therefore needs `id-token: write`. The one repository secret, `NUGET_USER`, holds the
+nuget.org *profile name*; it is not a credential and is a secret only to keep it out of build logs.
+Renaming `release.yml`, moving it, or forking the repository invalidates the policy match by design —
+update the policy on nuget.org rather than working around it.
 
 ## Quality controls
 
