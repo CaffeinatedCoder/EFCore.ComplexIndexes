@@ -129,7 +129,11 @@ shows what a consumer who forgot `UseNpgsqlComplexIndexes()` actually gets.
   definition store, a `.targets`, or before a release.
 - `verify-the-guard` — revert the source fix and confirm the new test fails. This caught a test of
   mine during the audit that asserted nothing (the two declarations it set up deduplicated into one,
-  so no exception was ever possible) and it passed against broken code.
+  so no exception was ever possible) and it passed against broken code. Extended for guards whose
+  subject is *delivery*, where there is no source fix to revert: break the mechanism instead, and
+  mind that the two `.targets` are redundant, that provider index options do not discriminate which
+  differ ran, and that the conditions — cold checkout, pre-built feed, private package cache —
+  are the axis the bug hides on.
 
 ## Architecture
 
