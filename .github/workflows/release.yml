@@ -112,6 +112,12 @@ jobs:
       - name: Pack
         run: dotnet pack -c Release --no-build -o dist
 
+      # Installs the packages just packed into a throwaway project outside this repository and runs a
+      # real `dotnet ef migrations add`. Passing dist means the artifacts published are the artifacts
+      # tested, rather than a fresh pack that happens to be built from the same commit.
+      - name: Consumer smoke test
+        run: ./test/consumer-smoke-test.sh dist
+
       # One CycloneDX SBOM per package, describing what a consumer actually takes on.
       #
       # --exclude-filter drops Microsoft.EntityFrameworkCore.Design and its whole subtree. That

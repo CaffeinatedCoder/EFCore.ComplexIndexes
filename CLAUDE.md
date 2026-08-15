@@ -84,6 +84,22 @@ below exist because ordinary review does not catch it.
 | `PackagingConventionTests` | Every package ships its own README as `PackageReadmeFile`; `.targets` ship to both `build/` and `buildTransitive/`, reference a real `IDesignTimeServices` in their own assembly, and set `ForProvider` on satellites but not on core. |
 | `BuilderApiParityTests` | Every key in a satellite's annotation whitelist is reachable from a builder method. `SqlServer:DataCompression` sat whitelisted with no API for a full release; this catches that class of drift by invoking every builder extension and diffing the keys it sets. |
 
+**`test/consumer-smoke-test.sh`** is the only check that exercises *delivery* rather than code. Every
+other layer is verified in isolation and in-process; this one packs the nupkgs, restores them into a
+throwaway project created **outside the repository** (inside it, `Directory.Build.props` would apply
+and the project would stop resembling a consumer's), and runs a real `dotnet ef migrations add`. It
+then asserts on scaffolded content — never on the exit code, because the failure being hunted is a
+`migrations add` that succeeds while silently omitting every index. Neutering both `.targets` files
+reproduces exactly that: table and columns scaffold fine, indexes vanish, exit code 0.
+
+Two things in it are load-bearing and easy to "simplify" away. `NUGET_PACKAGES` is redirected to a
+private folder because NuGet resolves id+version from the global packages folder before consulting
+any source — with the version pinned at 5.0.2 a locally built package is shadowed by whatever 5.0.2
+was restored before, up to and including the one on nuget.org, and the test silently reports on the
+wrong artifact. And `<clear/>` in the generated `nuget.config` stops nuget.org from satisfying the
+restore on its own. Note also that the two `.targets` are *redundant* by design: sabotaging either
+one alone still yields correct migrations, because the surviving registration covers it.
+
 **`MigrationHarness`** (under `test/…/Harness/`) is the shared rig: build a model from a
 `DbContext`, construct any differ, render operations through either the stock provider generator or
 this package's. Investigating a suspected differ bug should be three lines, not a re-derived
