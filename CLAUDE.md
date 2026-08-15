@@ -82,6 +82,7 @@ below exist because ordinary review does not catch it.
 |---|---|
 | `ChangelogConsistencyTests` | The changelog lives in four files (root README + one per package). Asserts the shipped version is documented, no README runs ahead of `Directory.Build.props`, package changelogs are a subset of the root's, and sections are newest-first. |
 | `PackagingConventionTests` | Every package ships its own README as `PackageReadmeFile`; `.targets` ship to both `build/` and `buildTransitive/`, reference a real `IDesignTimeServices` in their own assembly, and set `ForProvider` on satellites but not on core. |
+| `ClaudeMdConsistencyTests` | This file. Prose cannot be asserted, so it checks the falsifiable parts: cited paths and file names exist, annotation keys under a prefix this repo owns are declared somewhere, `Type.Member` references resolve, and the stated size of the Npgsql whitelist matches it. Those are what a rename rots silently — and the count claim had already gone stale by two. |
 | `BuilderApiParityTests` | Every key in a satellite's annotation whitelist is reachable from a builder method. `SqlServer:DataCompression` sat whitelisted with no API for a full release; this catches that class of drift by invoking every builder extension and diffing the keys it sets. |
 
 **`test/consumer-smoke-test.sh`** is the only check that exercises *delivery* rather than code. Every
@@ -151,7 +152,7 @@ changelogs in sync with the root `README.md` when releasing.
 
 Property-level annotations reach the `CreateIndexOperation` only through
 `IsForwardedIndexAnnotation` (virtual on the core differ, default **nothing**; the Npgsql differ
-whitelists exactly its seven `Npgsql:*` index-option keys). Never revert to sweeping "everything
+whitelists exactly its five `Npgsql:*` index-option keys). Never revert to sweeping "everything
 except known keys": column facets (`Relational:ColumnName`, `Relational:ColumnType`, …) leaked into
 scaffolded migrations that way, and snapshot/code-model asymmetries caused phantom drop/create
 churn (see `PhantomIndexChurnTests`).
