@@ -91,15 +91,29 @@ throwaway project created **outside the repository** (inside it, `Directory.Buil
 and the project would stop resembling a consumer's), and runs a real `dotnet ef migrations add`. It
 then asserts on scaffolded content — never on the exit code, because the failure being hunted is a
 `migrations add` that succeeds while silently omitting every index. Neutering both `.targets` files
-reproduces exactly that: table and columns scaffold fine, indexes vanish, exit code 0.
+reproduces exactly that: table and columns scaffold fine, indexes vanish, exit code 0. One consumer
+project per satellite; it runs on every PR in both of its invocation modes (the `consumer` job packs
+its own feed, the `pack` job passes the one it just built, as the release workflow does).
 
-Two things in it are load-bearing and easy to "simplify" away. `NUGET_PACKAGES` is redirected to a
+**Index options do not prove which differ ran.** Entity-level provider annotations reach the
+operation unfiltered, so the core differ emits `Npgsql:IndexMethod` and `SqlServer:FillFactor` just
+as the satellites do — a neutered satellite `.targets` still yields a migration that looks right,
+because the core registration rides along through `buildTransitive` and covers it. Each provider is
+therefore pinned by something only its own differ does: PostgreSQL by an exclusion constraint, whose
+design-time DDL the core differ has never heard of, and SQL Server by a *rejection* — a clustered
+complex index must fail at `migrations add`, and scaffolding cleanly is the failure. Both were
+confirmed by neutering each satellite's `.targets` in turn; the index assertions kept passing, which
+is precisely the point.
+
+Two more things are load-bearing and easy to "simplify" away. `NUGET_PACKAGES` is redirected to a
 private folder because NuGet resolves id+version from the global packages folder before consulting
-any source — with the version pinned at 5.0.2 a locally built package is shadowed by whatever 5.0.2
+any source — a locally built package is otherwise shadowed by whatever build of that same version
 was restored before, up to and including the one on nuget.org, and the test silently reports on the
-wrong artifact. And `<clear/>` in the generated `nuget.config` stops nuget.org from satisfying the
-restore on its own. Note also that the two `.targets` are *redundant* by design: sabotaging either
-one alone still yields correct migrations, because the surviving registration covers it.
+wrong artifact. And the generated `nuget.config` uses **package source mapping**, not source order:
+this repository's own ids must come from the local feed and nothing else, while every transitive
+dependency must come from nuget.org. Restricting the whole restore to the local feed instead (the
+`--source` flag) fails with NU1101, and it fails only when a feed is passed in, because packing
+first happens to populate the private cache — which is how it reached a release.
 
 **`MigrationHarness`** (under `test/…/Harness/`) is the shared rig: build a model from a
 `DbContext`, construct any differ, render operations through either the stock provider generator or
