@@ -157,8 +157,13 @@ jobs:
           printf 'Packages (%d):\n' "${#packages[@]}"
           printf '    %s\n' "${packages[@]##*/}"
 
+      # upload-artifact v6 and download-artifact v7 are the majors that actually switched to the
+      # Node 24 runtime; v5/v6 respectively only had preliminary support and still ran on Node 20,
+      # which the runner now warns about. Deliberately not the newest majors: upload v7 adds ESM and
+      # direct (unzipped) uploads, and download v8 turns a digest mismatch into a hard failure and
+      # stops auto-unzipping. Neither buys anything here, and this is the publish path.
       - name: Upload packages
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: nupkg-${{ steps.version.outputs.version }}
           path: |
@@ -189,7 +194,7 @@ jobs:
 
       # Publishes exactly what was verified — the packages are not rebuilt here.
       - name: Download packages
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           name: nupkg-${{ needs.verify.outputs.version }}
           path: dist
