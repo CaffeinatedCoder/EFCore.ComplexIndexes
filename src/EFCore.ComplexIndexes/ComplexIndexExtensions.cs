@@ -3,6 +3,11 @@ using Microsoft.EntityFrameworkCore.Metadata.Builders;
 
 namespace EFCore.ComplexIndexes;
 
+/// <summary>
+/// The fluent API for declaring indexes over complex-type (value object) properties. Call these from
+/// <c>OnModelCreating</c>; each stores its configuration as EF Core annotations that
+/// <see cref="CustomMigrationsModelDiffer"/> reads at design time.
+/// </summary>
 public static class ComplexIndexExtensions
 {
     // ── Single-column index on a complex type property ──
@@ -12,7 +17,6 @@ public static class ComplexIndexExtensions
         /// <summary>
         /// Configures a single-column index on a complex type property.
         /// </summary>
-        /// <typeparam name="TProperty">The type of the property.</typeparam>
         /// <param name="isUnique">Whether the index is unique.</param>
         /// <param name="filter">A SQL filter for the index.</param>
         /// <param name="indexName">The custom name of the index.</param>

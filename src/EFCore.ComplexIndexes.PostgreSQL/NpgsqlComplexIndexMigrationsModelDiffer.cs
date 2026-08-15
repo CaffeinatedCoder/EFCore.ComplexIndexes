@@ -15,6 +15,11 @@ namespace EFCore.ComplexIndexes.PostgreSQL;
 /// constraints (<c>WITHOUT OVERLAPS</c>) declared via <c>HasTemporalConstraint</c>. Temporal and
 /// exclusion constraint DDL is rendered at design time, so neither needs runtime SQL-generator wiring.
 /// </summary>
+/// <param name="typeMappingSource">EF Core relational type mapping source.</param>
+/// <param name="migrationsAnnotationProvider">EF Core migrations annotation provider.</param>
+/// <param name="relationalAnnotationProvider">EF Core relational annotation provider.</param>
+/// <param name="rowIdentityMapFactory">EF Core row identity map factory.</param>
+/// <param name="commandBatchPreparerDependencies">EF Core command batch preparer dependencies.</param>
 public class NpgsqlComplexIndexMigrationsModelDiffer(
     IRelationalTypeMappingSource     typeMappingSource,
     IMigrationsAnnotationProvider    migrationsAnnotationProvider,
@@ -29,6 +34,10 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
     commandBatchPreparerDependencies
 )
 {
+    // Held in a field rather than captured from the primary constructor: the same parameter is passed
+    // to the base constructor, and capturing it as well would store it twice (CS9107).
+    private readonly IRelationalTypeMappingSource _typeMappingSource = typeMappingSource;
+
     private static readonly HashSet<string> SupportedNpgsqlAnnotations =
     [
         NpgsqlAnnotations.IndexMethod,
@@ -222,6 +231,14 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
             $"Could not resolve property path '{path}' referenced by an index expression on entity '{entityType.Name}'.");
     }
 
+    /// <summary>
+    /// Runs the core complex-index diff, then adds PostgreSQL-specific DDL: temporal <c>UNIQUE …
+    /// WITHOUT OVERLAPS</c> constraints, temporal foreign keys, exclusion constraints, and a single
+    /// shared <c>CREATE EXTENSION btree_gist</c> when any of them needs it.
+    /// </summary>
+    /// <param name="source">The model migrated from — typically the snapshot.</param>
+    /// <param name="target">The model migrated to — the current <c>OnModelCreating</c> result.</param>
+    /// <returns>The full operation list, constraint DDL included as design-time <c>SqlOperation</c>s.</returns>
     public override IReadOnlyList<MigrationOperation> GetDifferences(
         IRelationalModel? source,
         IRelationalModel? target
@@ -229,7 +246,7 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
     {
         var operations = base.GetDifferences(source, target);
 
-        operations = ApplyTemporalConstraints(operations, source, target, typeMappingSource, out var temporalNeedsExtension);
+        operations = ApplyTemporalConstraints(operations, source, target, _typeMappingSource, out var temporalNeedsExtension);
         operations = ApplyExclusionConstraints(operations, source, target, out var exclusionNeedsExtension);
 
         // One shared CREATE EXTENSION for temporal and exclusion constraints alike.

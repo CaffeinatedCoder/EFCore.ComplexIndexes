@@ -31,7 +31,7 @@ public class PostgresIntegrationTests
     {
         try
         {
-            _container = new PostgreSqlBuilder().WithImage("postgres:18").Build();
+            _container = new PostgreSqlBuilder("postgres:18").Build();
             await _container.StartAsync();
             _connectionString = _container.GetConnectionString();
         }

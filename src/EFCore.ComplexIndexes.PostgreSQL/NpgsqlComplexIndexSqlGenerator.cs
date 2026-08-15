@@ -21,6 +21,14 @@ public class NpgsqlComplexIndexSqlGenerator(
     INpgsqlSingletonOptions            npgsqlSingletonOptions
 ) : NpgsqlMigrationsSqlGenerator(dependencies, npgsqlSingletonOptions)
 {
+    /// <summary>
+    /// Renders <c>CREATE INDEX</c> from the <see cref="ComplexIndexAnnotations.IndexParts"/>
+    /// annotation when it is present, and delegates to the base Npgsql generator otherwise.
+    /// </summary>
+    /// <param name="operation">The index creation operation.</param>
+    /// <param name="model">The target model, if available.</param>
+    /// <param name="builder">The command builder to write SQL into.</param>
+    /// <param name="terminate">Whether to terminate the statement.</param>
     protected override void Generate(
         CreateIndexOperation        operation,
         IModel?                     model,

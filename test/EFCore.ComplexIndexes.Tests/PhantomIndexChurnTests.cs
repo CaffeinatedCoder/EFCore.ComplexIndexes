@@ -9,6 +9,9 @@ using Microsoft.EntityFrameworkCore.Update.Internal;
 
 namespace EFCore.ComplexIndexes.Tests;
 
+// Constructing the differ by hand needs EF's internal service types, as the differ itself does.
+#pragma warning disable EF1001
+
 /// <summary>
 /// Regression tests for the phantom complex-index churn: every <c>migrations add</c> re-creating
 /// identical indexes. Two independent causes:

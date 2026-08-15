@@ -35,8 +35,10 @@ public sealed class IndexPartDefinition : IEquatable<IndexPartDefinition>
     [JsonConverter(typeof(JsonStringEnumConverter<DbNullSort>))]
     public DbNullSort NullSort { get; init; }
 
+    /// <summary>Whether this part is a verbatim SQL expression rather than a column reference.</summary>
     [JsonIgnore] public bool IsExpression => Expression is not null;
 
+    /// <summary>Whether this part is a SQL template whose placeholders still need resolving.</summary>
     [JsonIgnore] public bool IsTemplate => Template is not null;
 
     /// <summary>
@@ -58,6 +60,9 @@ public sealed class IndexPartDefinition : IEquatable<IndexPartDefinition>
                NullSort     = nullSort   ?? NullSort
            };
 
+    /// <summary>Compares the path, expression, template and sort options.</summary>
+    /// <param name="other">The part to compare with.</param>
+    /// <returns><c>true</c> if the two describe the same column-list entry.</returns>
     public bool Equals(IndexPartDefinition? other) =>
         other is not null
      && PropertyPath == other.PropertyPath
@@ -66,7 +71,9 @@ public sealed class IndexPartDefinition : IEquatable<IndexPartDefinition>
      && Descending   == other.Descending
      && NullSort     == other.NullSort;
 
+    /// <inheritdoc />
     public override bool Equals(object? obj) => Equals(obj as IndexPartDefinition);
 
+    /// <inheritdoc />
     public override int GetHashCode() => HashCode.Combine(PropertyPath, Expression, Template, Descending, NullSort);
 }

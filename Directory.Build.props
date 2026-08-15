@@ -4,9 +4,27 @@
         <Authors>CaffeinatedCoder</Authors>
         <PackageLicenseExpression>MIT</PackageLicenseExpression>
         <GenerateDocumentationFile>true</GenerateDocumentationFile>
+        <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
         <PackageProjectUrl>https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes</PackageProjectUrl>
         <RepositoryUrl>https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes</RepositoryUrl>
         <RepositoryType>git</RepositoryType>
+    </PropertyGroup>
+
+    <!--
+        Warnings are errors, with one carve-out.
+
+        GenerateDocumentationFile means CS1591 (missing XML comment) polices the public surface: the
+        .xml shipped in the package is what a consumer sees in IntelliSense, and a hole in it is a
+        hole in the API documentation. Making it an error is the only thing that keeps that true —
+        64 of them had accumulated by 5.0.2.
+
+        NU1903 stays a warning. It reports a vulnerable *transitive* package, so whether the build
+        passes depends on advisories published upstream rather than on anything in this commit; as an
+        error it would break unrelated CI runs at unpredictable moments. It must stay visible, so it
+        is exempted rather than suppressed with NoWarn.
+    -->
+    <PropertyGroup>
+        <WarningsNotAsErrors>NU1901;NU1902;NU1903;NU1904</WarningsNotAsErrors>
     </PropertyGroup>
 
     <!--

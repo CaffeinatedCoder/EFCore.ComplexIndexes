@@ -11,6 +11,22 @@ namespace EFCore.ComplexIndexes;
 
 #pragma warning disable EF1001
 
+/// <summary>
+/// Replaces EF Core's <see cref="MigrationsModelDiffer"/> at design time so that indexes declared on
+/// complex-type properties produce <c>CreateIndexOperation</c>/<c>DropIndexOperation</c>. EF Core can
+/// model complex properties but does not diff indexes over their nested columns; this fills that gap.
+/// </summary>
+/// <remarks>
+/// Registered through <see cref="CustomDesignTimeServices"/>, which the packaged <c>.targets</c> file
+/// wires up automatically — consumers do not construct this type. Providers extend it by overriding
+/// <c>IsForwardedIndexAnnotation</c>, <c>ValidateCreateIndexOperation</c>, <c>ResolveUnmappedPart</c>
+/// and <c>ResolveTemplatePart</c>.
+/// </remarks>
+/// <param name="typeMappingSource">EF Core relational type mapping source.</param>
+/// <param name="migrationsAnnotationProvider">EF Core migrations annotation provider.</param>
+/// <param name="relationalAnnotationProvider">EF Core relational annotation provider.</param>
+/// <param name="rowIdentityMapFactory">EF Core row identity map factory.</param>
+/// <param name="commandBatchPreparerDependencies">EF Core command batch preparer dependencies.</param>
 public class CustomMigrationsModelDiffer(
     IRelationalTypeMappingSource     typeMappingSource,
     IMigrationsAnnotationProvider    migrationsAnnotationProvider,
@@ -35,6 +51,17 @@ public class CustomMigrationsModelDiffer(
     /// </summary>
     public const string RuntimeWiringSentinel = "__requires_UseNpgsqlComplexIndexes__";
 
+    /// <summary>
+    /// Runs EF Core's own diff, then adds the operations for complex-type indexes.
+    /// </summary>
+    /// <param name="source">The model migrated from — typically the snapshot.</param>
+    /// <param name="target">The model migrated to — the current <c>OnModelCreating</c> result.</param>
+    /// <returns>
+    /// The base operations with this package's drops prepended and creates appended. The order is
+    /// load-bearing: an index moving between a native <c>HasIndex</c> and a complex-index declaration
+    /// yields a base create plus a same-named drop from here, and only drops-first avoids a collision
+    /// at apply time.
+    /// </returns>
     public override IReadOnlyList<MigrationOperation> GetDifferences(
         IRelationalModel? source,
         IRelationalModel? target
