@@ -560,4 +560,16 @@ failures into errors raised at the declaration or during `dotnet ef migrations a
 
 ---
 
+## Contributing and project practices
+
+Bug reports and pull requests are welcome — [CONTRIBUTING.md](CONTRIBUTING.md) covers the setup and
+the quality bar this package holds itself to. Security reports go privately through
+[SECURITY.md](SECURITY.md).
+
+A substantial portion of this codebase was written with AI assistance, under maintainer direction and
+review. [CONTRIBUTING.md](CONTRIBUTING.md#ai-assisted-development) explains what that means in
+practice, and how every change is verified before it ships.
+
+---
+
 The package integrates seamlessly with EF Core's design-time tooling. Apart from the one-time `UseNpgsqlComplexIndexes()` call required by expression indexes and `NULLS FIRST/LAST`, there is no additional ceremony — just configure and migrate.
