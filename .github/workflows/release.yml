@@ -112,6 +112,34 @@ jobs:
       - name: Pack
         run: dotnet pack -c Release --no-build -o dist
 
+      # One CycloneDX SBOM per package, describing what a consumer actually takes on.
+      #
+      # --exclude-filter drops Microsoft.EntityFrameworkCore.Design and its whole subtree. That
+      # reference is PrivateAssets=all, so it never reaches consumers — leaving it in would list
+      # ~45 MSBuild/Roslyn components for a package whose nuspec declares one, and hand every
+      # consumer a pile of vulnerability alerts for code they do not ship. PackagingConventionTests
+      # asserts this filter still covers every PrivateAssets=all reference.
+      #
+      # --include-project-references keeps the core package listed as a dependency of the
+      # satellites, matching their nuspec.
+      - name: Generate SBOMs
+        run: |
+          dotnet tool restore
+          for directory in src/*/; do
+            id="$(basename "$directory")"
+            echo "==> $id"
+            dotnet cyclonedx "$directory$id.csproj" \
+              --output dist \
+              --filename "$id.${{ steps.version.outputs.version }}.cdx.json" \
+              --output-format Json \
+              --set-type Library \
+              --set-nuget-purl \
+              --set-name "$id" \
+              --set-version "${{ steps.version.outputs.version }}" \
+              --include-project-references \
+              --exclude-filter Microsoft.EntityFrameworkCore.Design
+          done
+
       - name: Collect packages
         run: |
           shopt -s nullglob
@@ -130,6 +158,7 @@ jobs:
           path: |
             dist/*.nupkg
             dist/*.snupkg
+            dist/*.cdx.json
 
   publish:
     name: Publish

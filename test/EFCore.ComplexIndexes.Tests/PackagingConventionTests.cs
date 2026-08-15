@@ -1,3 +1,4 @@
+using System.Text.RegularExpressions;
 using System.Xml.Linq;
 
 namespace EFCore.ComplexIndexes.Tests;
@@ -100,6 +101,42 @@ public class PackagingConventionTests
                     $"{project} is provider-agnostic and must not declare ForProvider.");
         }
     }
+
+    [TestMethod(DisplayName = "The SBOM exclude filter covers every build-only package reference")]
+    public void Sbom_filter_covers_every_private_reference()
+    {
+        // The published SBOMs describe what a consumer takes on, so references marked
+        // PrivateAssets=all — which never reach consumers — are filtered out of them. Add another
+        // such reference without extending the filter and the SBOM silently gains that package's
+        // whole subtree, telling consumers they depend on code they never receive.
+        var buildOnly = Projects
+                       .SelectMany(project => XDocument.Load(project.ProjectFile)
+                                                       .Descendants("PackageReference")
+                                                       .Where(IsPrivate)
+                                                       .Select(r => r.Attribute("Include")!.Value))
+                       .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        Assert.IsNotEmpty(buildOnly, "Expected at least one PrivateAssets=all reference — has the packaging changed?");
+
+        var filtered = Regex.Matches(File.ReadAllText(ReleaseWorkflow), @"--exclude-filter\s+(\S+)")
+                            .SelectMany(m => m.Groups[1].Value.Split(',', StringSplitOptions.RemoveEmptyEntries))
+                            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        var unfiltered = buildOnly.Except(filtered).OrderBy(n => n, StringComparer.Ordinal).ToList();
+
+        Assert.IsEmpty(
+            unfiltered,
+            $"{string.Join(", ", unfiltered)} is referenced with PrivateAssets=all but is not in the "
+          + "SBOM --exclude-filter in release.yml, so the generated SBOM would list dependencies "
+          + "consumers never receive.");
+    }
+
+    private static string ReleaseWorkflow =>
+        Path.Combine(RepositoryLayout.Root, ".github", "workflows", "release.yml");
+
+    private static bool IsPrivate(XElement reference) =>
+        string.Equals(reference.Element("PrivateAssets")?.Value ?? reference.Attribute("PrivateAssets")?.Value,
+                      "all", StringComparison.OrdinalIgnoreCase);
 
     private static XElement DesignTimeAttribute(RepositoryLayout.ShippingProject project)
     {

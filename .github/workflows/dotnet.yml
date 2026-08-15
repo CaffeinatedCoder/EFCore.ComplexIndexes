@@ -135,6 +135,19 @@ jobs:
             unzip -l "$package" | awk '{ print "    " $NF }' | grep -E 'README|targets|\.dll$' || true
           done
 
+      # Generating here too means a broken SBOM step surfaces on a PR rather than on release day.
+      - name: Generate SBOMs
+        run: |
+          dotnet tool restore
+          version="$(dotnet msbuild src/EFCore.ComplexIndexes/EFCore.ComplexIndexes.csproj -getProperty:Version)"
+          for directory in src/*/; do
+            id="$(basename "$directory")"
+            dotnet cyclonedx "$directory$id.csproj" \
+              --output dist --filename "$id.$version.cdx.json" --output-format Json \
+              --set-type Library --set-nuget-purl --set-name "$id" --set-version "$version" \
+              --include-project-references --exclude-filter Microsoft.EntityFrameworkCore.Design
+          done
+
       - name: Upload packages
         uses: actions/upload-artifact@v4
         with:
@@ -142,3 +155,4 @@ jobs:
           path: |
             dist/*.nupkg
             dist/*.snupkg
+            dist/*.cdx.json

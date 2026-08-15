@@ -38,6 +38,15 @@ work), the integration suite on Linux only (Docker), then a pack job whose value
 packing *is* a check — a package declaring `PackageReadmeFile` without packing the file fails with
 NU5019.
 
+Both workflows generate a **CycloneDX SBOM per package** (`*.cdx.json`) alongside the nupkgs, via
+the `cyclonedx` tool pinned in `.config/dotnet-tools.json`. `--exclude-filter` drops
+`Microsoft.EntityFrameworkCore.Design` and its subtree: that reference is `PrivateAssets=all`, so
+without the filter the core package's SBOM would list ~45 MSBuild/Roslyn components against a nuspec
+declaring one, handing consumers vulnerability alerts for code they never receive.
+`PackagingConventionTests` asserts the filter still covers every `PrivateAssets=all` reference — an
+SBOM that misdescribes the package is worse than none. Publishing one is a courtesy: the CRA's SBOM
+duty falls on commercial consumers for their own products, not on this package.
+
 `.github/workflows/release.yml` publishes on a `v*` tag. `Directory.Build.props` stays the single
 source of truth: the tag is verified against it rather than driving it, packages are discovered from
 the pack output (so a future satellite needs no workflow edit), and pushes use `--skip-duplicate` so
