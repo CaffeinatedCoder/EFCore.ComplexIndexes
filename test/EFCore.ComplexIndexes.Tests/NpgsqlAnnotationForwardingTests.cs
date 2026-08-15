@@ -18,33 +18,10 @@ namespace EFCore.ComplexIndexes.Tests;
 public class NpgsqlAnnotationForwardingTests
 {
     private static IRelationalModel BuildRelationalModel<TContext>() where TContext : DbContext
-    {
-        var options = new DbContextOptionsBuilder<TContext>()
-                     .UseNpgsql("Host=localhost;Database=test")
-                     .Options;
-
-        using var context = (TContext)Activator.CreateInstance(typeof(TContext), options)!;
-        return context.GetService<IDesignTimeModel>().Model.GetRelationalModel();
-    }
+        => MigrationHarness.NpgsqlModel<TContext>();
 
     private static IReadOnlyList<MigrationOperation> GetDifferences(IRelationalModel? source, IRelationalModel? target)
-    {
-        var options = new DbContextOptionsBuilder()
-                     .UseNpgsql("Host=localhost;Database=test")
-                     .Options;
-
-        using var context = new EmptyContext(options);
-
-        var differ = new NpgsqlComplexIndexMigrationsModelDiffer(
-            context.GetService<IRelationalTypeMappingSource>(),
-            context.GetService<IMigrationsAnnotationProvider>(),
-            context.GetService<IRelationalAnnotationProvider>(),
-            context.GetService<IRowIdentityMapFactory>(),
-            context.GetService<CommandBatchPreparerDependencies>()
-        );
-
-        return differ.GetDifferences(source, target);
-    }
+        => MigrationHarness.NpgsqlDiff(source, target);
 
     private class EmptyContext(DbContextOptions options) : DbContext(options);
 
@@ -181,17 +158,8 @@ public class NpgsqlAnnotationForwardingTests
     [TestMethod(DisplayName = "Validation sees only this package's index operations, not native ones")]
     public void Validation_is_scoped_to_our_own_operations()
     {
-        var options = new DbContextOptionsBuilder().UseNpgsql("Host=localhost;Database=test").Options;
-        using var context = new EmptyContext(options);
-
-        var differ = new RecordingDiffer(
-            context.GetService<IRelationalTypeMappingSource>(),
-            context.GetService<IMigrationsAnnotationProvider>(),
-            context.GetService<IRelationalAnnotationProvider>(),
-            context.GetService<IRowIdentityMapFactory>(),
-            context.GetService<CommandBatchPreparerDependencies>());
-
-        var operations = differ.GetDifferences(null, BuildRelationalModel<MixedIndexContext>());
+        var (differ, operations) = MigrationHarness.DiffWith<RecordingDiffer>(
+            MigrationHarness.NpgsqlOptions(), source: null, target: BuildRelationalModel<MixedIndexContext>());
 
         // Both indexes are emitted, and the native one does carry Npgsql index options — exactly
         // what an operation-list sweep would have subjected to this package's whitelist.
@@ -244,21 +212,20 @@ public class NpgsqlAnnotationForwardingTests
                 b.HasKey(x => x.Id);
                 b.Property(x => x.Name).HasColumnName("display_name");
                 b.ComplexProperty(x => x.Email, c => c.Property(x => x.Value).HasColumnName("email"));
-                // NULLS ordering routes this index through the parts annotation, which the package's
-                // generator renders from — Npgsql's own sort annotation would go unread.
+                // Npgsql's own sort annotation describes what DbOrder already expresses per column.
                 b.HasComplexCompositeIndex(
                     x => new { x.Name, Email = DbOrder.NullsLast(x.Email.Value) },
                     ix => ix.HasName("ix_conflict").HasAnnotation("Npgsql:IndexNullSortOrder", new[] { "NullsFirst" }));
             });
     }
 
-    [TestMethod(DisplayName = "Npgsql sort annotations alongside per-part sort options are rejected, not dropped")]
+    [TestMethod(DisplayName = "Npgsql sort annotations are rejected in favour of DbOrder, not silently dropped")]
     public void Sort_annotation_conflicting_with_parts_is_rejected()
     {
         var ex = Assert.ThrowsExactly<InvalidOperationException>(
             () => GetDifferences(source: null, target: BuildRelationalModel<SortOrderConflictContext>()));
 
         StringAssert.Contains(ex.Message, "Npgsql:IndexNullSortOrder");
-        StringAssert.Contains(ex.Message, "is not rendered for this index");
+        StringAssert.Contains(ex.Message, "DbOrder.Asc/Desc/NullsFirst/NullsLast");
     }
 }

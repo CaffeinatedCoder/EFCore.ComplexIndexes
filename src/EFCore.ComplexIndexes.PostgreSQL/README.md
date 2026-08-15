@@ -164,8 +164,10 @@ explicit control or `SuppressTemporalExtensionAutoInjection()` to opt out.
   the second constraint quietly replaced the first.
 - **Fixed:** the design-time differ is scoped to the Npgsql provider, so a solution that also
   references another satellite can no longer hand a PostgreSQL model to the wrong differ.
-- **Fixed:** an `Npgsql:IndexSortOrder`/`IndexNullSortOrder` annotation on an index that also carries
-  per-part sort options is rejected rather than silently ignored.
+- **Fixed:** `Npgsql:IndexSortOrder`/`IndexNullSortOrder` are no longer forwarded, and setting
+  either now throws with a pointer to `DbOrder`. They duplicated what `DbOrder.Asc`/`Desc`/
+  `NullsFirst`/`NullsLast` already express per column, so an index could carry two conflicting
+  descriptions of its sort order with the annotation's half silently losing.
 - **Fixed:** validation no longer inspects index operations this package did not create, so a plain
   native `HasIndex` carrying provider options is left alone.
 

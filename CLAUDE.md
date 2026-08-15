@@ -26,6 +26,37 @@ Tests run in parallel at the method level (`Scope = ExecutionScope.MethodLevel`)
 PostgreSQL 18 Testcontainer and applies generated DDL for real; without Docker it needs excluding
 via `--filter "TestCategory!=Integration"`.
 
+## Quality controls
+
+The signature failure here is a migration that scaffolds *and applies* cleanly while being
+semantically wrong — no exception, no failed apply, just a database that does not enforce what the
+model declared. Three of the eleven issues found in the 5.0.1 audit were that shape. The controls
+below exist because ordinary review does not catch it.
+
+**Convention tests** enforce what is otherwise invisible until a consumer installs the package:
+
+| Test class | Guards |
+|---|---|
+| `ChangelogConsistencyTests` | The changelog lives in four files (root README + one per package). Asserts the shipped version is documented, no README runs ahead of `Directory.Build.props`, package changelogs are a subset of the root's, and sections are newest-first. |
+| `PackagingConventionTests` | Every package ships its own README as `PackageReadmeFile`; `.targets` ship to both `build/` and `buildTransitive/`, reference a real `IDesignTimeServices` in their own assembly, and set `ForProvider` on satellites but not on core. |
+| `BuilderApiParityTests` | Every key in a satellite's annotation whitelist is reachable from a builder method. `SqlServer:DataCompression` sat whitelisted with no API for a full release; this catches that class of drift by invoking every builder extension and diffing the keys it sets. |
+
+**`MigrationHarness`** (under `test/…/Harness/`) is the shared rig: build a model from a
+`DbContext`, construct any differ, render operations through either the stock provider generator or
+this package's. Investigating a suspected differ bug should be three lines, not a re-derived
+40-line setup. `NpgsqlSql(operations, complexIndexWiring: false)` is the one that matters most — it
+shows what a consumer who forgot `UseNpgsqlComplexIndexes()` actually gets.
+
+**Skills** in `.claude/skills/`:
+
+- `migration-safety-review` — the domain review lens: silent degradation across the design-time and
+  runtime seams, definition-store identity keys, name collisions, provider scoping, annotation flow,
+  snapshot churn, operation ordering. Use when touching a differ, a SQL generator, a whitelist, a
+  definition store, a `.targets`, or before a release.
+- `verify-the-guard` — revert the source fix and confirm the new test fails. This caught a test of
+  mine during the audit that asserted nothing (the two declarations it set up deduplicated into one,
+  so no exception was ever possible) and it passed against broken code.
+
 ## Architecture
 
 This library fills a gap in EF Core 10.0 migrations: EF Core can model complex properties (value objects) but does not generate migration SQL for indexes on their nested columns. This library hooks into EF Core's design-time pipeline to produce correct `CREATE INDEX` / `DROP INDEX` SQL.

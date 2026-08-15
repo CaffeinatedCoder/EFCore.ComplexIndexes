@@ -21,33 +21,10 @@ public class NpgsqlTemporalForeignKeyDifferTests
     // ── Helpers ──
 
     private static IRelationalModel BuildRelationalModel<TContext>() where TContext : DbContext
-    {
-        var options = new DbContextOptionsBuilder<TContext>()
-                     .UseNpgsql("Host=localhost;Database=test")
-                     .Options;
-
-        using var context = (TContext)Activator.CreateInstance(typeof(TContext), options)!;
-        return context.GetService<IDesignTimeModel>().Model.GetRelationalModel();
-    }
+        => MigrationHarness.NpgsqlModel<TContext>();
 
     private static IReadOnlyList<MigrationOperation> GetDifferences(IRelationalModel? source, IRelationalModel? target)
-    {
-        var options = new DbContextOptionsBuilder()
-                     .UseNpgsql("Host=localhost;Database=test")
-                     .Options;
-
-        using var context = new EmptyContext(options);
-
-        var differ = new NpgsqlComplexIndexMigrationsModelDiffer(
-            context.GetService<IRelationalTypeMappingSource>(),
-            context.GetService<IMigrationsAnnotationProvider>(),
-            context.GetService<IRelationalAnnotationProvider>(),
-            context.GetService<IRowIdentityMapFactory>(),
-            context.GetService<CommandBatchPreparerDependencies>()
-        );
-
-        return differ.GetDifferences(source, target);
-    }
+        => MigrationHarness.NpgsqlDiff(source, target);
 
     // Temporal DDL is rendered at design time, so adds show up as plain SqlOperations.
     private static List<string> ForeignKeySql(IEnumerable<MigrationOperation> operations)

@@ -110,23 +110,7 @@ public class SnapshotRoundTripTests
     }
 
     private static IReadOnlyList<MigrationOperation> GetDifferences(IRelationalModel? source, IRelationalModel? target)
-    {
-        var options = new DbContextOptionsBuilder()
-                     .UseNpgsql("Host=localhost;Database=test")
-                     .Options;
-
-        using var context = new EmptyContext(options);
-
-        var differ = new NpgsqlComplexIndexMigrationsModelDiffer(
-            context.GetService<IRelationalTypeMappingSource>(),
-            context.GetService<IMigrationsAnnotationProvider>(),
-            context.GetService<IRelationalAnnotationProvider>(),
-            context.GetService<IRowIdentityMapFactory>(),
-            context.GetService<CommandBatchPreparerDependencies>()
-        );
-
-        return differ.GetDifferences(source, target);
-    }
+        => MigrationHarness.NpgsqlDiff(source, target);
 
     private class EmptyContext(DbContextOptions options) : DbContext(options);
 

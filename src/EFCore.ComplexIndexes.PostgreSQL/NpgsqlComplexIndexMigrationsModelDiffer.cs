@@ -34,10 +34,21 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
         NpgsqlAnnotations.IndexMethod,
         NpgsqlAnnotations.IndexOperators,
         NpgsqlAnnotations.IndexInclude,
-        NpgsqlAnnotations.IndexSortOrder,
-        NpgsqlAnnotations.IndexNullSortOrder,
         NpgsqlAnnotations.CreatedConcurrently,
         NpgsqlAnnotations.NullsDistinct
+    ];
+
+    /// <summary>
+    /// Npgsql's own sort-order annotations, deliberately <em>not</em> forwarded: this package owns
+    /// sort direction (<c>DbOrder.Desc</c>, rendered through EF's native <c>IsDescending</c>) and
+    /// null ordering (<c>DbOrder.NullsFirst</c>/<c>NullsLast</c>, rendered from the parts
+    /// annotation). Forwarding these too would make two mechanisms describe one property of an
+    /// index, with no rule for which wins.
+    /// </summary>
+    private static readonly HashSet<string> SupersededNpgsqlAnnotations =
+    [
+        NpgsqlAnnotations.IndexSortOrder,
+        NpgsqlAnnotations.IndexNullSortOrder
     ];
 
     /// <summary>Forwards exactly the Npgsql index-option annotations Npgsql's SQL generator renders.</summary>
@@ -57,31 +68,21 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
     {
         foreach (var annotation in operation.GetAnnotations())
         {
-            if (annotation.Name.StartsWith("Npgsql:", StringComparison.Ordinal)
-             && !SupportedNpgsqlAnnotations.Contains(annotation.Name))
-            {
-                throw new InvalidOperationException(
-                    $"Unrecognized Npgsql index annotation '{annotation.Name}' on complex index '{operation.Name}'. " +
-                    $"Supported annotations: {string.Join(", ", SupportedNpgsqlAnnotations)}."
-                );
-            }
-        }
+            if (!annotation.Name.StartsWith("Npgsql:", StringComparison.Ordinal)
+             || SupportedNpgsqlAnnotations.Contains(annotation.Name))
+                continue;
 
-        // Npgsql's own sort-order annotations and this package's per-part sort options are two ways
-        // to say the same thing, and an index routed through the parts annotation is rendered by
-        // this package's generator, which reads only the parts. Rather than silently dropping the
-        // annotation's half, refuse the ambiguity.
-        if (operation[ComplexIndexAnnotations.IndexParts] is null)
-            return;
-
-        foreach (var key in (string[])[NpgsqlAnnotations.IndexSortOrder, NpgsqlAnnotations.IndexNullSortOrder])
-        {
-            if (operation[key] is not null)
-                throw new InvalidOperationException(
-                    $"Complex index '{operation.Name}' carries '{key}' alongside per-part sort options. " +
-                    "Declare direction and null ordering with DbOrder.Asc/Desc/NullsFirst/NullsLast (or the " +
-                    $"ExpressionIndexBuilder equivalents) instead — '{key}' is not rendered for this index."
-                );
+            // Superseded keys get their own message: they are not unknown, they are the wrong way
+            // to say something this package already expresses per column.
+            throw SupersededNpgsqlAnnotations.Contains(annotation.Name)
+                      ? new InvalidOperationException(
+                            $"Complex index '{operation.Name}' carries '{annotation.Name}'. Declare direction and " +
+                            "null ordering with DbOrder.Asc/Desc/NullsFirst/NullsLast (or the ExpressionIndexBuilder " +
+                            $"equivalents) — this package renders sort options per column and never forwards " +
+                            $"'{annotation.Name}'.")
+                      : new InvalidOperationException(
+                            $"Unrecognized Npgsql index annotation '{annotation.Name}' on complex index '{operation.Name}'. " +
+                            $"Supported annotations: {string.Join(", ", SupportedNpgsqlAnnotations)}.");
         }
     }
 

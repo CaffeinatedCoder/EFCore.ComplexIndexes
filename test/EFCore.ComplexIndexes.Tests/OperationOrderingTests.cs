@@ -29,26 +29,11 @@ public class OperationOrderingTests : IDisposable
 
     public void Dispose() => _connection.Dispose();
 
-    private IRelationalModel BuildRelationalModel<TContext>()
-        where TContext : DbContext
-    {
-        var options = new DbContextOptionsBuilder<TContext>().UseSqlite(_connection).Options;
-        using var context = (TContext)Activator.CreateInstance(typeof(TContext), options)!;
-        return context.GetService<IDesignTimeModel>().Model.GetRelationalModel();
-    }
+    private IRelationalModel BuildRelationalModel<TContext>() where TContext : DbContext
+        => MigrationHarness.SqliteModel<TContext>(_connection);
 
     private IReadOnlyList<MigrationOperation> GetDifferences(IRelationalModel? source, IRelationalModel? target)
-    {
-        var options = new DbContextOptionsBuilder().UseSqlite(_connection).Options;
-        using var context = new EmptyContext(options);
-        var differ = new CustomMigrationsModelDiffer(
-            context.GetService<IRelationalTypeMappingSource>(),
-            context.GetService<IMigrationsAnnotationProvider>(),
-            context.GetService<IRelationalAnnotationProvider>(),
-            context.GetService<IRowIdentityMapFactory>(),
-            context.GetService<CommandBatchPreparerDependencies>());
-        return differ.GetDifferences(source, target);
-    }
+        => MigrationHarness.CoreDiff(_connection, source, target);
 
     private class EmptyContext(DbContextOptions options) : DbContext(options);
 

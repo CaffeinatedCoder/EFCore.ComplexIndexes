@@ -15,33 +15,10 @@ public class SqlServerDifferTests
     // ── Harness ──
 
     private static IRelationalModel BuildRelationalModel<TContext>() where TContext : DbContext
-    {
-        var options = new DbContextOptionsBuilder<TContext>()
-                     .UseSqlServer("Server=localhost;Database=test;Trusted_Connection=True")
-                     .Options;
-
-        using var context = (TContext)Activator.CreateInstance(typeof(TContext), options)!;
-        return context.GetService<IDesignTimeModel>().Model.GetRelationalModel();
-    }
+        => MigrationHarness.SqlServerModel<TContext>();
 
     private static IReadOnlyList<MigrationOperation> GetDifferences(IRelationalModel? source, IRelationalModel? target)
-    {
-        var options = new DbContextOptionsBuilder()
-                     .UseSqlServer("Server=localhost;Database=test;Trusted_Connection=True")
-                     .Options;
-
-        using var context = new EmptyContext(options);
-
-        var differ = new SqlServerComplexIndexMigrationsModelDiffer(
-            context.GetService<IRelationalTypeMappingSource>(),
-            context.GetService<IMigrationsAnnotationProvider>(),
-            context.GetService<IRelationalAnnotationProvider>(),
-            context.GetService<IRowIdentityMapFactory>(),
-            context.GetService<CommandBatchPreparerDependencies>()
-        );
-
-        return differ.GetDifferences(source, target);
-    }
+        => MigrationHarness.SqlServerDiff(source, target);
 
     // End-to-end SQL through the stock SQL Server migrations generator — no runtime wiring needed.
     private static string GenerateSql(IReadOnlyList<MigrationOperation> operations)

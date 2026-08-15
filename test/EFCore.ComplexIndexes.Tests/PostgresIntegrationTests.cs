@@ -60,31 +60,14 @@ public class PostgresIntegrationTests
 
     // ── Harness: model → differ → SQL generator → live database ──
 
+    // The live container's connection string is threaded through deliberately: Npgsql derives
+    // server-version-dependent behaviour from it, so the model must be built against the same
+    // server the DDL is then applied to.
     private static IRelationalModel BuildRelationalModel<TContext>() where TContext : DbContext
-    {
-        var options = new DbContextOptionsBuilder<TContext>()
-                     .UseNpgsql(ConnectionString)
-                     .Options;
-
-        using var context = (TContext)Activator.CreateInstance(typeof(TContext), options)!;
-        return context.GetService<IDesignTimeModel>().Model.GetRelationalModel();
-    }
+        => MigrationHarness.NpgsqlModel<TContext>(ConnectionString);
 
     private static IReadOnlyList<MigrationOperation> GetDifferences(IRelationalModel? source, IRelationalModel? target)
-    {
-        var options = new DbContextOptionsBuilder().UseNpgsql(ConnectionString).Options;
-        using var context = new EmptyContext(options);
-
-        var differ = new NpgsqlComplexIndexMigrationsModelDiffer(
-            context.GetService<IRelationalTypeMappingSource>(),
-            context.GetService<IMigrationsAnnotationProvider>(),
-            context.GetService<IRelationalAnnotationProvider>(),
-            context.GetService<IRowIdentityMapFactory>(),
-            context.GetService<CommandBatchPreparerDependencies>()
-        );
-
-        return differ.GetDifferences(source, target);
-    }
+        => MigrationHarness.NpgsqlDiff(source, target, ConnectionString);
 
     private static void Apply(IReadOnlyList<MigrationOperation> operations, bool wireUpGenerator = true)
     {
@@ -92,7 +75,7 @@ public class PostgresIntegrationTests
         if (wireUpGenerator)
             builder.UseNpgsqlComplexIndexes();
 
-        using var context   = new EmptyContext(builder.Options);
+        using var context   = new MigrationHarness.EmptyContext(builder.Options);
         var       generator = context.GetService<IMigrationsSqlGenerator>();
         var       commands  = generator.Generate(operations, model: null);
 

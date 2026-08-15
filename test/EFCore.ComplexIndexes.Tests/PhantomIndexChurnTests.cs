@@ -30,26 +30,14 @@ public class PhantomIndexChurnTests : IDisposable
 
     public void Dispose() => _connection.Dispose();
 
-    private IRelationalModel BuildRelationalModel<TContext>()
-        where TContext : DbContext
-    {
-        var options = new DbContextOptionsBuilder<TContext>().UseSqlite(_connection).Options;
-        using var context = (TContext)Activator.CreateInstance(typeof(TContext), options)!;
-        return context.GetService<IDesignTimeModel>().Model.GetRelationalModel();
-    }
+    private IRelationalModel BuildRelationalModel<TContext>() where TContext : DbContext
+        => MigrationHarness.SqliteModel<TContext>(_connection);
 
+    // Uses the local subclass, not the plain core differ: the array-comparison behaviour under test
+    // only shows up once the Test:* keys are actually forwarded onto the index operation.
     private IReadOnlyList<MigrationOperation> GetDifferences(IRelationalModel? source, IRelationalModel? target)
-    {
-        var options = new DbContextOptionsBuilder().UseSqlite(_connection).Options;
-        using var context = new EmptyContext(options);
-        var differ = new TestAnnotationDiffer(
-            context.GetService<IRelationalTypeMappingSource>(),
-            context.GetService<IMigrationsAnnotationProvider>(),
-            context.GetService<IRelationalAnnotationProvider>(),
-            context.GetService<IRowIdentityMapFactory>(),
-            context.GetService<CommandBatchPreparerDependencies>());
-        return differ.GetDifferences(source, target);
-    }
+        => MigrationHarness.Diff<TestAnnotationDiffer>(
+               MigrationHarness.SqliteOptions(_connection), source, target);
 
     // Since v5 the core differ forwards only whitelisted annotation keys (satellites override the
     // whitelist); the array-comparison behavior under test needs the Test:* keys let through.
