@@ -19,7 +19,9 @@
 
     <ItemGroup>
         <ProjectReference Include="..\EFCore.ComplexIndexes\EFCore.ComplexIndexes.csproj" />
-        <PackageReference Include="Microsoft.EntityFrameworkCore.SqlServer" Version="10.0.0" />
+        <!-- Ceiling for the same reason as the core package: the SQL Server differ extends EF
+             internals that carry no cross-major compatibility promise. -->
+        <PackageReference Include="Microsoft.EntityFrameworkCore.SqlServer" Version="[10.0.0, 11.0.0)" />
     </ItemGroup>
 
     <ItemGroup>

@@ -19,7 +19,9 @@
 
     <ItemGroup>
         <ProjectReference Include="..\EFCore.ComplexIndexes\EFCore.ComplexIndexes.csproj" />
-        <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="10.0.0" />
+        <!-- Ceiling for the same reason as the core package: this differ extends Npgsql's own
+             generator and diff internals, which carry no cross-major compatibility promise. -->
+        <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="[10.0.0, 11.0.0)" />
     </ItemGroup>
 
     <ItemGroup>

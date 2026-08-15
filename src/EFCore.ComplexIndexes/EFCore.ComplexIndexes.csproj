@@ -11,8 +11,21 @@
         <PackageReadmeFile>README.md</PackageReadmeFile>
     </PropertyGroup>
 
+    <!--
+        The EF Core dependency is a range with an exclusive ceiling, not a floor.
+
+        This package subclasses MigrationsModelDiffer and calls EF1001-marked internals, which EF
+        documents as changeable or removable without notice in any release. An open-ended ">= 10.0.0"
+        lets NuGet resolve EF Core 11 for a consumer, where the differ can break at design time — and
+        it breaks in someone else's `dotnet ef` run, not anywhere visible from here. Npgsql's own
+        provider declares [x, 11.0.0) for the same reason.
+
+        The lower bound stays at 10.0.0 so consumers are not forced onto a newer servicing patch;
+        NuGet picks the lowest version in a range, so this changes nothing for anyone on EF Core 10.
+        Lifting the ceiling is a deliberate act once the differ has been tested against the next major.
+    -->
     <ItemGroup>
-        <PackageReference Include="Microsoft.EntityFrameworkCore.Abstractions" Version="10.0.0" />
+        <PackageReference Include="Microsoft.EntityFrameworkCore.Abstractions" Version="[10.0.0, 11.0.0)" />
         <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.0">
             <PrivateAssets>all</PrivateAssets>
             <IncludeAssets>compile</IncludeAssets>
