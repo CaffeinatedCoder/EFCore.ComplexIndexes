@@ -43,7 +43,7 @@ Also available: `IsClustered()`, `SortInTempDb()`, and
 Filtered indexes (`filter:`) and `DbOrder.Desc` need nothing from this package — both ride on EF
 Core's native index operation.
 
-### Two deliberate rejections
+### Deliberate rejections
 
 Declarations SQL Server cannot express fail at `dotnet ef migrations add` with a targeted error
 rather than producing DDL that cannot apply:
@@ -51,6 +51,12 @@ rather than producing DDL that cannot apply:
 - **Expression parts** — SQL Server has no functional-index DDL. Model the expression as a persisted
   computed column and index that column instead.
 - **`DbOrder.NullsFirst` / `NullsLast`** — there is no `NULLS FIRST`/`NULLS LAST` in T-SQL.
+- **Clustered index with `INCLUDE` columns** — included columns are a nonclustered-index feature; a
+  clustered index already stores every column.
+- **Clustered filtered index** — filtered indexes must be nonclustered.
+- **A second clustered index on a table** — including the usual case, where the primary key already
+  holds the clustered slot. SQL Server clusters the primary key unless you declare
+  `HasKey(...).IsClustered(false)`, so that is normally what a clustered complex index collides with.
 
 ---
 
@@ -58,6 +64,10 @@ rather than producing DDL that cannot apply:
 
 ### 5.0.2
 
+- **Fixed:** clustered-index combinations SQL Server rejects are caught at `migrations add`
+  instead of at apply time — clustered + `INCLUDE`, clustered + filter, and a second clustered
+  index on a table, which by default is any clustered complex index, since the primary key
+  holds the clustered slot unless declared otherwise.
 - **New:** `UseDataCompression(DataCompressionType)`. The annotation was already forwarded but had
   no way to set it.
 - **Fixed:** the data-compression value survives the model-snapshot round trip. Stored as JSON the

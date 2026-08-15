@@ -122,7 +122,7 @@ public class CustomMigrationsModelDiffer(
         }
 
         // Placed after the base operations, so newly added columns exist before their indexes.
-        var creates = new List<MigrationOperation>();
+        var creates = new List<CreateIndexOperation>();
         foreach (var tgt in pendingCreates)
         {
             var op = new CreateIndexOperation
@@ -162,6 +162,8 @@ public class CustomMigrationsModelDiffer(
             creates.Add(op);
         }
 
+        ValidateCreatedIndexes(creates);
+
         if (drops.Count == 0 && renames.Count == 0 && creates.Count == 0)
             return operations;
 
@@ -182,6 +184,18 @@ public class CustomMigrationsModelDiffer(
     /// touched this package.
     /// </remarks>
     protected virtual void ValidateCreateIndexOperation(CreateIndexOperation operation) { }
+
+    /// <summary>
+    /// Called once with every <see cref="CreateIndexOperation"/> this differ emitted, after they are
+    /// all built. Satellites override this to reject combinations that are only visible across
+    /// several indexes — for instance, a provider allowing at most one clustered index per table.
+    /// </summary>
+    /// <remarks>
+    /// The list holds only this package's operations, for the same reason as
+    /// <see cref="ValidateCreateIndexOperation"/>: the base EF differ's operations for native
+    /// <c>HasIndex</c> declarations are not this package's to police.
+    /// </remarks>
+    protected virtual void ValidateCreatedIndexes(IReadOnlyList<CreateIndexOperation> operations) { }
 
     /// <summary>
     /// Whether name-only index changes are emitted as <see cref="RenameIndexOperation"/> instead of

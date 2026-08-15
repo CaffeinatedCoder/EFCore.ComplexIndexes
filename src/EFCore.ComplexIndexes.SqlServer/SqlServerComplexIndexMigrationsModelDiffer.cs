@@ -55,12 +55,18 @@ public class SqlServerComplexIndexMigrationsModelDiffer(
         string                annotationName,
         object?               value,
         StoreObjectIdentifier storeObject
-    ) => annotationName switch
-         {
-             SqlServerAnnotations.Include         => ResolveIncludeList(entityType, value, storeObject),
-             SqlServerAnnotations.DataCompression => CoerceDataCompression(value),
-             _                                    => base.TransformIndexAnnotation(entityType, annotationName, value, storeObject)
-         };
+    )
+    {
+        if (annotationName == SqlServerAnnotations.Clustered && value is true)
+            ValidateClusteredSlotIsFree(entityType);
+
+        return annotationName switch
+               {
+                   SqlServerAnnotations.Include         => ResolveIncludeList(entityType, value, storeObject),
+                   SqlServerAnnotations.DataCompression => CoerceDataCompression(value),
+                   _                                    => base.TransformIndexAnnotation(entityType, annotationName, value, storeObject)
+               };
+    }
 
     // Entity-level index definitions are stored as JSON, which flattens the enum to a number. SQL
     // Server's generator reads this option as DataCompressionType? — a boxed int reads back as null,
@@ -91,6 +97,8 @@ public class SqlServerComplexIndexMigrationsModelDiffer(
             }
         }
 
+        ValidateClusteredCombination(operation);
+
         if (operation[ComplexIndexAnnotations.IndexParts] is not string partsJson)
             return;
 
@@ -111,6 +119,86 @@ public class SqlServerComplexIndexMigrationsModelDiffer(
                 "support. Remove the DbOrder.NullsFirst/NullsLast marker."
             );
         }
+    }
+
+    /// <summary>
+    /// Rejects clustered-index combinations SQL Server does not accept. These render into perfectly
+    /// well-formed-looking DDL that the server refuses at apply time, so catching them at
+    /// <c>migrations add</c> turns a late, cryptic failure into an actionable one.
+    /// </summary>
+    private static void ValidateClusteredCombination(CreateIndexOperation operation)
+    {
+        if (operation[SqlServerAnnotations.Clustered] is not true)
+            return;
+
+        // INCLUDE covers non-key columns of a nonclustered index; a clustered index already stores
+        // every column in its leaf level, so the syntax is rejected outright.
+        if (operation[SqlServerAnnotations.Include] is System.Collections.IEnumerable include
+         && include.Cast<object?>().Any())
+        {
+            throw new InvalidOperationException(
+                $"Complex index '{operation.Name}' is clustered and declares INCLUDE columns. SQL Server allows "
+              + "included columns only on nonclustered indexes — a clustered index already stores every column. "
+              + "Drop IncludeProperties(...) or IsClustered().");
+        }
+
+        // Filtered indexes must be nonclustered.
+        if (!string.IsNullOrEmpty(operation.Filter))
+        {
+            throw new InvalidOperationException(
+                $"Complex index '{operation.Name}' is clustered and declares a filter. SQL Server allows filtered "
+              + "indexes only on nonclustered indexes. Drop the filter or IsClustered().");
+        }
+    }
+
+    /// <summary>
+    /// A table can carry at most one clustered index, so two clustered complex indexes on one table
+    /// cannot both be created.
+    /// </summary>
+    protected override void ValidateCreatedIndexes(IReadOnlyList<CreateIndexOperation> operations)
+    {
+        var collision = operations
+                       .Where(o => o[SqlServerAnnotations.Clustered] is true)
+                       .GroupBy(o => (o.Table, o.Schema))
+                       .FirstOrDefault(g => g.Count() > 1);
+
+        if (collision is null)
+            return;
+
+        throw new InvalidOperationException(
+            $"Table '{collision.Key.Table}' declares {collision.Count()} clustered complex indexes "
+          + $"({string.Join(", ", collision.Select(o => $"'{o.Name}'"))}). SQL Server allows at most one "
+          + "clustered index per table — the others must be nonclustered.");
+    }
+
+    /// <summary>
+    /// Rejects a clustered complex index on a table whose clustered slot is already taken by the
+    /// primary key or a native index.
+    /// </summary>
+    /// <remarks>
+    /// This lives on the annotation-transform path because that is the only hook with access to the
+    /// entity type; the operation alone cannot see the table's keys and native indexes. It matters
+    /// disproportionately: the SQL Server provider makes a primary key clustered unless told
+    /// otherwise, so on a conventionally mapped entity <em>every</em> clustered complex index
+    /// conflicts, and without this check the failure only appears when the migration is applied.
+    /// </remarks>
+    private static void ValidateClusteredSlotIsFree(IEntityType entityType)
+    {
+        var primaryKey = entityType.FindPrimaryKey();
+
+        if (primaryKey is not null && primaryKey.IsClustered() != false)
+            throw new InvalidOperationException(
+                $"A clustered complex index is declared on '{entityType.Name}', but its primary key is clustered "
+              + "(the SQL Server default). A table can carry only one clustered index — declare the key with "
+              + "HasKey(...).IsClustered(false), or make the complex index nonclustered.");
+
+        var clusteredIndex = entityType.GetIndexes().FirstOrDefault(i => i.IsClustered() == true);
+
+        if (clusteredIndex is not null)
+            throw new InvalidOperationException(
+                $"A clustered complex index is declared on '{entityType.Name}', but the native index on "
+              + $"({string.Join(", ", clusteredIndex.Properties.Select(p => p.Name))}) is already clustered. "
+              + "A table can carry only one clustered index.");
     }
 }
 

@@ -177,4 +177,117 @@ public class SqlServerDifferTests
 
         StringAssert.Contains(GenerateSql(operations), "DATA_COMPRESSION = PAGE");
     }
+
+    // ── Clustered-index combinations SQL Server rejects ──
+
+    private class ClusteredIncludeContext(DbContextOptions<ClusteredIncludeContext> options) : DbContext(options)
+    {
+        public DbSet<Person> People => Set<Person>();
+        protected override void OnModelCreating(ModelBuilder modelBuilder) =>
+            modelBuilder.Entity<Person>(b =>
+            {
+                MapPerson(b);
+                b.HasKey(x => x.Id).IsClustered(false);   // free the clustered slot, so INCLUDE is what fails
+                b.HasComplexIndex(x => x.Email.Value, ix => ix
+                    .HasName("ix_clustered_include").IsClustered().IncludeProperties("Name"));
+            });
+    }
+
+    private class ClusteredFilterContext(DbContextOptions<ClusteredFilterContext> options) : DbContext(options)
+    {
+        public DbSet<Person> People => Set<Person>();
+        protected override void OnModelCreating(ModelBuilder modelBuilder) =>
+            modelBuilder.Entity<Person>(b =>
+            {
+                MapPerson(b);
+                b.HasKey(x => x.Id).IsClustered(false);
+                b.HasComplexIndex(x => x.Email.Value,
+                                  ix => ix.HasName("ix_clustered_filtered").IsClustered().HasFilter("[name] IS NOT NULL"));
+            });
+    }
+
+    private class TwoClusteredContext(DbContextOptions<TwoClusteredContext> options) : DbContext(options)
+    {
+        public DbSet<Person> People => Set<Person>();
+        protected override void OnModelCreating(ModelBuilder modelBuilder) =>
+            modelBuilder.Entity<Person>(b =>
+            {
+                MapPerson(b);
+                b.HasKey(x => x.Id).IsClustered(false);
+                b.HasComplexIndex(x => x.Email.Value, ix => ix.HasName("ix_one").IsClustered());
+                b.HasComplexIndex(x => x.Name,        ix => ix.HasName("ix_two").IsClustered());
+            });
+    }
+
+    private class ClusteredWithClusteredKeyContext(DbContextOptions<ClusteredWithClusteredKeyContext> options) : DbContext(options)
+    {
+        public DbSet<Person> People => Set<Person>();
+        protected override void OnModelCreating(ModelBuilder modelBuilder) =>
+            modelBuilder.Entity<Person>(b =>
+            {
+                MapPerson(b);
+                b.HasKey(x => x.Id);   // clustered by default on SQL Server
+                b.HasComplexIndex(x => x.Email.Value, ix => ix.HasName("ix_clustered").IsClustered());
+            });
+    }
+
+    private class ClusteredWithNonclusteredKeyContext(DbContextOptions<ClusteredWithNonclusteredKeyContext> options) : DbContext(options)
+    {
+        public DbSet<Person> People => Set<Person>();
+        protected override void OnModelCreating(ModelBuilder modelBuilder) =>
+            modelBuilder.Entity<Person>(b =>
+            {
+                MapPerson(b);
+                b.HasKey(x => x.Id).IsClustered(false);
+                b.HasComplexIndex(x => x.Email.Value, ix => ix.HasName("ix_clustered").IsClustered());
+            });
+    }
+
+    [TestMethod(DisplayName = "A clustered index with INCLUDE columns is rejected")]
+    public void Clustered_with_include_is_rejected()
+    {
+        var ex = Assert.ThrowsExactly<InvalidOperationException>(
+            () => GetDifferences(source: null, target: BuildRelationalModel<ClusteredIncludeContext>()));
+
+        StringAssert.Contains(ex.Message, "included columns only on nonclustered indexes");
+    }
+
+    [TestMethod(DisplayName = "A clustered filtered index is rejected")]
+    public void Clustered_with_filter_is_rejected()
+    {
+        var ex = Assert.ThrowsExactly<InvalidOperationException>(
+            () => GetDifferences(source: null, target: BuildRelationalModel<ClusteredFilterContext>()));
+
+        StringAssert.Contains(ex.Message, "filtered indexes only on nonclustered indexes");
+    }
+
+    [TestMethod(DisplayName = "Two clustered complex indexes on one table are rejected")]
+    public void Two_clustered_indexes_are_rejected()
+    {
+        var ex = Assert.ThrowsExactly<InvalidOperationException>(
+            () => GetDifferences(source: null, target: BuildRelationalModel<TwoClusteredContext>()));
+
+        StringAssert.Contains(ex.Message, "at most one clustered index per table");
+    }
+
+    [TestMethod(DisplayName = "A clustered index is rejected when the primary key already holds the clustered slot")]
+    public void Clustered_index_against_clustered_key_is_rejected()
+    {
+        // The common case: SQL Server makes the primary key clustered unless told otherwise, so a
+        // conventionally mapped entity has no clustered slot left.
+        var ex = Assert.ThrowsExactly<InvalidOperationException>(
+            () => GetDifferences(source: null, target: BuildRelationalModel<ClusteredWithClusteredKeyContext>()));
+
+        StringAssert.Contains(ex.Message, "its primary key is clustered");
+    }
+
+    [TestMethod(DisplayName = "A clustered index is allowed when the key is explicitly nonclustered")]
+    public void Clustered_index_with_nonclustered_key_is_allowed()
+    {
+        var operations = GetDifferences(source: null, target: BuildRelationalModel<ClusteredWithNonclusteredKeyContext>());
+
+        var createIndex = Assert.ContainsSingle(operations.OfType<CreateIndexOperation>());
+        Assert.AreEqual(true, createIndex["SqlServer:Clustered"]);
+        StringAssert.Contains(GenerateSql(operations), "CREATE CLUSTERED INDEX [ix_clustered]");
+    }
 }
