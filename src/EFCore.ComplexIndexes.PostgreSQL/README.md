@@ -149,6 +149,15 @@ explicit control or `SuppressTemporalExtensionAutoInjection()` to opt out.
 
 ## Changelog
 
+### 5.0.3
+
+- **Changed:** the `Npgsql.EntityFrameworkCore.PostgreSQL` dependency is now `[10.0.0, 11.0.0)`. This
+  differ extends Npgsql's own diff and generator internals, which carry no cross-major compatibility
+  promise. Nothing changes if you are on Npgsql 10: NuGet resolves the lowest version in a range.
+- **New:** the public API is fully documented, including the differ and the custom SQL generator.
+- **Tests:** the consumer smoke test scaffolds a real migration from this package as installed from a
+  NuGet feed, which is what verifies that the packaged `.targets` still registers the Npgsql differ.
+
 ### 5.0.2
 
 - **Fixed:** temporal `UNIQUE … WITHOUT OVERLAPS` constraints and temporal foreign keys are rendered
