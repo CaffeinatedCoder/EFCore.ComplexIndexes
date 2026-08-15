@@ -88,11 +88,8 @@ public class DesignTimeServiceRegistrationTests
     // itself, so read the declaration straight out of the shipped .targets file.
     private static string? ForProviderOf(Type designTimeServices)
     {
-        var repoRoot = Path.GetFullPath(Path.Combine(
-            Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location)!, "..", "..", "..", ".."));
-
-        var package  = designTimeServices.Assembly.GetName().Name!;
-        var targets  = Path.Combine(repoRoot, package, "build", $"{package}.targets");
+        var package = designTimeServices.Assembly.GetName().Name!;
+        var targets = Path.Combine(RepositoryRoot(), "src", package, "build", $"{package}.targets");
 
         Assert.IsTrue(File.Exists(targets), $"Expected design-time targets at '{targets}'.");
 
@@ -108,6 +105,19 @@ public class DesignTimeServiceRegistrationTests
         return attribute.Elements()
                         .SingleOrDefault(e => e.Name.LocalName == "_Parameter2")
                        ?.Value;
+    }
+
+    // Located by walking up to the solution file rather than counting directory levels, so moving
+    // this project does not quietly turn the assertions above into a "file not found" failure.
+    private static string RepositoryRoot()
+    {
+        var directory = new DirectoryInfo(Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location)!);
+
+        while (directory is not null && !directory.EnumerateFiles("*.slnx").Any())
+            directory = directory.Parent;
+
+        Assert.IsNotNull(directory, "Could not locate the repository root: no .slnx in any parent directory.");
+        return directory!.FullName;
     }
 }
 

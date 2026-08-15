@@ -9,7 +9,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 dotnet build EFCore.ComplexIndexes.slnx
 
 # Test
-dotnet test EFCore.ComplexIndexes.Tests/EFCore.ComplexIndexes.Tests.csproj
+dotnet test test/EFCore.ComplexIndexes.Tests/EFCore.ComplexIndexes.Tests.csproj
 
 # Run a single test class
 dotnet test --filter "ClassName=MigrationModelDifferTests"
@@ -18,7 +18,7 @@ dotnet test --filter "ClassName=MigrationModelDifferTests"
 dotnet test --filter "FullyQualifiedName~MigrationModelDifferTests.SingleIndex_IsCreated"
 
 # Pack NuGet packages (also runs on build due to GeneratePackageOnBuild=true)
-dotnet pack EFCore.ComplexIndexes/EFCore.ComplexIndexes.csproj
+dotnet pack src/EFCore.ComplexIndexes/EFCore.ComplexIndexes.csproj
 ```
 
 Tests run in parallel at the method level (`Scope = ExecutionScope.MethodLevel`). The
@@ -34,12 +34,16 @@ This library fills a gap in EF Core 10.0 migrations: EF Core can model complex p
 
 | Project | Purpose |
 |---------|---------|
-| `EFCore.ComplexIndexes` | Core library — provider-agnostic fluent API and migration differ |
-| `EFCore.ComplexIndexes.PostgreSQL` | Satellite package — Npgsql index methods (GIN, GiST, BRIN, Hash, SP-GiST), expression/JSON/LINQ indexes, temporal + exclusion constraints |
-| `EFCore.ComplexIndexes.SqlServer` | Satellite package — clustered/covering/online/fill-factor options; rejects expression parts and NULLS ordering with clear errors |
-| `EFCore.ComplexIndexes.Tests` | MSTest suite covering path extraction, serialization, and migration diffing |
+| `src/EFCore.ComplexIndexes` | Core library — provider-agnostic fluent API and migration differ |
+| `src/EFCore.ComplexIndexes.PostgreSQL` | Satellite package — Npgsql index methods (GIN, GiST, BRIN, Hash, SP-GiST), expression/JSON/LINQ indexes, temporal + exclusion constraints |
+| `src/EFCore.ComplexIndexes.SqlServer` | Satellite package — clustered/covering/online/fill-factor options; rejects expression parts and NULLS ordering with clear errors |
+| `test/EFCore.ComplexIndexes.Tests` | MSTest suite covering path extraction, serialization, and migration diffing |
 
-Shared NuGet metadata and the package version live in `Directory.Build.props`.
+Shipping projects live under `src/`, the test project under `test/`; the `.slnx` groups them into
+matching solution folders. Shared NuGet metadata and the package version live in the root
+`Directory.Build.props`, which still applies to every project beneath it. Each shipping project
+carries its own `README.md`, packed as that package's NuGet landing page — keep the per-package
+changelogs in sync with the root `README.md` when releasing.
 
 ### How it works end-to-end
 

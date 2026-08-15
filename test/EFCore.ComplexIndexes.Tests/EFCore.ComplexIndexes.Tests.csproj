@@ -30,9 +30,9 @@
     </ItemGroup>
 
     <ItemGroup>
-      <ProjectReference Include="..\EFCore.ComplexIndexes\EFCore.ComplexIndexes.csproj" />
-      <ProjectReference Include="..\EFCore.ComplexIndexes.PostgreSQL\EFCore.ComplexIndexes.PostgreSQL.csproj" />
-      <ProjectReference Include="..\EFCore.ComplexIndexes.SqlServer\EFCore.ComplexIndexes.SqlServer.csproj" />
+      <ProjectReference Include="..\..\src\EFCore.ComplexIndexes\EFCore.ComplexIndexes.csproj" />
+      <ProjectReference Include="..\..\src\EFCore.ComplexIndexes.PostgreSQL\EFCore.ComplexIndexes.PostgreSQL.csproj" />
+      <ProjectReference Include="..\..\src\EFCore.ComplexIndexes.SqlServer\EFCore.ComplexIndexes.SqlServer.csproj" />
     </ItemGroup>
 
 </Project>

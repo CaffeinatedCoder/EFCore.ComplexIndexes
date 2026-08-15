@@ -1,6 +1,10 @@
 <Solution>
-  <Project Path="EFCore.ComplexIndexes.PostgreSQL/EFCore.ComplexIndexes.PostgreSQL.csproj" />
-  <Project Path="EFCore.ComplexIndexes.SqlServer/EFCore.ComplexIndexes.SqlServer.csproj" />
-  <Project Path="EFCore.ComplexIndexes.Tests/EFCore.ComplexIndexes.Tests.csproj" />
-  <Project Path="EFCore.ComplexIndexes/EFCore.ComplexIndexes.csproj" />
+  <Folder Name="/src/">
+    <Project Path="src/EFCore.ComplexIndexes/EFCore.ComplexIndexes.csproj" />
+    <Project Path="src/EFCore.ComplexIndexes.PostgreSQL/EFCore.ComplexIndexes.PostgreSQL.csproj" />
+    <Project Path="src/EFCore.ComplexIndexes.SqlServer/EFCore.ComplexIndexes.SqlServer.csproj" />
+  </Folder>
+  <Folder Name="/test/">
+    <Project Path="test/EFCore.ComplexIndexes.Tests/EFCore.ComplexIndexes.Tests.csproj" />
+  </Folder>
 </Solution>

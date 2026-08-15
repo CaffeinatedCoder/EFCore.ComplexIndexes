@@ -1,12 +1,13 @@
-<Project Sdk="Microsoft.NET.Sdk">
+﻿<Project Sdk="Microsoft.NET.Sdk">
 
     <PropertyGroup>
         <TargetFramework>net10.0</TargetFramework>
         <ImplicitUsings>enable</ImplicitUsings>
         <Nullable>enable</Nullable>
-        <PackageId>EFCore.ComplexIndexes.SqlServer</PackageId>
-        <Description>SQL Server provider extensions for EFCore.ComplexIndexes — clustered, covering (INCLUDE), online-built, and fill-factor index options for complex type properties.</Description>
-        <PackageTags>efcore;entityframework;complextype;index;sqlserver;mssql;clustered;include</PackageTags>
+        <PackageId>EFCore.ComplexIndexes.PostgreSQL</PackageId>
+        <Description>PostgreSQL provider extensions for EFCore.ComplexIndexes — GIN, GiST, BRIN, SP-GiST, and Hash index support for complex type properties.</Description>
+        <PackageTags>efcore;entityframework;complextype;index;postgresql;npgsql;gin;gist;brin</PackageTags>
+        <PackageReadmeFile>README.md</PackageReadmeFile>
     </PropertyGroup>
 
     <ItemGroup>
@@ -18,7 +19,7 @@
 
     <ItemGroup>
         <ProjectReference Include="..\EFCore.ComplexIndexes\EFCore.ComplexIndexes.csproj" />
-        <PackageReference Include="Microsoft.EntityFrameworkCore.SqlServer" Version="10.0.0" />
+        <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="10.0.0" />
     </ItemGroup>
 
     <ItemGroup>
@@ -26,12 +27,13 @@
     </ItemGroup>
 
     <ItemGroup>
-        <None Include="build/EFCore.ComplexIndexes.SqlServer.targets"
+        <None Include="build/EFCore.ComplexIndexes.PostgreSQL.targets"
               Pack="true"
               PackagePath="build/" />
-        <None Include="build/EFCore.ComplexIndexes.SqlServer.targets"
+        <None Include="build/EFCore.ComplexIndexes.PostgreSQL.targets"
               Pack="true"
               PackagePath="buildTransitive/" />
+        <None Include="README.md" Pack="true" PackagePath="\" />
     </ItemGroup>
 
 </Project>
