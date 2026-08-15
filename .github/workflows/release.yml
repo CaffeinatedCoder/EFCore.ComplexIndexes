@@ -12,11 +12,20 @@
 # nuget.org validates it against a policy you configure there, and issues an API key valid for
 # one hour. A compromise of this repository's secrets yields nothing that can publish.
 #
+# Two jobs on purpose: everything that can fail runs unattended, and only the push waits behind
+# the environment's approval gate. A reviewer is asked once the full suite has already passed,
+# and no OIDC token is minted until they approve.
+#
 # Setup, once:
-#   1. nuget.org → your account → Trusted Publishing → add a policy naming this repository
-#      owner, this repository, and this workflow file (release.yml).
-#   2. Add a NUGET_USER repository secret holding your nuget.org *profile name* — not the email
-#      address. This is not a credential; it is kept in a secret only to stay out of build logs.
+#   1. GitHub → Settings → Environments → create `nuget`, and add yourself under
+#      "Required reviewers" (without a reviewer the environment adds no gate).
+#   2. nuget.org → your account → Trusted Publishing → add a policy naming this repository
+#      owner, this repository, the workflow *file name* (release.yml, not a path), and the
+#      environment `nuget`. The environment must match: the OIDC token carries it as a claim,
+#      and a policy that does not expect it will not match.
+#   3. Add a NUGET_USER secret holding your nuget.org *profile name* — not the email address.
+#      This is not a credential; it is a secret only to keep it out of build logs. A repository
+#      secret is fine, or scope it to the `nuget` environment.
 
 name: Release
 
@@ -48,18 +57,15 @@ env:
   NUGET_SOURCE: https://api.nuget.org/v3/index.json
 
 jobs:
-  publish:
-    name: Publish
+  verify:
+    name: Verify and pack
     runs-on: ubuntu-latest
 
     permissions:
-      contents: read
-      id-token: write   # lets GitHub mint the OIDC token nuget.org validates
+      contents: read   # deliberately no id-token here: nothing in this job may mint a token
 
-    # Optional hardening: if the nuget.org policy is scoped to a GitHub environment, declare the
-    # same one here. Pairing it with required reviewers turns a tag push into a queued release
-    # that a human has to approve.
-    # environment: nuget
+    outputs:
+      version: ${{ steps.version.outputs.version }}
 
     steps:
       - uses: actions/checkout@v6
@@ -125,8 +131,35 @@ jobs:
             dist/*.nupkg
             dist/*.snupkg
 
+  publish:
+    name: Publish
+    runs-on: ubuntu-latest
+    needs: verify
+
+    # Skipped entirely on a dry run, so no approval is requested and no token is minted.
+    if: ${{ github.event_name == 'push' || !inputs.dry_run }}
+
+    # The approval gate. Must match the environment named in the nuget.org policy.
+    environment: nuget
+
+    permissions:
+      contents: read
+      id-token: write   # lets GitHub mint the OIDC token nuget.org validates
+
+    steps:
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 10.0.x
+
+      # Publishes exactly what was verified — the packages are not rebuilt here.
+      - name: Download packages
+        uses: actions/download-artifact@v4
+        with:
+          name: nupkg-${{ needs.verify.outputs.version }}
+          path: dist
+
       - name: Verify the publisher identity is configured
-        if: ${{ github.event_name == 'push' || !inputs.dry_run }}
         env:
           NUGET_USER: ${{ secrets.NUGET_USER }}
         run: |
@@ -139,7 +172,6 @@ jobs:
       # publishing policy, valid for one hour. The token is single-use and nothing is stored.
       - name: NuGet login (OIDC)
         id: login
-        if: ${{ github.event_name == 'push' || !inputs.dry_run }}
         uses: NuGet/login@v1
         with:
           user: ${{ secrets.NUGET_USER }}
@@ -148,14 +180,13 @@ jobs:
       # automatically, so symbols need no separate step.
       #
       # --skip-duplicate makes a re-run after a partial failure safe: already-published
-      # packages are reported and skipped instead of failing the job. Note the temporary key
-      # expires an hour after login, so a much-delayed re-run needs a fresh workflow run.
+      # packages are reported and skipped instead of failing the job. The temporary key expires
+      # an hour after login, so a much-delayed re-run needs a fresh workflow run.
       - name: Push to NuGet
-        if: ${{ github.event_name == 'push' || !inputs.dry_run }}
         env:
           NUGET_API_KEY: ${{ steps.login.outputs.NUGET_API_KEY }}
         run: |
-          for package in dist/*."${{ steps.version.outputs.version }}".nupkg; do
+          for package in dist/*."${{ needs.verify.outputs.version }}".nupkg; do
             echo "==> Pushing $(basename "$package")"
             dotnet nuget push "$package" \
               --api-key "$NUGET_API_KEY" \
@@ -166,9 +197,9 @@ jobs:
       - name: Summary
         run: |
           {
-            echo "### Released ${{ steps.version.outputs.version }}"
+            echo "### Released ${{ needs.verify.outputs.version }}"
             echo
-            for package in dist/*."${{ steps.version.outputs.version }}".nupkg; do
+            for package in dist/*."${{ needs.verify.outputs.version }}".nupkg; do
               echo "- \`$(basename "$package")\`"
             done
           } >> "$GITHUB_STEP_SUMMARY"

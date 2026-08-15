@@ -46,11 +46,19 @@ a re-run after a partial failure is safe. The release gate runs the full suite, 
 
 Publishing uses **Trusted Publishing (OIDC)** — there is deliberately no long-lived NuGet key in this
 repository. `NuGet/login@v1` exchanges the run's signed OIDC token for an API key valid one hour,
-issued only if the run matches the policy configured on nuget.org (owner + repository + workflow
-file). The job therefore needs `id-token: write`. The one repository secret, `NUGET_USER`, holds the
-nuget.org *profile name*; it is not a credential and is a secret only to keep it out of build logs.
-Renaming `release.yml`, moving it, or forking the repository invalidates the policy match by design —
-update the policy on nuget.org rather than working around it.
+issued only if the run matches the policy configured on nuget.org (owner + repository + workflow file
+name + environment). The one repository secret, `NUGET_USER`, holds the nuget.org *profile name*; it
+is not a credential and is a secret only to keep it out of build logs.
+
+The workflow is **two jobs**, and the split is the security boundary. `verify` builds, tests and
+packs with no `id-token` permission at all — nothing in it can mint a token. `publish` carries
+`id-token: write`, is gated on the `nuget` environment, and only downloads and pushes what `verify`
+already produced. So a reviewer is asked after the suite has passed rather than before, no token
+exists until they approve, and the artifact published is the one that was tested.
+
+Three things must stay in sync or the policy stops matching — by design, so fix the policy rather
+than working around it: the workflow **file name** (`release.yml`), the **environment** name
+(`nuget`, declared on the `publish` job *and* in the nuget.org policy), and the repository owner/name.
 
 ## Quality controls
 
