@@ -66,6 +66,16 @@ declaring one, handing consumers vulnerability alerts for code they never receiv
 SBOM that misdescribes the package is worse than none. Publishing one is a courtesy: the CRA's SBOM
 duty falls on commercial consumers for their own products, not on this package.
 
+That filter test flattens the three projects into one set of ids, so it only ever asks whether a
+name is *somewhere* private; a second guard asserts a reference marked `PrivateAssets=all` in one
+project is marked so in **every** project. Dropping it from a single csproj is invisible to every
+other check — the package still builds, the SBOM test still passes — while that one nuspec starts
+declaring the dependency and its consumers restore the whole subtree behind it. That is what makes
+"consumers never receive it" true, and it is the premise `NU1903` staying a warning rests on
+(`Directory.Build.props`), along with the `System.Security.Cryptography.Xml` ignore under `src/` in
+`.github/dependabot.yml`. Confirmed by removing the metadata from one satellite: a consumer of the
+resulting package inherits all eight advisories.
+
 `.github/workflows/release.yml` publishes on a `v*` tag. `Directory.Build.props` stays the single
 source of truth: the tag is verified against it rather than driving it, packages are discovered from
 the pack output (so a future satellite needs no workflow edit), and pushes use `--skip-duplicate` so

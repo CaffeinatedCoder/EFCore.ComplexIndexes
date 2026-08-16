@@ -131,6 +131,51 @@ public class PackagingConventionTests
           + "consumers never receive.");
     }
 
+    [TestMethod(DisplayName = "A reference marked build-only in one project is build-only in every project")]
+    public void Build_only_references_are_private_in_every_project()
+    {
+        // The test above flattens all three projects into one set of ids, so it only ever asks
+        // whether a name is *somewhere* private. Drop PrivateAssets=all from a single csproj and the
+        // other two keep that name in the set: the SBOM test stays green while that one package's
+        // nuspec starts declaring the dependency, and its consumers restore the whole subtree behind
+        // it. For Microsoft.EntityFrameworkCore.Design that is ~45 MSBuild/Roslyn components — and
+        // "consumers never receive it" is the stated reason NU1903 stays a warning
+        // (Directory.Build.props) and the reason .github/dependabot.yml ignores
+        // System.Security.Cryptography.Xml under src/. Nothing else checks it per project.
+        var references = Projects
+                        .Select(project => (
+                             project,
+                             refs: XDocument.Load(project.ProjectFile)
+                                            .Descendants("PackageReference")
+                                            .Where(reference => reference.Attribute("Include") is not null)
+                                            .Select(reference => (Id: reference.Attribute("Include")!.Value,
+                                                                  IsBuildOnly: IsPrivate(reference)))
+                                            .ToList()))
+                        .ToList();
+
+        var buildOnly = references.SelectMany(entry => entry.refs)
+                                  .Where(reference => reference.IsBuildOnly)
+                                  .Select(reference => reference.Id)
+                                  .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        Assert.IsNotEmpty(buildOnly, "Expected at least one PrivateAssets=all reference — has the packaging changed?");
+
+        var shipped = references
+                     .SelectMany(entry => entry.refs
+                                               .Where(reference => !reference.IsBuildOnly && buildOnly.Contains(reference.Id))
+                                               .Select(reference => $"{entry.project} -> {reference.Id}"))
+                     .OrderBy(entry => entry, StringComparer.Ordinal)
+                     .ToList();
+
+        Assert.IsEmpty(
+            shipped,
+            $"{string.Join("; ", shipped)} — marked PrivateAssets=all elsewhere under src/ but not here, "
+          + "so this package's nuspec declares it and its consumers restore that dependency's entire "
+          + "subtree. Mark it PrivateAssets=all here too; if a consumer genuinely needs it at runtime, "
+          + "make it public in every project and drop it from the SBOM --exclude-filter, because it is "
+          + "then a dependency they really do take on.");
+    }
+
     /// <summary>
     /// Package validation compares each pack against <c>PackageValidationBaselineVersion</c>. A
     /// baseline left behind stops seeing API added since it — a member introduced in 5.1 and
