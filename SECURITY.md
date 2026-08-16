@@ -69,8 +69,9 @@ that code can already run arbitrary code in your build.
 
 Published packages carry Source Link metadata (repository and commit) and symbol packages, and are
 published through GitHub Actions Trusted Publishing — no long-lived credential exists that could
-publish on this project's behalf. Each release also ships a CycloneDX SBOM (`*.cdx.json`) describing
-the dependencies a consumer actually takes on.
+publish on this project's behalf. Each release also carries a CycloneDX SBOM per package
+(`*.cdx.json`), attached to the [GitHub release](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/releases)
+for that version, describing the dependencies a consumer actually takes on.
 
 ## In scope
 
