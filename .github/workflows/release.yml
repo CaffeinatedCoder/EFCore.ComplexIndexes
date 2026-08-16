@@ -108,7 +108,7 @@ jobs:
         run: dotnet build -c Release
 
       # The full suite gates the release, which also means ChangelogConsistencyTests runs:
-      # a version with no changelog entry in the root or package READMEs fails here.
+      # a version with no changelog entry in the root or package CHANGELOG.md fails here.
       # CI=true keeps the integration layer mandatory.
       - name: Test
         env:
@@ -259,12 +259,12 @@ jobs:
   # attaching ours would invite a hash comparison that fails for a benign reason. nuget.org is the
   # immutable store for the packages; the SBOM has no other home.
   #
-  # The release itself is created here when it does not exist yet, with the README's "What changed"
-  # section as the notes — the same text ChangelogConsistencyTests already requires for the shipped
-  # version, so an empty extraction is a workflow bug and fails the job rather than publishing a
-  # blank release. A release created by hand before the tag was pushed is left as written; only the
-  # assets are added. Either way the packages are already on nuget.org: a failure here is loud
-  # and costs nothing but a manual upload.
+  # The release itself is created here when it does not exist yet, with the root CHANGELOG.md's
+  # section for this version as the notes — the same text ChangelogConsistencyTests already requires
+  # for the shipped version, down to the heading style it asserts, so an empty extraction is a
+  # workflow bug and fails the job rather than publishing a blank release. A release created by hand
+  # before the tag was pushed is left as written; only the assets are added. Either way the packages
+  # are already on nuget.org: a failure here is loud and costs nothing but a manual upload.
   #
   # Separate from `publish` on purpose: that job holds id-token: write, this one holds
   # contents: write, and no job holds both.
@@ -280,7 +280,7 @@ jobs:
       contents: write   # create the release and upload assets; deliberately no id-token
 
     steps:
-      # The checkout is for README.md, the source of the release notes.
+      # The checkout is for CHANGELOG.md, the source of the release notes.
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
       - name: Download packages
@@ -310,14 +310,14 @@ jobs:
           fi
 
           # The section for this version: from its heading up to, not including, the next H2.
-          notes="$(awk -v heading="## What changed in $VERSION" '
+          notes="$(awk -v heading="## $VERSION" '
             $0 == heading { found = 1; print; next }
             found && /^## / { exit }
             found { print }
-          ' README.md)"
+          ' CHANGELOG.md)"
 
           if [[ -z "$notes" ]]; then
-            echo "::error::README.md has no '## What changed in $VERSION' section to use as release notes."
+            echo "::error::CHANGELOG.md has no '## $VERSION' section to use as release notes."
             exit 1
           fi
 

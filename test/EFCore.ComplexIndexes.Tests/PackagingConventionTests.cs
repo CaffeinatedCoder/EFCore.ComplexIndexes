@@ -210,9 +210,9 @@ public class PackagingConventionTests
           + "since the old baseline goes unvalidated.");
     }
 
-    // The root README's "## What changed in x.y.z" headings — the same source ChangelogConsistencyTests reads.
+    // The root CHANGELOG.md's "## x.y.z" headings — the same source ChangelogConsistencyTests reads.
     private static IEnumerable<Version> ChangelogVersions() =>
-        Regex.Matches(File.ReadAllText(RepositoryLayout.RootReadme), @"^## What changed in (\d+\.\d+\.\d+)\s*$", RegexOptions.Multiline)
+        Regex.Matches(File.ReadAllText(RepositoryLayout.RootChangelog), @"^## (\d+\.\d+\.\d+)\s*$", RegexOptions.Multiline)
              .Select(match => Version.Parse(match.Groups[1].Value));
 
     private static string ReleaseWorkflow =>
