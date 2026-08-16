@@ -36,9 +36,13 @@ the build reports green.
 suite (Docker), then a pack job whose value is partly that packing *is* a check — a package
 declaring `PackageReadmeFile` without packing the file fails with NU5019. Everything runs on
 ubuntu-latest. Actions in both workflows are pinned to commit SHAs with the tag in a trailing
-comment; `.github/dependabot.yml` keeps those pins current (weekly, grouped) and covers the test
-project's NuGet references monthly — not `src/`, whose EF Core and provider floors are release
-decisions.
+comment; `.github/dependabot.yml` keeps those pins current (weekly, grouped, minors and patches
+only — majors on the publish path are deliberate, see the artifact-action comments in
+`release.yml`) and covers the test project's NuGet references monthly — not `src/`, whose EF Core
+and provider floors are release decisions. A `src/` entry with no version updates exists only so
+security updates there honour its ignore list: Dependabot's fix for the build-only NU1903 would be
+a *direct* `System.Security.Cryptography.Xml` reference, shipping to consumers a package they never
+had.
 
 The unit job used to fan out across ubuntu/windows/macos for the repository-convention tests, which
 do real path work. Dropped in favour of reacting if it ever bites: **no shipped code touches the
