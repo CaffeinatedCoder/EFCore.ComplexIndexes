@@ -35,7 +35,10 @@ the build reports green.
 `.github/workflows/dotnet.yml` runs on pushes and PRs to `main`: the unit suite, the integration
 suite (Docker), then a pack job whose value is partly that packing *is* a check — a package
 declaring `PackageReadmeFile` without packing the file fails with NU5019. Everything runs on
-ubuntu-latest.
+ubuntu-latest. Actions in both workflows are pinned to commit SHAs with the tag in a trailing
+comment; `.github/dependabot.yml` keeps those pins current (weekly, grouped) and covers the test
+project's NuGet references monthly — not `src/`, whose EF Core and provider floors are release
+decisions.
 
 The unit job used to fan out across ubuntu/windows/macos for the repository-convention tests, which
 do real path work. Dropped in favour of reacting if it ever bites: **no shipped code touches the
@@ -71,11 +74,18 @@ issued only if the run matches the policy configured on nuget.org (owner + repos
 name + environment). The one repository secret, `NUGET_USER`, holds the nuget.org *profile name*; it
 is not a credential and is a secret only to keep it out of build logs.
 
-The workflow is **two jobs**, and the split is the security boundary. `verify` builds, tests and
+The workflow is **three jobs**, and the split is the security boundary. `verify` builds, tests and
 packs with no `id-token` permission at all — nothing in it can mint a token. `publish` carries
 `id-token: write`, is gated on the `nuget` environment, and only downloads and pushes what `verify`
 already produced. So a reviewer is asked after the suite has passed rather than before, no token
-exists until they approve, and the artifact published is the one that was tested.
+exists until they approve, and the artifact published is the one that was tested. `release` runs
+last with `contents: write` and no `id-token`: it creates the GitHub release if none exists (notes
+taken from the README's `## What changed in <version>` section, so an empty extraction fails the
+job instead of publishing a blank release) and attaches the SBOMs — their only durable home, since
+workflow artifacts expire after 90 days and nuget.org has no slot for them. Only the SBOMs are
+attached: nuget.org repository-signs packages on ingestion, so a `.nupkg` from there never matches
+ours byte-for-byte, and attaching ours would invite a hash comparison that fails for a benign
+reason. No job holds both `id-token: write` and `contents: write`.
 
 Three things must stay in sync or the policy stops matching — by design, so fix the policy rather
 than working around it: the workflow **file name** (`release.yml`), the **environment** name
@@ -96,6 +106,7 @@ below exist because ordinary review does not catch it.
 | `PackagingConventionTests` | Every package ships its own README as `PackageReadmeFile`; `.targets` ship to both `build/` and `buildTransitive/`, reference a real `IDesignTimeServices` in their own assembly, and set `ForProvider` on satellites but not on core. Package validation is enabled and its baseline is the shipped version or the release before it, never older — the baseline is what `dotnet pack` diffs the public surface against (CP0002 on a removed member), and one left behind stops seeing API added since it. |
 | `ClaudeMdConsistencyTests` | This file. Prose cannot be asserted, so it checks the falsifiable parts: cited paths and file names exist, annotation keys under a prefix this repo owns are declared somewhere, `Type.Member` references resolve, and the stated size of the Npgsql whitelist matches it. Those are what a rename rots silently — and the count claim had already gone stale by two. |
 | `BuilderApiParityTests` | Every key in a satellite's annotation whitelist is reachable from a builder method. `SqlServer:DataCompression` sat whitelisted with no API for a full release; this catches that class of drift by invoking every builder extension and diffing the keys it sets. |
+| `SecurityPolicyConsistencyTests` | SECURITY.md's supported-versions table names the minor being shipped, and its `< x.y` row meets it. The table is prose a version bump forgets — the sibling repository shipped 6.2.0 with the table still saying 6.1.x. |
 
 **`test/consumer-smoke-test.sh`** is the only check that exercises *delivery* rather than code. Every
 other layer is verified in isolation and in-process; this one packs the nupkgs, restores them into a
