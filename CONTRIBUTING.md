@@ -59,9 +59,16 @@ bug should be three lines, not a re-derived setup.
 
 - One concern per PR, with the reasoning in the description rather than only the diff.
 - Full suite green, including integration if you have Docker.
-- User-visible changes get a changelog entry in the root [README.md](README.md) *and* in the
-  affected package READMEs under `src/`. `ChangelogConsistencyTests` enforces that the version being
-  shipped is documented.
+- User-visible changes get a changelog entry in the root [CHANGELOG.md](CHANGELOG.md) *and* in the
+  affected packages' `CHANGELOG.md` under `src/`. `ChangelogConsistencyTests` enforces that the
+  version being shipped is documented, and that the heading style stays the one `release.yml` reads
+  to build the release notes.
+- Provider-specific documentation belongs under [docs/](docs), not in the root README — it is the
+  landing page. The packed READMEs under `src/` must link out with **absolute** GitHub URLs, since
+  nuget.org cannot resolve a relative path; `DocumentationLinkTests` enforces both.
+- Renaming a public API means updating the prose that names it, and a provider page documents only
+  what that provider can actually do. `DocumentationApiTests` enforces both; an example that calls
+  into EF Core, Npgsql or the BCL adds the method to its `ExternalApi` allowlist.
 - Match the surrounding style. Comments explain *why*, especially where behaviour is load-bearing
   and non-obvious.
 

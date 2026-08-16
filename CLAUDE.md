@@ -94,7 +94,7 @@ packs with no `id-token` permission at all — nothing in it can mint a token. `
 already produced. So a reviewer is asked after the suite has passed rather than before, no token
 exists until they approve, and the artifact published is the one that was tested. `release` runs
 last with `contents: write` and no `id-token`: it creates the GitHub release if none exists (notes
-taken from the README's `## What changed in <version>` section, so an empty extraction fails the
+taken from the root `CHANGELOG.md`'s `## <version>` section, so an empty extraction fails the
 job instead of publishing a blank release) and attaches the SBOMs — their only durable home, since
 workflow artifacts expire after 90 days and nuget.org has no slot for them. Only the SBOMs are
 attached: nuget.org repository-signs packages on ingestion, so a `.nupkg` from there never matches
@@ -116,7 +116,9 @@ below exist because ordinary review does not catch it.
 
 | Test class | Guards |
 |---|---|
-| `ChangelogConsistencyTests` | The changelog lives in four files (root README + one per package). Asserts the shipped version is documented, no README runs ahead of `Directory.Build.props`, package changelogs are a subset of the root's, and sections are newest-first. |
+| `ChangelogConsistencyTests` | The changelog lives in four files (root `CHANGELOG.md` + one per package). Asserts the shipped version is documented, no changelog runs ahead of `Directory.Build.props`, package changelogs are a subset of the root's, sections are newest-first, and no README has grown a duplicate copy. The `## <version>` heading style is asserted too, not merely parsed: `release.yml` matches it literally to extract the release notes, so a section demoted to `###` would read as documented here while the release job published a blank release. |
+| `DocumentationLinkTests` | Relative markdown links resolve to real files and `#anchors` to real headings, and the packed READMEs under `src/` carry **no** relative links at all. nuget.org renders those READMEs with nothing to resolve a relative path against, so `[docs](docs/postgresql-indexes.md)` renders as a live link that 404s for every consumer arriving from the package page — while looking correct in the repository. |
+| `DocumentationApiTests` | Every method name the user-facing docs cite exists in the public surface (calls into EF Core, Npgsql, DI and the BCL are an explicit allowlist, so everything else has to be ours), and no provider page cites another provider's *exclusive* API — exclusive meaning after subtracting what core and the other satellite also declare, since `IsUnique`/`HasName`/`IncludeProperties` exist on all three builders. Package validation already fails the pack on a removed public member, so what this adds is the rename fixed in source and forgotten in prose, and the name simply typed wrong. Changelogs are deliberately out of scope: an entry saying 5.0.0 shipped `HasExclusionConstraint` stays true after a later rename, and asserting over them would turn every rename into pressure to rewrite history. |
 | `PackagingConventionTests` | Every package ships its own README as `PackageReadmeFile`; `.targets` ship to both `build/` and `buildTransitive/`, reference a real `IDesignTimeServices` in their own assembly, and set `ForProvider` on satellites but not on core. Package validation is enabled and its baseline is the shipped version or the release before it, never older — the baseline is what `dotnet pack` diffs the public surface against (CP0002 on a removed member), and one left behind stops seeing API added since it. |
 | `ClaudeMdConsistencyTests` | This file. Prose cannot be asserted, so it checks the falsifiable parts: cited paths and file names exist, annotation keys under a prefix this repo owns are declared somewhere, `Type.Member` references resolve, and the stated size of the Npgsql whitelist matches it. Those are what a rename rots silently — and the count claim had already gone stale by two. |
 | `BuilderApiParityTests` | Every key in a satellite's annotation whitelist is reachable from a builder method. `SqlServer:DataCompression` sat whitelisted with no API for a full release; this catches that class of drift by invoking every builder extension and diffing the keys it sets. |
@@ -189,8 +191,22 @@ This library fills a gap in EF Core 10.0 migrations: EF Core can model complex p
 Shipping projects live under `src/`, the test project under `test/`; the `.slnx` groups them into
 matching solution folders. Shared NuGet metadata and the package version live in the root
 `Directory.Build.props`, which still applies to every project beneath it. Each shipping project
-carries its own `README.md`, packed as that package's NuGet landing page — keep the per-package
-changelogs in sync with the root `README.md` when releasing.
+carries its own `README.md`, packed as that package's NuGet landing page, and its own
+`CHANGELOG.md`, which is not packed — keep those in sync with the root `CHANGELOG.md` when
+releasing.
+
+### Documentation layout
+
+The root `README.md` is the landing page: what the package is, install, runtime wiring, the
+provider-agnostic core API, and a table pointing at the rest. Provider-specific reference lives
+under `docs/` (`postgresql-indexes.md`, `postgresql-constraints.md`, `sqlserver.md`) — the split
+follows the seam, since PostgreSQL indexes go through the differ plus the custom generator while the
+temporal and exclusion constraints are rendered as design-time `SqlOperation`s.
+
+The packed READMEs under `src/` are a separate audience and a separate constraint: nuget.org renders
+them with no base to resolve against, so **every link in them must be an absolute GitHub URL**. They
+are condensed on purpose and will overlap `docs/` — that duplication is the price of a package page
+that stands alone, and `DocumentationLinkTests` guards only the part that fails silently.
 
 ### How it works end-to-end
 

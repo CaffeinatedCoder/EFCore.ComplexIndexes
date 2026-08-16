@@ -21,6 +21,10 @@ internal static class RepositoryLayout
 
     public static string RootReadme => Path.Combine(Root, "README.md");
 
+    public static string RootChangelog => Path.Combine(Root, "CHANGELOG.md");
+
+    public static string DocsDirectory => Path.Combine(Root, "docs");
+
     public static string BuildProps => Path.Combine(Root, "Directory.Build.props");
 
     /// <summary>Every packable project under <c>src/</c>, discovered rather than hard-coded.</summary>
@@ -36,6 +40,7 @@ internal static class RepositoryLayout
     {
         public string ProjectFile => Path.Combine(Directory, $"{PackageId}.csproj");
         public string Readme      => Path.Combine(Directory, "README.md");
+        public string Changelog   => Path.Combine(Directory, "CHANGELOG.md");
         public string Targets     => Path.Combine(Directory, "build", $"{PackageId}.targets");
 
         /// <summary>True for the provider satellites, false for the provider-agnostic core.</summary>
