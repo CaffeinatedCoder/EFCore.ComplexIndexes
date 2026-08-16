@@ -53,6 +53,26 @@ remedy for those is to upgrade.
 | 5.0.x | ✅ |
 | < 5.0 | ❌ |
 
+### For how long
+
+There is no fixed end-of-support date. Each major of this package tracks one EF Core major — the
+current line targets **EF Core 10** — and the intention is to keep it maintained for as long as
+Microsoft supports that EF Core release (EF Core 10 is LTS, supported until November 2028), or
+until a new major of this package supersedes it, whichever comes first. If that intention changes,
+it is recorded here before anywhere else.
+
+### If this project stops being maintained
+
+This is a single-maintainer project, and that is the honest continuity risk. The signal would be
+unambiguous: the repository archived, the packages marked deprecated on nuget.org, and a note here.
+Published versions stay on nuget.org regardless (a package can be unlisted, not removed), the code
+is MIT-licensed, and the release path needs nothing but this repository — forking is the intended
+continuity mechanism, not a fallback.
+
+Advisories are published as GitHub Security Advisories, which reach the GitHub Advisory Database
+and from there `dotnet restore` (NuGetAudit): a consumer on an affected version sees a build
+warning without subscribing to anything.
+
 ## Where this package sits
 
 Useful context for judging impact, and for anyone doing supply-chain due diligence.
