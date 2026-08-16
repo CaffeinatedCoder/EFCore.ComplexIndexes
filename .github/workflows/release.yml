@@ -18,6 +18,10 @@
 # The job that can mint a token cannot write to the repository, and the job that can write to
 # the repository cannot mint a token.
 #
+# Actions are pinned to commit SHAs, not tags — this is the publish path, and NuGet/login runs in
+# the one job that can mint a token. A moved tag reaches every workflow trusting it; a SHA does
+# not. The trailing `# vX.Y.Z` is what Dependabot reads to propose an update; keep it by the SHA.
+#
 # Setup, once:
 #   1. GitHub → Settings → Environments → create `nuget`, and add yourself under
 #      "Required reviewers" (without a reviewer the environment adds no gate).
@@ -70,10 +74,10 @@ jobs:
       version: ${{ steps.version.outputs.version }}
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
       - name: Setup .NET
-        uses: actions/setup-dotnet@v5
+        uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5.4.0
         with:
           dotnet-version: 10.0.x
 
@@ -165,7 +169,7 @@ jobs:
       # direct (unzipped) uploads, and download v8 turns a digest mismatch into a hard failure and
       # stops auto-unzipping. Neither buys anything here, and this is the publish path.
       - name: Upload packages
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: nupkg-${{ steps.version.outputs.version }}
           path: |
@@ -190,13 +194,13 @@ jobs:
 
     steps:
       - name: Setup .NET
-        uses: actions/setup-dotnet@v5
+        uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5.4.0
         with:
           dotnet-version: 10.0.x
 
       # Publishes exactly what was verified — the packages are not rebuilt here.
       - name: Download packages
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           name: nupkg-${{ needs.verify.outputs.version }}
           path: dist
@@ -214,7 +218,7 @@ jobs:
       # publishing policy, valid for one hour. The token is single-use and nothing is stored.
       - name: NuGet login (OIDC)
         id: login
-        uses: NuGet/login@v1
+        uses: NuGet/login@8d196754b4036150537f80ac539e15c2f1028841 # v1.2.0
         with:
           user: ${{ secrets.NUGET_USER }}
 
@@ -277,10 +281,10 @@ jobs:
 
     steps:
       # The checkout is for README.md, the source of the release notes.
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
       - name: Download packages
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           name: nupkg-${{ needs.verify.outputs.version }}
           path: dist

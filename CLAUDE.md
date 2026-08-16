@@ -35,7 +35,10 @@ the build reports green.
 `.github/workflows/dotnet.yml` runs on pushes and PRs to `main`: the unit suite, the integration
 suite (Docker), then a pack job whose value is partly that packing *is* a check — a package
 declaring `PackageReadmeFile` without packing the file fails with NU5019. Everything runs on
-ubuntu-latest.
+ubuntu-latest. Actions in both workflows are pinned to commit SHAs with the tag in a trailing
+comment; `.github/dependabot.yml` keeps those pins current (weekly, grouped) and covers the test
+project's NuGet references monthly — not `src/`, whose EF Core and provider floors are release
+decisions.
 
 The unit job used to fan out across ubuntu/windows/macos for the repository-convention tests, which
 do real path work. Dropped in favour of reacting if it ever bites: **no shipped code touches the
