@@ -32,11 +32,23 @@ the build reports green.
 
 ## CI
 
-`.github/workflows/dotnet.yml` runs on pushes and PRs to `main`: the unit suite across
-ubuntu/windows/macos (the matrix is there because the repository-convention tests do real path
-work), the integration suite on Linux only (Docker), then a pack job whose value is partly that
-packing *is* a check — a package declaring `PackageReadmeFile` without packing the file fails with
-NU5019.
+`.github/workflows/dotnet.yml` runs on pushes and PRs to `main`: the unit suite, the integration
+suite (Docker), then a pack job whose value is partly that packing *is* a check — a package
+declaring `PackageReadmeFile` without packing the file fails with NU5019. Everything runs on
+ubuntu-latest.
+
+The unit job used to fan out across ubuntu/windows/macos for the repository-convention tests, which
+do real path work. Dropped in favour of reacting if it ever bites: **no shipped code touches the
+filesystem** (the `Path`-looking code under `src/` splits dotted *property* paths), so the other
+runners only ever proved that the test harness composes paths portably. That is a contributor-
+environment property, not a package one, and it fails loudly on the machine of whoever hits it.
+Note what the matrix was *not* buying, in case it looks tempting to restore: whether the packaged
+`.targets` works under Windows MSBuild is still untested either way, since the smoke test is
+Linux-only and `PackagingConventionTests` reads the `.targets` rather than executing it.
+
+The job deliberately keeps a single-entry `matrix.os` rather than a plain `runs-on`, so it still
+reports as `Test (ubuntu-latest)` — a required check in branch protection, where a renamed job stays
+required, never reports, and hangs PRs instead of failing them.
 
 Both workflows generate a **CycloneDX SBOM per package** (`*.cdx.json`) alongside the nupkgs, via
 the `cyclonedx` tool pinned in `.config/dotnet-tools.json`. `--exclude-filter` drops
