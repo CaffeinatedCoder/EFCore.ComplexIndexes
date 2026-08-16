@@ -12,9 +12,11 @@
 # nuget.org validates it against a policy you configure there, and issues an API key valid for
 # one hour. A compromise of this repository's secrets yields nothing that can publish.
 #
-# Two jobs on purpose: everything that can fail runs unattended, and only the push waits behind
-# the environment's approval gate. A reviewer is asked once the full suite has already passed,
-# and no OIDC token is minted until they approve.
+# Three jobs on purpose: everything that can fail runs unattended, only the push waits behind
+# the environment's approval gate, and the GitHub release is created afterwards. A reviewer is
+# asked once the full suite has already passed, and no OIDC token is minted until they approve.
+# The job that can mint a token cannot write to the repository, and the job that can write to
+# the repository cannot mint a token.
 #
 # Setup, once:
 #   1. GitHub → Settings → Environments → create `nuget`, and add yourself under
@@ -243,3 +245,101 @@ jobs:
               echo "- \`$(basename "$package")\`"
             done
           } >> "$GITHUB_STEP_SUMMARY"
+
+  # Gives the SBOMs a permanent home. Workflow artifacts expire after 90 days and nuget.org has no
+  # slot for an SBOM, so without this job the "each release ships an SBOM" statement in SECURITY.md
+  # holds for one quarter. Runs after the push, so what is attached describes what is on nuget.org.
+  #
+  # Only the SBOMs are attached, deliberately. nuget.org repository-signs every package on
+  # ingestion, so a .nupkg downloaded from there differs byte-for-byte from the one built here;
+  # attaching ours would invite a hash comparison that fails for a benign reason. nuget.org is the
+  # immutable store for the packages; the SBOM has no other home.
+  #
+  # The release itself is created here when it does not exist yet, with the README's "What changed"
+  # section as the notes — the same text ChangelogConsistencyTests already requires for the shipped
+  # version, so an empty extraction is a workflow bug and fails the job rather than publishing a
+  # blank release. A release created by hand before the tag was pushed is left as written; only the
+  # assets are added. Either way the packages are already on nuget.org: a failure here is loud
+  # and costs nothing but a manual upload.
+  #
+  # Separate from `publish` on purpose: that job holds id-token: write, this one holds
+  # contents: write, and no job holds both.
+  release:
+    name: GitHub release
+    runs-on: ubuntu-latest
+    needs: [ verify, publish ]
+
+    # Tag pushes only. A manual non-dry run from a branch has no tag to release against.
+    if: startsWith(github.ref, 'refs/tags/v')
+
+    permissions:
+      contents: write   # create the release and upload assets; deliberately no id-token
+
+    steps:
+      # The checkout is for README.md, the source of the release notes.
+      - uses: actions/checkout@v6
+
+      - name: Download packages
+        uses: actions/download-artifact@v7
+        with:
+          name: nupkg-${{ needs.verify.outputs.version }}
+          path: dist
+
+      - name: Create the release if it does not exist
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ needs.verify.outputs.version }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          tag="$GITHUB_REF_NAME"
+
+          # "Not found" is the one failure that means "create it"; anything else (auth, API) must
+          # not be mistaken for it, or a release that exists gets a second create attempt.
+          if gh release view "$tag" --json tagName >/dev/null 2>view.err; then
+            echo "Release $tag already exists; leaving its notes as written."
+            exit 0
+          elif ! grep -q "release not found" view.err; then
+            cat view.err
+            echo "::error::Could not determine whether release $tag exists."
+            exit 1
+          fi
+
+          # The section for this version: from its heading up to, not including, the next H2.
+          notes="$(awk -v heading="## What changed in $VERSION" '
+            $0 == heading { found = 1; print; next }
+            found && /^## / { exit }
+            found { print }
+          ' README.md)"
+
+          if [[ -z "$notes" ]]; then
+            echo "::error::README.md has no '## What changed in $VERSION' section to use as release notes."
+            exit 1
+          fi
+
+          {
+            printf '%s\n\n' "$notes"
+            printf 'Published to nuget.org through Trusted Publishing by [this run](%s). ' "$RUN_URL"
+            printf 'The CycloneDX SBOM for each package is attached below.\n'
+          } > release-notes.md
+
+          flags=()
+          if [[ "$VERSION" == *-* ]]; then
+            flags+=(--prerelease)
+          fi
+
+          gh release create "$tag" --verify-tag --title "$tag" --notes-file release-notes.md "${flags[@]}"
+
+      - name: Attach the SBOMs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ needs.verify.outputs.version }}
+        run: |
+          shopt -s nullglob
+          sboms=(dist/*."$VERSION".cdx.json)
+          if [[ ${#sboms[@]} -eq 0 ]]; then
+            echo "::error::No *.$VERSION.cdx.json in the downloaded artifact — the SBOM step in verify did not run, or the artifact glob changed."
+            exit 1
+          fi
+          gh release upload "$GITHUB_REF_NAME" "${sboms[@]}" --clobber
