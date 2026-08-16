@@ -35,7 +35,10 @@ the build reports green.
 `.github/workflows/dotnet.yml` runs on pushes and PRs to `main`: the unit suite, the integration
 suite (Docker), then a pack job whose value is partly that packing *is* a check — a package
 declaring `PackageReadmeFile` without packing the file fails with NU5019. Everything runs on
-ubuntu-latest.
+ubuntu-latest. Actions in both workflows are pinned to commit SHAs with the tag in a trailing
+comment; `.github/dependabot.yml` keeps those pins current (weekly, grouped) and covers the test
+project's NuGet references monthly — not `src/`, whose EF Core and provider floors are release
+decisions.
 
 The unit job used to fan out across ubuntu/windows/macos for the repository-convention tests, which
 do real path work. Dropped in favour of reacting if it ever bites: **no shipped code touches the
@@ -71,11 +74,18 @@ issued only if the run matches the policy configured on nuget.org (owner + repos
 name + environment). The one repository secret, `NUGET_USER`, holds the nuget.org *profile name*; it
 is not a credential and is a secret only to keep it out of build logs.
 
-The workflow is **two jobs**, and the split is the security boundary. `verify` builds, tests and
+The workflow is **three jobs**, and the split is the security boundary. `verify` builds, tests and
 packs with no `id-token` permission at all — nothing in it can mint a token. `publish` carries
 `id-token: write`, is gated on the `nuget` environment, and only downloads and pushes what `verify`
 already produced. So a reviewer is asked after the suite has passed rather than before, no token
-exists until they approve, and the artifact published is the one that was tested.
+exists until they approve, and the artifact published is the one that was tested. `release` runs
+last with `contents: write` and no `id-token`: it creates the GitHub release if none exists (notes
+taken from the README's `## What changed in <version>` section, so an empty extraction fails the
+job instead of publishing a blank release) and attaches the SBOMs — their only durable home, since
+workflow artifacts expire after 90 days and nuget.org has no slot for them. Only the SBOMs are
+attached: nuget.org repository-signs packages on ingestion, so a `.nupkg` from there never matches
+ours byte-for-byte, and attaching ours would invite a hash comparison that fails for a benign
+reason. No job holds both `id-token: write` and `contents: write`.
 
 Three things must stay in sync or the policy stops matching — by design, so fix the policy rather
 than working around it: the workflow **file name** (`release.yml`), the **environment** name

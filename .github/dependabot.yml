@@ -1,0 +1,31 @@
+# Two ecosystems, on purpose narrow.
+#
+# github-actions keeps the SHA-pinned actions in the workflows current — a pin without an update
+# path just ages. Weekly, one grouped PR, so a security release in an action is not waiting a month.
+#
+# nuget covers the test project only. The shipping projects under src/ are deliberately excluded:
+# their EF Core and provider references are floors chosen on purpose (see the csproj comments) —
+# raising one raises every consumer's minimum, which is a release decision, not a dependency
+# update. The test project's EF Core and provider references track those floors for the same
+# reason and are ignored here; bump them by hand together with the floor. Security advisories
+# still surface for everything through Dependabot security updates and NuGetAudit at build time.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: [ "*" ]
+
+  - package-ecosystem: nuget
+    directory: /test/EFCore.ComplexIndexes.Tests
+    schedule:
+      interval: monthly
+    groups:
+      test-dependencies:
+        patterns: [ "*" ]
+    ignore:
+      - dependency-name: "Microsoft.EntityFrameworkCore*"
+      - dependency-name: "Npgsql.EntityFrameworkCore.PostgreSQL*"
