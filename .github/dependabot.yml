@@ -2,6 +2,9 @@
 #
 # github-actions keeps the SHA-pinned actions in the workflows current — a pin without an update
 # path just ages. Weekly, one grouped PR, so a security release in an action is not waiting a month.
+# Majors are excluded: this is the publish path, and release.yml documents why upload-artifact
+# stays on v6 and download-artifact on v7 (v8 stops auto-unzipping, which would break the push
+# step). A major is a deliberate change with a test behind it, not a Monday PR.
 #
 # nuget covers the test project only. The shipping projects under src/ are deliberately excluded:
 # their EF Core and provider references are floors chosen on purpose (see the csproj comments) —
@@ -9,6 +12,13 @@
 # update. The test project's EF Core and provider references track those floors for the same
 # reason and are ignored here; bump them by hand together with the floor. Security advisories
 # still surface for everything through Dependabot security updates and NuGetAudit at build time.
+#
+# The src/ entry exists only so that security updates there honour its ignore list: with
+# open-pull-requests-limit 0 it proposes no version updates at all. System.Security.Cryptography.Xml
+# is reached only through Microsoft.EntityFrameworkCore.Design (PrivateAssets=all) — consumers
+# never receive it, NU1903 is kept as a warning for that reason (Directory.Build.props), and
+# Dependabot's remedy is a *direct* reference, which would ship the package to every consumer to
+# silence a warning that only ever concerned build machines.
 version: 2
 updates:
   - package-ecosystem: github-actions
@@ -18,6 +28,9 @@ updates:
     groups:
       actions:
         patterns: [ "*" ]
+    ignore:
+      - dependency-name: "*"
+        update-types: [ "version-update:semver-major" ]
 
   - package-ecosystem: nuget
     directory: /test/EFCore.ComplexIndexes.Tests
@@ -29,3 +42,12 @@ updates:
     ignore:
       - dependency-name: "Microsoft.EntityFrameworkCore*"
       - dependency-name: "Npgsql.EntityFrameworkCore.PostgreSQL*"
+
+  - package-ecosystem: nuget
+    directories:
+      - /src/*
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 0
+    ignore:
+      - dependency-name: "System.Security.Cryptography.Xml"
