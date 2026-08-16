@@ -131,6 +131,45 @@ public class PackagingConventionTests
           + "consumers never receive.");
     }
 
+    /// <summary>
+    /// Package validation compares each pack against <c>PackageValidationBaselineVersion</c>. A
+    /// baseline left behind stops seeing API added since it — a member introduced in 5.1 and
+    /// removed in 5.2 is invisible to a 5.0 baseline — so it may be the version being shipped
+    /// (between releases, when <c>Version</c> is the last release) or the release directly before
+    /// it (once <c>Version</c> is bumped for the next one), and never older. That lags by at most
+    /// one release and forces the move at every version bump.
+    /// </summary>
+    [TestMethod(DisplayName = "The package-validation baseline is the shipped version or the release before it")]
+    public void Package_validation_baseline_is_the_shipped_version_or_the_release_before_it()
+    {
+        var props = XDocument.Load(RepositoryLayout.BuildProps);
+
+        Assert.AreEqual(
+            "true", props.Descendants("EnablePackageValidation").SingleOrDefault()?.Value.Trim(),
+            "Directory.Build.props does not enable package validation, so a removed public member "
+          + "packs cleanly and whether a release breaks anyone rests on reading the diff.");
+
+        var shipped  = Version.Parse(props.Descendants("Version").Single().Value);
+        var previous = ChangelogVersions().Where(version => version < shipped).DefaultIfEmpty().Max();
+        var baseline = props.Descendants("PackageValidationBaselineVersion").SingleOrDefault()?.Value.Trim();
+
+        Assert.IsNotNull(baseline, "Directory.Build.props sets no PackageValidationBaselineVersion.");
+
+        var allowed = new[] { shipped, previous }.Where(version => version is not null).Distinct().ToList();
+
+        Assert.IsTrue(
+            allowed.Contains(Version.Parse(baseline)),
+            $"PackageValidationBaselineVersion is {baseline}, but Directory.Build.props ships {shipped} "
+          + $"and the release before it is {previous?.ToString() ?? "none"}. The baseline must be one of "
+          + "those two — move it to the release just superseded when bumping Version, or API added "
+          + "since the old baseline goes unvalidated.");
+    }
+
+    // The root README's "## What changed in x.y.z" headings — the same source ChangelogConsistencyTests reads.
+    private static IEnumerable<Version> ChangelogVersions() =>
+        Regex.Matches(File.ReadAllText(RepositoryLayout.RootReadme), @"^## What changed in (\d+\.\d+\.\d+)\s*$", RegexOptions.Multiline)
+             .Select(match => Version.Parse(match.Groups[1].Value));
+
     private static string ReleaseWorkflow =>
         Path.Combine(RepositoryLayout.Root, ".github", "workflows", "release.yml");
 
