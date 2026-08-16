@@ -23,11 +23,44 @@ public class SecurityPolicyConsistencyTests
     private static readonly Regex UnsupportedRow =
         new(@"^\|\s*<\s*(\d+)\.(\d+)\s*\|\s*❌\s*\|", RegexOptions.Multiline | RegexOptions.Compiled);
 
+    // "the current line targets **EF Core 10**" — the number the horizon statement is anchored to.
+    private static readonly Regex TargetsEfCore =
+        new(@"targets \*\*EF Core (\d+)\*\*", RegexOptions.Compiled);
+
     private static Version PackageVersion =>
         Version.Parse(XDocument.Load(RepositoryLayout.BuildProps)
                                .Descendants("Version")
                                .Single()
                                .Value);
+
+    /// <summary>
+    /// The support horizon is phrased against the EF Core major this line targets, and that number
+    /// lives in the core project's dependency floor. When the floor moves to EF Core 11 the sentence
+    /// has to move with it, or the policy promises support against a release the package no longer
+    /// targets.
+    /// </summary>
+    [TestMethod(DisplayName = "SECURITY.md's support horizon names the EF Core major the package targets")]
+    public void Support_horizon_names_the_targeted_ef_core_major()
+    {
+        var text  = File.ReadAllText(SecurityPolicy);
+        var match = TargetsEfCore.Match(text);
+
+        Assert.IsTrue(
+            match.Success,
+            "SECURITY.md has no 'targets **EF Core N**' sentence in its support horizon — a consumer doing "
+          + "due diligence needs to know which platform line the support intention is tied to.");
+
+        var core      = RepositoryLayout.ShippingProjects.Single(p => !p.IsSatellite);
+        var reference = XDocument.Load(core.ProjectFile)
+                                 .Descendants("PackageReference")
+                                 .Single(r => r.Attribute("Include")?.Value == "Microsoft.EntityFrameworkCore.Abstractions");
+        var floor     = Regex.Match(reference.Attribute("Version")!.Value, @"\d+").Value;
+
+        Assert.AreEqual(
+            floor, match.Groups[1].Value,
+            $"SECURITY.md says the current line targets EF Core {match.Groups[1].Value}, but the core "
+          + $"project's EF Core floor is {floor}. Move the horizon statement with the floor.");
+    }
 
     [TestMethod(DisplayName = "SECURITY.md's supported-versions table names the minor being shipped")]
     public void Supported_versions_table_names_the_shipped_minor()

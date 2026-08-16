@@ -44,6 +44,29 @@
     -->
 
     <!--
+        Every pack is checked against the last release for API breaks.
+
+        At pack time the SDK restores each package at the baseline version from nuget.org and runs
+        ApiCompat over the public surface — a removed or changed member fails the pack
+        (CP0001/CP0002/...), in CI's Pack job and in the release gate. Until now a removed public
+        member packed cleanly, and whether a release broke anyone rested on reading the diff.
+
+        The baseline is the last release. When Version is bumped for the next one it stays as the
+        release being superseded, and PackagingConventionTests requires it to be that release or the
+        shipped version — never older — so it moves with every bump instead of fossilising. For a
+        release that breaks on purpose: run
+        `dotnet pack -c Release /p:ApiCompatGenerateSuppressionFile=true`, read the generated
+        CompatibilitySuppressions.xml — each entry is one breaking change and belongs in the
+        changelog — commit it, and delete it after the release once the baseline moves past it. A
+        new package with no release yet sets PackageValidationBaselineVersion empty in its own
+        csproj until it has one.
+    -->
+    <PropertyGroup>
+        <EnablePackageValidation>true</EnablePackageValidation>
+        <PackageValidationBaselineVersion>5.0.3</PackageValidationBaselineVersion>
+    </PropertyGroup>
+
+    <!--
         Debugging support for consumers.
 
         Symbols ship as a separate .snupkg, which `dotnet nuget push` uploads alongside the .nupkg
