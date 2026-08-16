@@ -30,6 +30,7 @@
             <PrivateAssets>all</PrivateAssets>
             <IncludeAssets>compile</IncludeAssets>
         </PackageReference>
+        <PackageReference Include="System.Security.Cryptography.Xml" Version="9.0.18" />
     </ItemGroup>
 
     <ItemGroup>
