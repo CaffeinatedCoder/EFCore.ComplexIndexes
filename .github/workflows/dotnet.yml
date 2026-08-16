@@ -1,7 +1,7 @@
 # Build and test on every push to main and every PR.
 #
-# Split into two jobs on purpose: the unit suite runs on all three runner OSes, while the
-# integration suite needs Docker and so runs only on Linux.
+# Split into two jobs on purpose: the unit suite and the integration suite, the latter needing
+# Docker for its PostgreSQL container.
 #
 # For information on GitHub Actions with .NET, see:
 # https://docs.github.com/en/actions/automating-builds-and-tests/building-and-testing-net
@@ -36,10 +36,14 @@ jobs:
   test:
     name: Test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    # Linux only. The matrix is kept as a single entry rather than flattened to a plain `runs-on`
+    # so the job keeps reporting as `Test (ubuntu-latest)` — that exact string is a required check
+    # in the branch protection rule on main, and a rename would leave it required and never
+    # reported, hanging PRs instead of failing them. Re-adding an OS is a one-line change here.
     strategy:
       fail-fast: false
       matrix:
-        os: [ ubuntu-latest, windows-latest, macos-latest ]
+        os: [ ubuntu-latest ]
 
     steps:
       - uses: actions/checkout@v6
@@ -55,9 +59,11 @@ jobs:
       - name: Build
         run: dotnet build -c Release --no-restore
 
-      # The matrix earns its keep here: the repository-convention tests do real path work
-      # (locating src/, reading .targets and README files), which is where separator handling
-      # differs between Windows and the Unix runners.
+      # This used to fan out across ubuntu/windows/macos for the repository-convention tests, which
+      # do real path work. Dropped as unearned: no shipped code touches the filesystem, so the only
+      # thing the other runners proved was that the *test harness* composes paths portably — which
+      # it does via Path.Combine, and which fails loudly on the machine of whoever hits it. Fix that
+      # reactively if a Windows contributor ever appears.
       - name: Unit tests
         run: >
           dotnet test -c Release --no-build
