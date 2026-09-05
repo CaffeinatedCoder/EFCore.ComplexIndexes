@@ -19,6 +19,13 @@ covers all three packages.
   filter, deferrability, explicit name). `ExclusionPartDefinition` and
   `NpgsqlExclusionAnnotations` are public now. The differ reads the model through the same code.
 
+- **New:** filters on complex, composite and expression indexes and on exclusion constraints
+  resolve `{Property.Path}` placeholders — columns, `HasColumnName`, `ToJson()` members as
+  extractions — at `migrations add`, into the migration itself. Existing filters with array or JSON
+  literals are unaffected.
+- **New:** `x => x.Email.Value` on a converter-mapped value object resolves to the converted column
+  in typed expression indexes and exclusion elements too.
+
 ## 5.1.0
 
 - **Changed:** `UseNpgsqlComplexIndexes()` / `AddNpgsqlComplexIndexes()` also register the PostgreSQL

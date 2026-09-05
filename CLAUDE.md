@@ -354,7 +354,19 @@ differ let satellites resolve what the core cannot:
   nested inside the document resolves to a `->` extraction yielding `jsonb`. A table-split complex
   property stays unresolved: there is no single column to stand for it.
 - `ResolveTemplatePart` — substitutes template placeholders with quoted columns or parenthesized
-  JSON extractions; core throws (identifier quoting is provider-specific).
+  JSON extractions. Since 5.2.0 the core implements it, quoting through the `QuoteIdentifier`
+  virtual (ANSI by default; the SQL Server satellite brackets), so satellites override neither.
+
+Filters go through the same placeholder resolver (`ResolveFilter`, called while building
+descriptors for indexes and, in the Npgsql differ, exclusion constraints), with a narrower rule
+because filters are pre-existing SQL: only a brace pair holding a dotted identifier path *outside a
+single-quoted literal* is a placeholder, there is no `{{` escape (`'{{1,2},{3,4}}'` is an array
+literal), and an unresolvable placeholder throws. The resolved filter is what the descriptor
+carries on both sides of the diff, so placeholder filters never churn and need no runtime wiring.
+`ResolveProperty` (core, shared by every path walk) also unwraps one member of a converter-mapped
+value object — `Email.Value` resolves to the `Email` column only when the property has a converter
+and the member's type equals the converter's provider type; without that check `CreatedAt.Year`
+would silently index the whole column.
 
 `NULLS FIRST/LAST` (`DbOrder.NullsFirst/NullsLast`, `ExpressionIndexBuilder.NullsFirst()/NullsLast()`)
 rides on the parts as `NullSort`. EF's native `CreateIndexOperation` has no slot for it, so any
@@ -418,7 +430,7 @@ still skipped silently — an index on those is nothing this package could creat
 
 ### Key extension points
 
-- **Adding a new provider**: Subclass `CustomMigrationsModelDiffer` (override `IsForwardedIndexAnnotation`, optionally `ValidateCreateIndexOperation`/`ResolveUnmappedPart`/`ResolveTemplatePart`), implement `IDesignTimeServices` to replace the differ, and ship a `.targets` file that injects the attribute (with `ForProvider` set). The PostgreSQL project is the full-featured reference; the SQL Server project is the minimal one (whitelist + validation, no custom SQL generator).
+- **Adding a new provider**: Subclass `CustomMigrationsModelDiffer` (override `IsForwardedIndexAnnotation`, optionally `ValidateCreateIndexOperation`/`ResolveUnmappedPart`/`QuoteIdentifier`), implement `IDesignTimeServices` to replace the differ, and ship a `.targets` file that injects the attribute (with `ForProvider` set). The PostgreSQL project is the full-featured reference; the SQL Server project is the minimal one (whitelist + validation, no custom SQL generator).
 - **New index options**: Add constants to `ComplexIndexAnnotations.cs` (or `NpgsqlAnnotations.cs`), expose them via `ComplexIndexBuilder`, and read them in the differ when constructing `CreateIndexOperation`.
 
 ### Expression path extraction

@@ -1,3 +1,5 @@
+using System.Reflection;
+using System.Text;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata;
 using Microsoft.EntityFrameworkCore.Migrations;
@@ -317,16 +319,160 @@ public class CustomMigrationsModelDiffer(
 
     /// <summary>
     /// Resolves a template part (<c>{Property.Path}</c> placeholders from a typed-expression
-    /// translator) into a final SQL expression. Identifier quoting is provider-specific, so the
-    /// core has no implementation — provider satellites override this.
+    /// translator) into a final SQL expression: each placeholder becomes a quoted column reference
+    /// — or, through <see cref="ResolveUnmappedPart"/>, a parenthesized expression such as a JSON
+    /// extraction — and <c>{{</c>/<c>}}</c> unescape to literal braces. Quoting goes through
+    /// <see cref="QuoteIdentifier"/>, so a satellite normally has nothing to override here.
     /// </summary>
     protected virtual ResolvedIndexPart ResolveTemplatePart(
         IEntityType           entityType,
         IndexPartDefinition   part,
         StoreObjectIdentifier storeObject
-    ) => throw new InvalidOperationException(
-             $"The index template '{part.Template}' on entity '{entityType.Name}' requires a provider " +
-             "satellite differ (e.g. EFCore.ComplexIndexes.PostgreSQL) to resolve column references.");
+    )
+    {
+        var template = part.Template!;
+        var sql      = new StringBuilder(template.Length);
+
+        for (var i = 0; i < template.Length; i++)
+        {
+            var ch = template[i];
+
+            if (ch == '{')
+            {
+                if (i + 1 < template.Length && template[i + 1] == '{')
+                {
+                    sql.Append('{');
+                    i++;
+                    continue;
+                }
+
+                var end = template.IndexOf('}', i + 1);
+                if (end < 0)
+                    throw new InvalidOperationException($"Malformed index expression template '{template}' on entity '{entityType.Name}'.");
+
+                sql.Append(ResolvePlaceholder(entityType, template[(i + 1)..end], storeObject, "an index expression"));
+                i = end;
+                continue;
+            }
+
+            if (ch == '}')
+            {
+                if (i + 1 < template.Length && template[i + 1] == '}')
+                {
+                    sql.Append('}');
+                    i++;
+                    continue;
+                }
+
+                throw new InvalidOperationException($"Malformed index expression template '{template}' on entity '{entityType.Name}'.");
+            }
+
+            sql.Append(ch);
+        }
+
+        return new ResolvedIndexPart(true, sql.ToString(), part.Descending, part.NullSort);
+    }
+
+    /// <summary>
+    /// Resolves the <c>{Property.Path}</c> placeholders in a filter predicate to quoted column
+    /// references — or parenthesized JSON extractions — the way <see cref="ResolveTemplatePart"/>
+    /// does for expression parts, so a filter can name properties instead of column names. The
+    /// resolved text is what the operation carries, rendered by the stock generator with no runtime
+    /// wiring, and what source and target are compared on, so a filter written with placeholders
+    /// diffs exactly like one written with column names.
+    /// </summary>
+    /// <remarks>
+    /// Filters are existing SQL, so the rule is narrower than for templates: only a brace pair
+    /// whose content is a dotted identifier path, outside a single-quoted string literal, is a
+    /// placeholder. Everything else stays verbatim — <c>'{urgent}'</c> is a PostgreSQL array
+    /// literal, <c>'{"a": 1}'</c> a JSON document, <c>'{{1,2},{3,4}}'</c> a two-dimensional array —
+    /// which is also why there is no <c>{{</c> escape here. A placeholder that names no property
+    /// throws: outside a literal, braces are never valid SQL, so it can only be a mistake.
+    /// </remarks>
+    /// <param name="entityType">The entity type the placeholders are resolved against.</param>
+    /// <param name="filter">The filter as declared, or null.</param>
+    /// <param name="storeObject">The table whose column names are used.</param>
+    /// <returns>The filter with every placeholder replaced, or <paramref name="filter"/> unchanged when it has none.</returns>
+    protected string? ResolveFilter(IEntityType entityType, string? filter, StoreObjectIdentifier storeObject)
+    {
+        if (filter is null || !filter.Contains('{'))
+            return filter;
+
+        var sql       = new StringBuilder(filter.Length);
+        var inLiteral = false;
+
+        for (var i = 0; i < filter.Length; i++)
+        {
+            var ch = filter[i];
+
+            // A doubled quote inside a literal toggles twice and lands back inside it.
+            if (ch == '\'')
+                inLiteral = !inLiteral;
+
+            if (ch == '{' && !inLiteral)
+            {
+                var end = filter.IndexOf('}', i + 1);
+                if (end > i + 1 && IsPropertyPath(filter.AsSpan(i + 1, end - i - 1)))
+                {
+                    sql.Append(ResolvePlaceholder(entityType, filter[(i + 1)..end], storeObject, "a filter"));
+                    i = end;
+                    continue;
+                }
+            }
+
+            sql.Append(ch);
+        }
+
+        return sql.ToString();
+    }
+
+    // Dotted identifier segments: letters, digits and underscores, each starting with a letter or
+    // an underscore. Anything else between braces is SQL text, not a placeholder.
+    private static bool IsPropertyPath(ReadOnlySpan<char> text)
+    {
+        var segmentStart = true;
+
+        foreach (var ch in text)
+        {
+            if (ch == '.')
+            {
+                if (segmentStart) return false;
+                segmentStart = true;
+                continue;
+            }
+
+            var valid = segmentStart ? char.IsLetter(ch) || ch == '_' : char.IsLetterOrDigit(ch) || ch == '_';
+            if (!valid) return false;
+
+            segmentStart = false;
+        }
+
+        return !segmentStart;
+    }
+
+    private string ResolvePlaceholder(IEntityType entityType, string path, StoreObjectIdentifier storeObject, string usage)
+    {
+        var column = ResolveColumnName(entityType, path, storeObject);
+        if (column is not null)
+            return QuoteIdentifier(column);
+
+        var unmapped = ResolveUnmappedPart(entityType, new IndexPartDefinition { PropertyPath = path }, storeObject);
+        if (unmapped is not null)
+            return unmapped.IsExpression ? $"({unmapped.Value})" : QuoteIdentifier(unmapped.Value);
+
+        throw new InvalidOperationException(
+            $"Could not resolve property path '{path}' referenced by {usage} on entity '{entityType.Name}'.");
+    }
+
+    /// <summary>
+    /// Delimits an identifier for the SQL this differ renders itself: resolved template parts and
+    /// filter placeholders. ANSI double quotes by default, which PostgreSQL and SQLite use; the SQL
+    /// Server satellite overrides this with brackets.
+    /// </summary>
+    /// <param name="identifier">The raw column name.</param>
+    /// <returns>The delimited identifier.</returns>
+    protected virtual string QuoteIdentifier(string identifier)
+        => "\"" + identifier.Replace("\"", "\"\"") + "\"";
 
     /// <summary>
     /// Fails when two distinct declarations resolve to the same index name on the same table.
@@ -554,7 +700,7 @@ public class CustomMigrationsModelDiffer(
                 providerAnnotations[annotation.Name] = TransformIndexAnnotation(entityType, annotation.Name, annotation.Value, storeObject);
         }
 
-        return new IndexDescriptor(tableName, schema, [part], indexName, declaration.IsUnique, declaration.Filter, providerAnnotations);
+        return new IndexDescriptor(tableName, schema, [part], indexName, declaration.IsUnique, ResolveFilter(entityType, declaration.Filter, storeObject), providerAnnotations);
     }
 
     private IndexDescriptor ResolveEntityLevelIndex(
@@ -603,7 +749,7 @@ public class CustomMigrationsModelDiffer(
         foreach (var (key, value) in declaration.ProviderAnnotations)
             providerAnnotations[key] = TransformIndexAnnotation(entityType, key, value, storeObject);
 
-        return new IndexDescriptor(tableName, schema, parts, indexName, declaration.IsUnique, declaration.Filter, providerAnnotations);
+        return new IndexDescriptor(tableName, schema, parts, indexName, declaration.IsUnique, ResolveFilter(entityType, declaration.Filter, storeObject), providerAnnotations);
     }
 
     // Builds a default index-name token for a part: column names pass through; expressions are
@@ -623,21 +769,61 @@ public class CustomMigrationsModelDiffer(
         string                dotPath,
         StoreObjectIdentifier storeObject
     )
+        => ResolveProperty(entityType, dotPath)?.GetColumnName(storeObject);
+
+    /// <summary>
+    /// Resolves a dotted property path to the scalar property it names, walking complex
+    /// properties, or null when there is no such property.
+    /// </summary>
+    /// <remarks>
+    /// A path may also end one step <em>past</em> a scalar property, at a member of its CLR type:
+    /// <c>Email.Value</c> where <c>Email</c> is a value object mapped through a value converter.
+    /// The member unwraps to the property when the property has a converter and the member's type
+    /// is the converter's provider type — the column holds exactly that member. Without the type
+    /// check, <c>CreatedAt.Year</c> would resolve to the whole column and index something other
+    /// than what was written.
+    /// </remarks>
+    /// <param name="typeBase">The entity or complex type the path starts from.</param>
+    /// <param name="dotPath">The path, e.g. <c>Address.City</c>.</param>
+    /// <returns>The property, or null.</returns>
+    protected static IProperty? ResolveProperty(ITypeBase typeBase, string dotPath)
     {
-        var       parts   = dotPath.Split('.');
-        ITypeBase current = entityType;
+        var parts   = dotPath.Split('.');
+        var current = typeBase;
 
         for (var i = 0; i < parts.Length; i++)
         {
             if (i == parts.Length - 1)
-                return current.FindProperty(parts[i])?.GetColumnName(storeObject);
+                return current.FindProperty(parts[i]);
 
-            var cp = current.FindComplexProperty(parts[i]);
-            if (cp is null) return null;
-            current = cp.ComplexType;
+            var complexProperty = current.FindComplexProperty(parts[i]);
+            if (complexProperty is not null)
+            {
+                current = complexProperty.ComplexType;
+                continue;
+            }
+
+            return i == parts.Length - 2 ? FindConvertedMember(current, parts[i], parts[i + 1]) : null;
         }
 
         return null;
+    }
+
+    private static IProperty? FindConvertedMember(ITypeBase typeBase, string propertyName, string memberName)
+    {
+        var property  = typeBase.FindProperty(propertyName);
+        var converter = property?.FindTypeMapping()?.Converter ?? property?.GetValueConverter();
+        if (property is null || converter is null)
+            return null;
+
+        var memberType = property.ClrType.GetProperty(memberName, BindingFlags.Public | BindingFlags.Instance)?.PropertyType
+                      ?? property.ClrType.GetField(memberName, BindingFlags.Public | BindingFlags.Instance)?.FieldType;
+        if (memberType is null)
+            return null;
+
+        return Unwrap(memberType) == Unwrap(converter.ProviderClrType) ? property : null;
+
+        static Type Unwrap(Type type) => Nullable.GetUnderlyingType(type) ?? type;
     }
 
     internal sealed record IndexDescriptor(

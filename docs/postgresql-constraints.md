@@ -178,7 +178,11 @@ builder.HasExclusionConstraint(ex => ex
     .IsDeferrable(initiallyDeferred: true));
 ```
 
-Selectors resolve complex-property members to their mapped columns, exactly like complex indexes.
+Selectors resolve complex-property members to their mapped columns, exactly like complex indexes,
+and the filter takes the same `{Property.Path}` placeholders a complex index filter does —
+`filter: "{RevokedAt} IS NULL"` renders `WHERE ("revoked_at" IS NULL)` whatever `HasColumnName`
+decided, JSON members become extractions, and a path that names no property fails at
+`migrations add`.
 Scalar equality elements under `gist` need the `btree_gist` extension — the differ injects
 `CREATE EXTENSION IF NOT EXISTS btree_gist` automatically, shared with temporal constraints and
 governed by the same `UseBtreeGist()` / `SuppressTemporalExtensionAutoInjection()` switches.

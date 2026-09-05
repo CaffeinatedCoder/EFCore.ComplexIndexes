@@ -32,7 +32,8 @@ builder.HasComplexIndex(x => x.Email.Value, ix => ix
 
 `IsClustered()`, `SortInTempDb()`, and `UseDataCompression(DataCompressionType.Page)` are also
 available. Filtered indexes (`filter:`) and `DbOrder.Desc` work out of the box, since both ride on
-EF's native operation.
+EF's native operation. A filter may name properties — `filter: "{DeletedAt} IS NULL"` resolves to
+`[deleted_at] IS NULL` at `migrations add`, bracket-quoted, and is baked into the migration.
 
 `IncludeProperties(...)` entries are resolved as property paths — complex members included — with a
 verbatim column-name fallback, so `IncludeProperties("Email.Value")` finds the real column.

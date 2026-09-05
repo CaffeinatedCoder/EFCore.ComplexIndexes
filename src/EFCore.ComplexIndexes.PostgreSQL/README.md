@@ -105,7 +105,8 @@ builder.HasExpressionIndex(x => x.Email.Value.ToLower(), isUnique: true);
 
 The translated subset is deliberately small — `ToLower`/`ToUpper`, `Trim` variants, `Substring`,
 `Replace`, `string.Length`, concatenation, `??`, constants — and anything else throws
-`NotSupportedException` **at declaration time**, pointing at the raw-SQL overload.
+`NotSupportedException` **at declaration time**, pointing at the raw-SQL overload. A value object
+mapped through a converter resolves through its member: `x.Email.Value` is the `email` column.
 
 ### JSON member indexes
 
@@ -146,7 +147,8 @@ builder.HasExclusionConstraint(
 ```
 
 Constraint identity is the ordered elements **plus** the filter, so the same columns under different
-predicates give you two coexisting partial constraints (both must be named).
+predicates give you two coexisting partial constraints (both must be named). Filters — here and on
+indexes — resolve `{Property.Path}` placeholders to columns or JSON extractions at `migrations add`.
 
 Declared constraints can be read back — `GetExclusionConstraints()` on an entity type or the
 model, `FindExclusionConstraint(name)` — with elements, method, filter, deferrability and name, from

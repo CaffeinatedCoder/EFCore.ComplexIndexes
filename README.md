@@ -117,6 +117,19 @@ builder.ComplexProperty(x => x.EmailAddress, c =>
 The same overloads exist on the non-generic builder, so a property configured by name works too:
 `c.Property("Value").HasComplexIndex()`.
 
+A filter may name properties instead of columns: `{Property.Path}` placeholders resolve to the
+mapped column at `migrations add` — `HasColumnName`, complex members and (on PostgreSQL) `ToJson()`
+members included — so the filter and the column mapping cannot drift apart:
+
+```csharp
+c.Property(x => x.Value).HasComplexIndex(isUnique: true, filter: "{DeletedAt} IS NULL");
+// WHERE "deleted_at" IS NULL   (PostgreSQL)   WHERE [deleted_at] IS NULL   (SQL Server)
+```
+
+The resolved text is baked into the migration, so no runtime wiring is involved. Only a brace pair
+holding a dotted identifier path, outside a single-quoted literal, is a placeholder — `'{urgent}'`
+and `'{"a": 1}'` stay what they are — and one that names no property fails loudly.
+
 A property-level declaration holds **one** index per property. To give the same column several
 differently-filtered indexes (the classic soft-delete pattern), declare them at the **entity level**
 — the selector reaches into complex properties, and each index needs its own explicit name:
@@ -127,6 +140,11 @@ builder.HasComplexIndex(x => x.EmailAddress.Value,
 builder.HasComplexIndex(x => x.EmailAddress.Value,
     indexName: "ix_person_email_all");
 ```
+
+Selectors also see through a value converter: for a value object mapped as one column
+(`HasConversion(e => e.Value, v => new(v))`), `x => x.Email.Value` resolves to that column,
+provided the member's type is the converter's provider type. `x => x.CreatedAt.Year` does not
+resolve, and says so.
 
 Index names must be unique per table, and the package enforces it rather than letting the database
 reject the migration: reusing a name throws at the declaration, and two declarations that resolve to

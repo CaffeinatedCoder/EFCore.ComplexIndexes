@@ -239,74 +239,6 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
     }
 
     /// <summary>
-    /// Resolves a typed-expression template into final SQL: <c>{Property.Path}</c> placeholders
-    /// become quoted column references — or parenthesized JSON extractions for <c>ToJson()</c>
-    /// members; <c>{{</c>/<c>}}</c> unescape to literal braces.
-    /// </summary>
-    protected override ResolvedIndexPart ResolveTemplatePart(
-        IEntityType           entityType,
-        IndexPartDefinition   part,
-        StoreObjectIdentifier storeObject
-    )
-    {
-        var template = part.Template!;
-        var sql      = new System.Text.StringBuilder(template.Length);
-
-        for (var i = 0; i < template.Length; i++)
-        {
-            var ch = template[i];
-
-            if (ch == '{')
-            {
-                if (i + 1 < template.Length && template[i + 1] == '{')
-                {
-                    sql.Append('{');
-                    i++;
-                    continue;
-                }
-
-                var end = template.IndexOf('}', i + 1);
-                if (end < 0)
-                    throw new InvalidOperationException($"Malformed index expression template '{template}' on entity '{entityType.Name}'.");
-
-                sql.Append(ResolvePlaceholder(entityType, template[(i + 1)..end], storeObject));
-                i = end;
-                continue;
-            }
-
-            if (ch == '}')
-            {
-                if (i + 1 < template.Length && template[i + 1] == '}')
-                {
-                    sql.Append('}');
-                    i++;
-                    continue;
-                }
-
-                throw new InvalidOperationException($"Malformed index expression template '{template}' on entity '{entityType.Name}'.");
-            }
-
-            sql.Append(ch);
-        }
-
-        return new ResolvedIndexPart(true, sql.ToString(), part.Descending, part.NullSort);
-    }
-
-    private string ResolvePlaceholder(IEntityType entityType, string path, StoreObjectIdentifier storeObject)
-    {
-        var column = ResolveProperty(entityType, path)?.GetColumnName(storeObject);
-        if (column is not null)
-            return Quote(column);
-
-        var jsonPart = ResolveUnmappedPart(entityType, new IndexPartDefinition { PropertyPath = path }, storeObject);
-        if (jsonPart is not null)
-            return jsonPart.IsExpression ? $"({jsonPart.Value})" : Quote(jsonPart.Value);
-
-        throw new InvalidOperationException(
-            $"Could not resolve property path '{path}' referenced by an index expression on entity '{entityType.Name}'.");
-    }
-
-    /// <summary>
     /// Runs the core complex-index diff, then adds PostgreSQL-specific DDL: temporal <c>UNIQUE …
     /// WITHOUT OVERLAPS</c> constraints, temporal foreign keys, exclusion constraints, and a single
     /// shared <c>CREATE EXTENSION btree_gist</c> when any of them needs it.
@@ -671,7 +603,7 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
         return renamed;
     }
 
-    private static HashSet<ExclusionDescriptor> BuildExclusionDescriptors(IRelationalModel? model)
+    private HashSet<ExclusionDescriptor> BuildExclusionDescriptors(IRelationalModel? model)
     {
         var set = new HashSet<ExclusionDescriptor>();
         if (model is null) return set;
@@ -723,7 +655,7 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
                     name,
                     parts,
                     def.Method,
-                    def.Filter,
+                    ResolveFilter(entityType, def.Filter, storeObject),
                     def.Deferrable,
                     def.InitiallyDeferred));
             }
@@ -1046,24 +978,6 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
     private static bool IsMultirangeClrType(Type type)
         => type.Namespace is "NpgsqlTypes"
         && type.Name.EndsWith("Multirange", StringComparison.Ordinal);
-
-    private static IProperty? ResolveProperty(ITypeBase entityType, string dotPath)
-    {
-        var       parts   = dotPath.Split('.');
-        ITypeBase current = entityType;
-
-        for (var i = 0; i < parts.Length; i++)
-        {
-            if (i == parts.Length - 1)
-                return current.FindProperty(parts[i]);
-
-            var cp = current.FindComplexProperty(parts[i]);
-            if (cp is null) return null;
-            current = cp.ComplexType;
-        }
-
-        return null;
-    }
 
     private static bool ShouldInjectExtension(IRelationalModel? target)
     {

@@ -37,6 +37,11 @@ builder.ComplexProperty(x => x.EmailAddress, c =>
 Column names are resolved against the real model, so both convention-based names (`Origin_Source`)
 and explicit `HasColumnName` overrides are honored.
 
+A filter may name properties instead of columns — `filter: "{DeletedAt} IS NULL"` resolves to the
+mapped column at `migrations add`, quoted for the provider, and is baked into the migration. A
+selector reaches into complex properties and, for a value object mapped through a converter, one
+step further: `x => x.Email.Value` resolves to the converted column.
+
 ### Several indexes over one column
 
 A property-level declaration holds **one** index per property. To give a column several

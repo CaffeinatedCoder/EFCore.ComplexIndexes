@@ -52,7 +52,7 @@ public class DocumentationApiTests
         // EF Core
         "ComplexProperty", "ComplexCollection", "Property", "HasColumnName", "HasKey", "ToJson", "Entity",
         "MigrationsAssembly", "UseInternalServiceProvider",
-        "EnsureCreated", "GenerateCreateScript", "Migrate", "GetEntityTypes",
+        "EnsureCreated", "GenerateCreateScript", "Migrate", "GetEntityTypes", "HasConversion",
         // Npgsql
         "UseNpgsql", "AddEntityFrameworkNpgsql",
         // SQL Server

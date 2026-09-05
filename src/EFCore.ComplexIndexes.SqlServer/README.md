@@ -54,6 +54,9 @@ Also available: `IsClustered()`, `SortInTempDb()`, and
 Filtered indexes (`filter:`) and `DbOrder.Desc` need nothing from this package — both ride on EF
 Core's native index operation.
 
+A filter may name properties instead of columns: `filter: "{DeletedAt} IS NULL"` resolves to
+`[deleted_at] IS NULL` at `migrations add`.
+
 ### Deliberate rejections
 
 Declarations SQL Server cannot express fail at `dotnet ef migrations add` with a targeted error

@@ -17,6 +17,15 @@ covers all three packages.
   provider options of entity-level declarations), from the mutable model in `OnModelCreating` too.
   The differ reads the model through the same code.
 
+- **New:** filters resolve `{Property.Path}` placeholders to the mapped column at `migrations add`,
+  quoted through the new `QuoteIdentifier` seam (ANSI by default); the resolved text is baked into
+  the migration and compared against the snapshot. Only a dotted identifier path in braces outside
+  a single-quoted literal is a placeholder; an unknown one throws. Template resolution moved into
+  the core differ on the same seam.
+- **New:** a property path may end at a member of a converter-mapped value object
+  (`x => x.Email.Value`), which resolves to the converted column when the member's type is the
+  converter's provider type.
+
 ## 5.1.0
 
 - **Fixed:** `HasDifferences` now reports changes to complex indexes (and, through the satellites'

@@ -138,6 +138,16 @@ builder.HasExpressionIndex(x => (x.Nickname ?? x.FirstName) + " " + x.LastName);
 
 The supported subset is deliberately small and fails loudly: `ToLower`/`ToUpper`, `Trim`/`TrimStart`/`TrimEnd`, `Substring` (1-based conversion handled), `Replace`, `string.Length`, string concatenation (`+`), null coalescing (`??`), and constants (captured variables are evaluated and inlined invariant-culture). Anything else throws `NotSupportedException` **at declaration time** with a pointer to the raw-SQL overload.
 
+Paths see through a value converter as well: when `Email` is a value object mapped as one column,
+`x => x.Email.Value.ToLower()` resolves `Email.Value` to that column — provided `Value` has the
+converter's provider type, which is what makes the column hold exactly that member.
+
+Filters take the same placeholders: `filter: "{DeletedAt} IS NULL"` or
+`"{Payload.Kind} = 'invoice'"` resolve to the column — or the JSON extraction — at `migrations add`,
+and the resolved text is what the migration carries. Only a brace pair holding a dotted identifier
+path outside a single-quoted literal is a placeholder, so array and JSON literals such as
+`'{urgent}'` and `'{"a": 1}'` are left alone.
+
 ## JSON member indexes
 
 > Requires [`UseNpgsqlComplexIndexes()`](../README.md#runtime-wiring--the-two-features-that-need-it) — JSON member indexes are expression indexes under the hood.
