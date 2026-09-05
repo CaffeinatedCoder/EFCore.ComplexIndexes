@@ -382,7 +382,7 @@ public class PostgresIntegrationTests
         Sql("""INSERT INTO ig_employers ("Id", name) VALUES (3, '{"ShortName":"Globex","LegalName":"Globex GmbH"}')""");
     }
 
-    // ── The AuditOffice regression: native HasIndex ⇄ HasComplexIndex round-trips cleanly ──
+    // ── The regression: native HasIndex ⇄ HasComplexIndex round-trips cleanly ──
 
     private class EmailAddress
     {

@@ -375,7 +375,15 @@ carries on both sides of the diff, so placeholder filters never churn and need n
 `ResolveProperty` (core, shared by every path walk) also unwraps one member of a converter-mapped
 value object — `Email.Value` resolves to the `Email` column only when the property has a converter
 and the member's type equals the converter's provider type; without that check `CreatedAt.Year`
-would silently index the whole column.
+would silently index the whole column. A model snapshot has neither the value object nor the
+converter: it persists the property as its provider type (`string`) on a property-bag type, so the
+member check has nothing to check against. On a property-bag type, for an indexer property without
+a converter, the resolver therefore accepts the persisted scalar — the path was validated against
+the configured model when the snapshot was scaffolded. This matters more than churn: the first
+`migrations add` succeeds because the snapshot does not hold the path yet, and everything that
+diffs the resulting snapshot fails — the next `migrations add`, `has-pending-model-changes`, and
+`Migrate()`, whose pending-changes check throws by default since EF Core 9. `SnapshotRoundTripTests`
+covers every place such a path can appear, at the top level and inside a complex type.
 
 Typed filters (`NpgsqlTypedFilterExtensions`, PostgreSQL only) run
 `NpgsqlLinqIndexTranslator.TranslatePredicate` at the declaration and store the resulting

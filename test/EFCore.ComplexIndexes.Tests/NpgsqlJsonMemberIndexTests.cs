@@ -61,7 +61,7 @@ public class NpgsqlJsonMemberIndexTests
             });
     }
 
-    // The AuditOffice shape: property-level declaration inside the ToJson complex property.
+    // The motivating shape: property-level declaration inside the ToJson complex property.
     private class PropertyLevelJsonIndexContext(DbContextOptions<PropertyLevelJsonIndexContext> options) : DbContext(options)
     {
         public DbSet<Employer> Employers => Set<Employer>();

@@ -146,6 +146,51 @@ public class SnapshotRoundTripTests
         Assert.IsEmpty(operations, string.Join("\n", operations.Select(o => o.GetType().Name)));
     }
 
+    [TestMethod(DisplayName = "Converter-member paths survive the snapshot round trip without churn")]
+    public void Converter_member_roundtrip_is_noop()
+    {
+        var source = BuildModelViaSnapshot<RoundTripConverterContext>();
+
+        // The snapshot's premise: the value object is gone, only its provider type and column remain.
+        var entity = source.Model.GetEntityTypes().Single();
+        var email  = entity.FindProperty(nameof(RoundTripAccount.Email))!;
+        var handle = entity.FindComplexProperty(nameof(RoundTripAccount.Profile))!.ComplexType.FindProperty(nameof(RoundTripProfile.Handle))!;
+
+        foreach (var property in new[] { email, handle })
+        {
+            Assert.AreEqual(typeof(string), property.ClrType, property.Name);
+            Assert.IsTrue(property.DeclaringType.IsPropertyBag, property.Name);
+            Assert.IsTrue(property.IsIndexerProperty(), property.Name);
+            Assert.IsNull(property.FindTypeMapping()?.Converter ?? property.GetValueConverter(), property.Name);
+        }
+
+        var operations = GetDifferences(source, BuildLiveModel<RoundTripConverterContext>());
+
+        Assert.IsEmpty(operations, string.Join("\n", operations.Select(o => o.GetType().Name)));
+    }
+
+    [TestMethod(DisplayName = "Migrate's runtime differ accepts a snapshot with converter-member paths")]
+    public void Runtime_differ_accepts_converter_member_snapshot()
+    {
+        var source = BuildModelViaSnapshot<RoundTripConverterContext>();
+
+        using var provider = new ServiceCollection()
+                            .AddEntityFrameworkNpgsql()
+                            .AddNpgsqlComplexIndexes()
+                            .BuildServiceProvider();
+        using var context = new EmptyContext(
+            new DbContextOptionsBuilder()
+               .UseNpgsql("Host=localhost;Database=test")
+               .UseInternalServiceProvider(provider)
+               .Options);
+        var differ = context.GetService<IMigrationsModelDiffer>();
+
+        Assert.IsInstanceOfType<NpgsqlComplexIndexMigrationsModelDiffer>(differ);
+        Assert.IsFalse(
+            differ.HasDifferences(source, BuildLiveModel<RoundTripConverterContext>()),
+            "Migrate() uses this runtime pending-model-changes check before applying migrations.");
+    }
+
     [TestMethod(DisplayName = "A filter change against the snapshot model is still detected")]
     public void Exclusion_filter_change_is_detected_against_snapshot()
     {
@@ -299,6 +344,50 @@ internal class RoundTripIndexContext(DbContextOptions<RoundTripIndexContext> opt
                 c.Property(x => x.Detail);
             });
             b.HasComplexCompositeIndex(x => new { x.Title, x.Origin.Detail }, isUnique: true);
+        });
+}
+
+internal readonly record struct RoundTripEmailAddress(string Value);
+
+internal class RoundTripProfile
+{
+    public RoundTripEmailAddress Handle { get; set; }
+}
+
+internal class RoundTripAccount
+{
+    public int Id { get; set; }
+    public RoundTripEmailAddress Email { get; set; }
+    public RoundTripProfile Profile { get; set; } = new();
+    public NpgsqlRange<DateOnly> Period { get; set; }
+}
+
+// Every place a converter-member path can appear: an expression-index template, an entity-level
+// column part, a composite part, a filter placeholder, an exclusion element — at the top level and
+// nested inside a complex type. The snapshot persists the provider type and drops the converter,
+// so each of these is a way the runtime differ could fail to resolve what design time resolved.
+internal class RoundTripConverterContext(DbContextOptions<RoundTripConverterContext> options) : DbContext(options)
+{
+    public DbSet<RoundTripAccount> Accounts => Set<RoundTripAccount>();
+
+    protected override void OnModelCreating(ModelBuilder modelBuilder)
+        => modelBuilder.Entity<RoundTripAccount>(b =>
+        {
+            b.ToTable("rt_accounts");
+            b.HasKey(x => x.Id);
+            b.Property(x => x.Email)
+             .HasConversion(email => email.Value, value => new RoundTripEmailAddress(value))
+             .HasColumnName("email");
+            b.Property(x => x.Period).HasColumnName("period");
+            b.ComplexProperty(x => x.Profile, c => c.Property(x => x.Handle)
+                                                    .HasConversion(handle => handle.Value, value => new RoundTripEmailAddress(value))
+                                                    .HasColumnName("handle"));
+
+            b.HasExpressionIndex(x => x.Email.Value.ToLower(), indexName: "ix_rt_accounts_email_lower");
+            b.HasExpressionIndex(x => x.Profile.Handle.Value.ToLower(), indexName: "ix_rt_accounts_handle_lower");
+            b.HasComplexIndex(x => x.Email.Value, filter: "{Profile.Handle.Value} <> ''", indexName: "ix_rt_accounts_email_with_handle");
+            b.HasComplexCompositeIndex(x => new { x.Id, x.Profile.Handle.Value }, indexName: "ix_rt_accounts_id_handle");
+            b.HasExclusionConstraint(x => x.Email.Value, x => x.Period, filter: "{Email.Value} <> ''", name: "ex_rt_accounts_email_period");
         });
 }
 

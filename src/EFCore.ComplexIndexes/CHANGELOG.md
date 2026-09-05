@@ -4,6 +4,16 @@ Changes to the core package, newest first. The
 [root changelog](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/CHANGELOG.md)
 covers all three packages.
 
+## 5.3.0
+
+- **Fixed:** a converter-member path (`x => x.Email.Value`) resolves against a model snapshot. The
+  snapshot persists the property as its provider type on a property-bag type and drops the
+  converter, so every diff whose source was the snapshot — the next `migrations add`,
+  `has-pending-model-changes`, `Migrate()`'s pending-model-changes check — threw
+  `Could not resolve property path 'Email.Value'`; only the first `migrations add` succeeded. On a
+  property-bag type the persisted scalar is accepted for a path the configured model already
+  validated; against a configured model the provider-type check is unchanged.
+
 ## 5.2.0
 
 - **Changed:** a complex index name longer than the provider's identifier limit

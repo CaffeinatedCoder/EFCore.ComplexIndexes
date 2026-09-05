@@ -781,7 +781,10 @@ public class CustomMigrationsModelDiffer(
     /// The member unwraps to the property when the property has a converter and the member's type
     /// is the converter's provider type — the column holds exactly that member. Without the type
     /// check, <c>CreatedAt.Year</c> would resolve to the whole column and index something other
-    /// than what was written.
+    /// than what was written. A model snapshot cannot be checked that way: it persists the
+    /// property as its provider type on a property-bag type and drops the converter, so there the
+    /// path — already validated against the configured model when it was scaffolded — unwraps to
+    /// the persisted scalar unconditionally.
     /// </remarks>
     /// <param name="typeBase">The entity or complex type the path starts from.</param>
     /// <param name="dotPath">The path, e.g. <c>Address.City</c>.</param>
@@ -811,10 +814,21 @@ public class CustomMigrationsModelDiffer(
 
     private static IProperty? FindConvertedMember(ITypeBase typeBase, string propertyName, string memberName)
     {
-        var property  = typeBase.FindProperty(propertyName);
-        var converter = property?.FindTypeMapping()?.Converter ?? property?.GetValueConverter();
-        if (property is null || converter is null)
+        var property = typeBase.FindProperty(propertyName);
+        if (property is null)
             return null;
+
+        var converter = property.FindTypeMapping()?.Converter ?? property.GetValueConverter();
+        if (converter is null)
+        {
+            // A model snapshot rebuilds entity and complex types alike as property bags and persists
+            // a converted property as its provider type, without the converter — there is no member
+            // left to check. The path was validated against the configured model when the snapshot
+            // was scaffolded, so resolve it to the persisted scalar. Every diff whose source is the
+            // snapshot depends on this: the next `migrations add`, `has-pending-model-changes`, and
+            // the pending-changes check `Migrate()` runs before applying anything.
+            return typeBase.IsPropertyBag && property.IsIndexerProperty() ? property : null;
+        }
 
         var memberType = property.ClrType.GetProperty(memberName, BindingFlags.Public | BindingFlags.Instance)?.PropertyType
                       ?? property.ClrType.GetField(memberName, BindingFlags.Public | BindingFlags.Instance)?.FieldType;

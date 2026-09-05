@@ -29,7 +29,7 @@ public class NpgsqlExclusionConstraintDifferTests
 
     private class EmptyContext(DbContextOptions options) : DbContext(options);
 
-    // The AuditOffice shape: overlap protection per (grantee, role), ignoring revoked grants.
+    // The motivating shape: overlap protection per (grantee, role), ignoring revoked grants.
     private class RoleGrant
     {
         public int                   Id        { get; set; }
