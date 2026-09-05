@@ -224,8 +224,11 @@ that stands alone, and `DocumentationLinkTests` guards only the part that fails 
 
 Property-level annotations reach the `CreateIndexOperation` only through
 `IsForwardedIndexAnnotation` (virtual on the core differ, default **nothing**; the Npgsql differ
-whitelists exactly its five `Npgsql:*` index-option keys, plus every key under the per-parameter
-`Npgsql:StorageParameter:` prefix). Never revert to sweeping "everything
+whitelists exactly its six `Npgsql:*` index-option keys, plus every key under the per-parameter
+`Npgsql:StorageParameter:` prefix). The key an option is *stored* under can differ from the key the
+provider generator *reads*: `ToOperationAnnotationName` maps `Npgsql:IndexCollation` to
+`Relational:Collation` at stamping time, because the property-level API writes options onto the
+property, where the relational key would be read as the column's collation. Never revert to sweeping "everything
 except known keys": column facets (`Relational:ColumnName`, `Relational:ColumnType`, …) leaked into
 scaffolded migrations that way, and snapshot/code-model asymmetries caused phantom drop/create
 churn (see `PhantomIndexChurnTests`).

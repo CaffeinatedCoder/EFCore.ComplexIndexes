@@ -44,7 +44,8 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
         NpgsqlAnnotations.IndexOperators,
         NpgsqlAnnotations.IndexInclude,
         NpgsqlAnnotations.CreatedConcurrently,
-        NpgsqlAnnotations.NullsDistinct
+        NpgsqlAnnotations.NullsDistinct,
+        NpgsqlAnnotations.IndexCollation
     ];
 
     /// <summary>
@@ -69,6 +70,16 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
 
     /// <summary>PostgreSQL renames indexes standalone (<c>ALTER INDEX … RENAME TO</c>).</summary>
     protected override bool CanRenameIndexes => true;
+
+    /// <summary>
+    /// Npgsql's generator reads index collations from <c>Relational:Collation</c> on the operation;
+    /// the option is stored under Npgsql's model key so that a property-level declaration is never
+    /// mistaken for the column's collation.
+    /// </summary>
+    protected override string ToOperationAnnotationName(string annotationName)
+        => annotationName == NpgsqlAnnotations.IndexCollation
+               ? RelationalAnnotationNames.Collation
+               : base.ToOperationAnnotationName(annotationName);
 
     /// <summary>
     /// Rejects <c>Npgsql:*</c> index options this package does not render — typically an entity-level

@@ -47,6 +47,20 @@ public static class NpgsqlComplexIndexBuilderExtensions
         => builder.Set(NpgsqlAnnotations.NullsDistinct, nullsDistinct);
 
     /// <summary>
+    /// Specifies per-column collations for the index, positionally — an empty entry leaves that
+    /// column on its default collation: <c>UseCollation("C", "")</c> collates only the first column.
+    /// Rendered as <c>column COLLATE "C"</c>. This is the index's collation, independent of the
+    /// column's own.
+    /// </summary>
+    public static TBuilder UseCollation<TBuilder>(this TBuilder builder, params string[] collations) where TBuilder : IIndexAnnotationBuilder
+    {
+        ArgumentNullException.ThrowIfNull(collations);
+        if (collations.Length == 0)
+            throw new ArgumentException("Specify at least one collation.", nameof(collations));
+        return builder.Set(NpgsqlAnnotations.IndexCollation, collations);
+    }
+
+    /// <summary>
     /// Sets a PostgreSQL storage parameter on the index, rendered as <c>WITH (name=value)</c> — e.g.
     /// <c>HasStorageParameter("fillfactor", 70)</c> or <c>HasStorageParameter("fastupdate", false)</c>.
     /// Strings are quoted, booleans render as <c>true</c>/<c>false</c>. Call once per parameter.

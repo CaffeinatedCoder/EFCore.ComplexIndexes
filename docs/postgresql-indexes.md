@@ -32,14 +32,19 @@ builder.ComplexProperty(x => x.Payload, c =>
 ```
 
 Storage parameters render as `WITH (…)`; call `HasStorageParameter` once per parameter. Strings are
-quoted, booleans render bare:
+quoted, booleans render bare. Per-column collations are positional — an empty entry leaves that
+column on its default:
 
 ```csharp
 builder.HasComplexCompositeIndex(x => new { x.Name, x.Email.Value }, idx => idx
+    .UseCollation("C", "")
     .HasStorageParameter("fillfactor", 70)
     .HasStorageParameter("deduplicate_items", false));
-// CREATE INDEX ... ON people ("Name", email) WITH (fillfactor=70, deduplicate_items=false);
+// CREATE INDEX ... ON people ("Name" COLLATE "C", email) WITH (fillfactor=70, deduplicate_items=false);
 ```
+
+The index collation is independent of the column's own `UseCollation` on the property, which is never
+copied onto the index.
 
 ## Expression (functional) indexes
 

@@ -177,7 +177,7 @@ public class CustomMigrationsModelDiffer(
 
             // Forward the whitelisted provider annotations — provider SQL generators handle their own
             foreach (var (key, value) in tgt.ProviderAnnotations)
-                op.AddAnnotation(key, value);
+                op.AddAnnotation(ToOperationAnnotationName(key), value);
 
             // Ordered parts are needed when the stock generator can't render the index: expression
             // parts have no slot in Columns, and NULLS FIRST/LAST has no slot on the native
@@ -260,6 +260,20 @@ public class CustomMigrationsModelDiffer(
     /// operations, where snapshot/code-model asymmetries caused phantom drop/create churn.
     /// </summary>
     protected virtual bool IsForwardedIndexAnnotation(string annotationName) => false;
+
+    /// <summary>
+    /// Maps the key an index option is <em>stored</em> under to the key the provider's SQL generator
+    /// <em>reads</em> from the operation, when the two differ. The default keeps the key.
+    /// </summary>
+    /// <remarks>
+    /// Options are stored under provider model keys (<c>Npgsql:IndexCollation</c>) because the
+    /// property-level API writes them onto the property, where an EF relational key such as
+    /// <c>Relational:Collation</c> would be read as a <em>column</em> facet. Npgsql's generator,
+    /// however, reads index collations from <c>Relational:Collation</c> on the operation — the model
+    /// annotation provider does that mapping for native indexes, and this hook does it for ours.
+    /// Comparison happens on the stored key, so the mapping never affects diffing.
+    /// </remarks>
+    protected virtual string ToOperationAnnotationName(string annotationName) => annotationName;
 
     /// <summary>
     /// Transforms a forwarded provider-annotation value before it is compared and stamped onto the

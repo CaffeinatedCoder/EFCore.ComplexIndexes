@@ -48,6 +48,7 @@ public class NpgsqlComplexIndexSqlGenerator(
         var concurrently  = operation[NpgsqlAnnotations.CreatedConcurrently] is true;
         var method        = operation[NpgsqlAnnotations.IndexMethod] as string;
         var operators     = ToStringList(operation[NpgsqlAnnotations.IndexOperators]);
+        var collations    = ToStringList(operation[RelationalAnnotationNames.Collation]);
         var include       = ToStringList(operation[NpgsqlAnnotations.IndexInclude]);
         var nullsDistinct = operation[NpgsqlAnnotations.NullsDistinct];
 
@@ -76,10 +77,13 @@ public class NpgsqlComplexIndexSqlGenerator(
                                ? $"({parts[i].Value})"
                                : sqlHelper.DelimitIdentifier(parts[i].Value));
 
+            // PostgreSQL clause order: collation, operator class, direction, null ordering.
+            if (collations is not null && i < collations.Count && !string.IsNullOrEmpty(collations[i]))
+                builder.Append(" COLLATE ").Append(sqlHelper.DelimitIdentifier(collations[i]));
+
             if (operators is not null && i < operators.Count && !string.IsNullOrEmpty(operators[i]))
                 builder.Append(" ").Append(operators[i]);
 
-            // PostgreSQL clause order: operator class, then direction, then null ordering.
             if (parts[i].Descending)
                 builder.Append(" DESC");
 

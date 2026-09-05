@@ -19,6 +19,10 @@ covers all three packages.
 - **New:** `HasStorageParameter(name, value)` — PostgreSQL storage parameters (`WITH (fillfactor=70)`)
   on complex and expression indexes, one call per parameter. Forwarded under the per-parameter
   `Npgsql:StorageParameter:` prefix, which the whitelist and the unknown-key rejection now both accept.
+- **New:** `UseCollation(params string[])` — per-column index collations, positional (`UseCollation("C", "")`
+  collates only the first column). Stored under Npgsql's model key and mapped to `Relational:Collation`
+  on the operation, where Npgsql's generator reads it; a column's own collation is never copied onto
+  the index.
 
 ## 5.0.3
 
