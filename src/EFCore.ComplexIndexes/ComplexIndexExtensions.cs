@@ -12,7 +12,10 @@ public static class ComplexIndexExtensions
 {
     // ── Single-column index on a complex type property ──
 
-    extension<TProperty>(ComplexTypePropertyBuilder<TProperty> builder)
+    // The non-generic builder is what EF hands back for properties configured by name
+    // (`c.Property("Value")`) or type (`c.Property(typeof(string), "Value")`); the generic one derives
+    // from it, so the typed overloads below delegate here and keep their typed return.
+    extension(ComplexTypePropertyBuilder builder)
     {
         /// <summary>
         /// Configures a single-column index on a complex type property.
@@ -21,7 +24,7 @@ public static class ComplexIndexExtensions
         /// <param name="filter">A SQL filter for the index.</param>
         /// <param name="indexName">The custom name of the index.</param>
         /// <returns>The same builder instance so that multiple configuration calls can be chained.</returns>
-        public ComplexTypePropertyBuilder<TProperty> HasComplexIndex(
+        public ComplexTypePropertyBuilder HasComplexIndex(
             bool    isUnique  = false,
             string? filter    = null,
             string? indexName = null
@@ -44,8 +47,10 @@ public static class ComplexIndexExtensions
         /// Provider-specific options (e.g., GIN, clustered) are available as extension methods
         /// on <see cref="ComplexIndexBuilder"/> from the corresponding satellite package.
         /// </summary>
-        public ComplexTypePropertyBuilder<TProperty> HasComplexIndex(Action<ComplexIndexBuilder> configure)
+        public ComplexTypePropertyBuilder HasComplexIndex(Action<ComplexIndexBuilder> configure)
         {
+            ArgumentNullException.ThrowIfNull(configure);
+
             var indexBuilder = new ComplexIndexBuilder();
             configure(indexBuilder);
 
@@ -54,6 +59,27 @@ public static class ComplexIndexExtensions
             foreach (var (key, value) in indexBuilder.Annotations)
                 builder.HasAnnotation(key, value);
 
+            return builder;
+        }
+    }
+
+    extension<TProperty>(ComplexTypePropertyBuilder<TProperty> builder)
+    {
+        /// <inheritdoc cref="HasComplexIndex(ComplexTypePropertyBuilder, bool, string?, string?)"/>
+        public ComplexTypePropertyBuilder<TProperty> HasComplexIndex(
+            bool    isUnique  = false,
+            string? filter    = null,
+            string? indexName = null
+        )
+        {
+            ((ComplexTypePropertyBuilder)builder).HasComplexIndex(isUnique, filter, indexName);
+            return builder;
+        }
+
+        /// <inheritdoc cref="HasComplexIndex(ComplexTypePropertyBuilder, Action{ComplexIndexBuilder})"/>
+        public ComplexTypePropertyBuilder<TProperty> HasComplexIndex(Action<ComplexIndexBuilder> configure)
+        {
+            ((ComplexTypePropertyBuilder)builder).HasComplexIndex(configure);
             return builder;
         }
     }

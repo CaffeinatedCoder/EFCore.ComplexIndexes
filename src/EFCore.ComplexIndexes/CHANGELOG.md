@@ -18,6 +18,8 @@ covers all three packages.
 - **Fixed:** a complex index named like a native `HasIndex` on the same table is rejected at
   `migrations add` instead of scaffolding two `CREATE INDEX` statements under one name that fail when
   applied. An index moving between a native and a complex declaration under one name still diffs.
+- **New:** the property-level `HasComplexIndex` overloads also exist on the non-generic
+  `ComplexTypePropertyBuilder` (`c.Property("Value").HasComplexIndex()`).
 
 ## 5.0.3
 

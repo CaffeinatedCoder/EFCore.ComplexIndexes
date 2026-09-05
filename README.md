@@ -114,6 +114,9 @@ builder.ComplexProperty(x => x.EmailAddress, c =>
 );
 ```
 
+The same overloads exist on the non-generic builder, so a property configured by name works too:
+`c.Property("Value").HasComplexIndex()`.
+
 A property-level declaration holds **one** index per property. To give the same column several
 differently-filtered indexes (the classic soft-delete pattern), declare them at the **entity level**
 — the selector reaches into complex properties, and each index needs its own explicit name:
