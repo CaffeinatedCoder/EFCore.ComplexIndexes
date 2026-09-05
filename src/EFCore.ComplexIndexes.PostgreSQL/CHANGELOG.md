@@ -11,6 +11,11 @@ covers all three packages.
   expression indexes, and exclusion and temporal constraints, and `Migrate()`'s pending-model-changes
   check sees a declaration that was never scaffolded. Previously `EnsureCreated()` created the tables
   and silently none of them.
+- **New:** whole-document JSON indexes. A `HasComplexIndex` selector ending at a `ToJson()` complex
+  property or a complex collection indexes the `jsonb` container column — the idiomatic
+  `USING gin (payload jsonb_path_ops)` — through the stock generator, no runtime wiring. Previously
+  the path failed to resolve, and complex collections could not be indexed at all. A complex property
+  nested inside the document resolves to a `->` extraction (an expression index).
 
 ## 5.0.3
 

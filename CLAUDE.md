@@ -330,7 +330,11 @@ differ let satellites resolve what the core cannot:
 - `ResolveUnmappedPart` — a path with no table column; the Npgsql differ builds a JSON extraction
   (`"col" -> 'A' ->> 'B'`) when the path traverses a `ToJson()` complex property, honoring
   `HasJsonPropertyName`. Members extract as text — no automatic casts (text→timestamptz casts are
-  not IMMUTABLE and would blow up `CREATE INDEX`).
+  not IMMUTABLE and would blow up `CREATE INDEX`). A path that *ends* at the JSON-mapped complex
+  property — or at a complex collection, which is always JSON — resolves to the container column
+  as a plain **column** part (so a whole-document GIN needs no runtime wiring); a complex property
+  nested inside the document resolves to a `->` extraction yielding `jsonb`. A table-split complex
+  property stays unresolved: there is no single column to stand for it.
 - `ResolveTemplatePart` — substitutes template placeholders with quoted columns or parenthesized
   JSON extractions; core throws (identifier quoting is provider-specific).
 

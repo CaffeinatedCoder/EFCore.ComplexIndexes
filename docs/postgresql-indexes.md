@@ -146,3 +146,26 @@ builder.HasComplexIndex(x => x.Name.ShortName, isUnique: true, indexName: "ux_em
 Nested complex types become `->` segments (`("profile" -> 'Address' ->> 'City')`), and
 `HasJsonPropertyName` is honored. Members are extracted as **text**; for typed comparisons or
 ordering semantics use `HasExpressionIndex` with an explicit cast.
+
+### Indexing the whole document
+
+> No runtime wiring: the container is a real column, so the index renders through the stock generator.
+
+Point the selector at the JSON-mapped complex property itself — or at a complex collection, which is
+always JSON — and the index lands on the `jsonb` container column. The PostgreSQL idiom is a GIN
+index, usually with `jsonb_path_ops`:
+
+```csharp
+builder.ComplexProperty(x => x.Payload, c => c.ToJson("payload"));
+builder.ComplexCollection(x => x.Tags,  c => c.ToJson("tags"));
+
+builder.HasComplexIndex(x => x.Payload, ix => ix.UseGin().HasOperators("jsonb_path_ops"));
+// CREATE INDEX "IX_orders_payload" ON orders USING gin (payload jsonb_path_ops);
+
+builder.HasComplexIndex(x => x.Tags, ix => ix.UseGin());
+// CREATE INDEX "IX_orders_tags" ON orders USING gin (tags);
+```
+
+A complex property *nested inside* the document has no column of its own and resolves to a `->`
+extraction instead (`("payload" -> 'Address')`, yielding `jsonb`), so it is an expression index and
+needs the runtime wiring like the member indexes above.

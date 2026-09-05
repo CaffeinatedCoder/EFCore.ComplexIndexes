@@ -50,7 +50,7 @@ public class DocumentationApiTests
     private static readonly HashSet<string> ExternalApi = new(StringComparer.Ordinal)
     {
         // EF Core
-        "ComplexProperty", "Property", "HasColumnName", "HasKey", "ToJson", "Entity",
+        "ComplexProperty", "ComplexCollection", "Property", "HasColumnName", "HasKey", "ToJson", "Entity",
         "MigrationsAssembly", "UseInternalServiceProvider",
         "EnsureCreated", "GenerateCreateScript", "Migrate",
         // Npgsql
