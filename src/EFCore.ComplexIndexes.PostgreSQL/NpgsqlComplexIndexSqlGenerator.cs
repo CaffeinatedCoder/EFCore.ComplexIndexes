@@ -102,6 +102,14 @@ public class NpgsqlComplexIndexSqlGenerator(
         if (nullsDistinct is false)
             builder.Append(" NULLS NOT DISTINCT");
 
+        var storageParameters = operation.GetAnnotations()
+                                         .Where(a => NpgsqlAnnotations.IsStorageParameter(a.Name))
+                                         .Select(a => $"{a.Name[NpgsqlAnnotations.StorageParameterPrefix.Length..]}={FormatStorageParameter(a.Value)}")
+                                         .ToList();
+
+        if (storageParameters.Count > 0)
+            builder.Append(" WITH (").Append(string.Join(", ", storageParameters)).Append(")");
+
         if (!string.IsNullOrEmpty(operation.Filter))
             builder.Append(" WHERE ").Append(operation.Filter);
 
@@ -244,6 +252,15 @@ public class NpgsqlComplexIndexSqlGenerator(
             EndStatement(builder);
         }
     }
+
+    // Mirrors Npgsql's own formatting: booleans bare, strings quoted, numbers invariant.
+    private static string FormatStorageParameter(object? value) => value switch
+    {
+        bool b         => b ? "true" : "false",
+        string s       => $"'{s.Replace("'", "''")}'",
+        IFormattable f => f.ToString(null, System.Globalization.CultureInfo.InvariantCulture),
+        _              => value?.ToString() ?? string.Empty
+    };
 
     private static IReadOnlyList<string>? ToStringList(object? value) =>
         value switch

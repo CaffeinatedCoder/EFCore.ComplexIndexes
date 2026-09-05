@@ -224,7 +224,8 @@ that stands alone, and `DocumentationLinkTests` guards only the part that fails 
 
 Property-level annotations reach the `CreateIndexOperation` only through
 `IsForwardedIndexAnnotation` (virtual on the core differ, default **nothing**; the Npgsql differ
-whitelists exactly its five `Npgsql:*` index-option keys). Never revert to sweeping "everything
+whitelists exactly its five `Npgsql:*` index-option keys, plus every key under the per-parameter
+`Npgsql:StorageParameter:` prefix). Never revert to sweeping "everything
 except known keys": column facets (`Relational:ColumnName`, `Relational:ColumnType`, …) leaked into
 scaffolded migrations that way, and snapshot/code-model asymmetries caused phantom drop/create
 churn (see `PhantomIndexChurnTests`).

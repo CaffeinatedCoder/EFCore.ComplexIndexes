@@ -46,6 +46,18 @@ public static class NpgsqlComplexIndexBuilderExtensions
     public static TBuilder AreNullsDistinct<TBuilder>(this TBuilder builder, bool nullsDistinct = true) where TBuilder : IIndexAnnotationBuilder
         => builder.Set(NpgsqlAnnotations.NullsDistinct, nullsDistinct);
 
+    /// <summary>
+    /// Sets a PostgreSQL storage parameter on the index, rendered as <c>WITH (name=value)</c> — e.g.
+    /// <c>HasStorageParameter("fillfactor", 70)</c> or <c>HasStorageParameter("fastupdate", false)</c>.
+    /// Strings are quoted, booleans render as <c>true</c>/<c>false</c>. Call once per parameter.
+    /// </summary>
+    public static TBuilder HasStorageParameter<TBuilder>(this TBuilder builder, string name, object value) where TBuilder : IIndexAnnotationBuilder
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(name);
+        ArgumentNullException.ThrowIfNull(value);
+        return builder.Set(NpgsqlAnnotations.StorageParameterPrefix + name, value);
+    }
+
     private static TBuilder Set<TBuilder>(this TBuilder builder, string key, object? value) where TBuilder : IIndexAnnotationBuilder
     {
         builder.Annotations[key] = value;

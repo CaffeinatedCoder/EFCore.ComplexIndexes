@@ -16,6 +16,9 @@ covers all three packages.
   `USING gin (payload jsonb_path_ops)` — through the stock generator, no runtime wiring. Previously
   the path failed to resolve, and complex collections could not be indexed at all. A complex property
   nested inside the document resolves to a `->` extraction (an expression index).
+- **New:** `HasStorageParameter(name, value)` — PostgreSQL storage parameters (`WITH (fillfactor=70)`)
+  on complex and expression indexes, one call per parameter. Forwarded under the per-parameter
+  `Npgsql:StorageParameter:` prefix, which the whitelist and the unknown-key rejection now both accept.
 
 ## 5.0.3
 

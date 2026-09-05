@@ -7,10 +7,11 @@ PostgreSQL index and constraint features for
 Adds, on top of the core's complex-property, composite, unique, and filtered indexes:
 
 - **Index methods** — GIN, GiST, BRIN, SP-GiST, Hash — plus operator classes, covering (`INCLUDE`)
-  indexes, concurrent creation, and nulls-distinct control
+  indexes, concurrent creation, nulls-distinct control, and storage parameters (`WITH (fillfactor=70)`)
 - **`NULLS FIRST` / `NULLS LAST`** per-column null ordering
 - **Expression (functional) indexes** — raw SQL *or* typed LINQ, on any entity, complex or not
-- **JSON member indexes** — index members of `ToJson()` complex properties as `->>` extractions
+- **JSON indexes** — index members of `ToJson()` complex properties as `->>` extractions, or the
+  whole document (or a complex collection) with a GIN over the `jsonb` column
 - **Temporal `UNIQUE … WITHOUT OVERLAPS` constraints and temporal foreign keys** (PostgreSQL 18)
 - **Exclusion (`EXCLUDE`) constraints** — filtered overlap protection, on every supported version
 

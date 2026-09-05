@@ -31,6 +31,16 @@ builder.ComplexProperty(x => x.Payload, c =>
 );
 ```
 
+Storage parameters render as `WITH (…)`; call `HasStorageParameter` once per parameter. Strings are
+quoted, booleans render bare:
+
+```csharp
+builder.HasComplexCompositeIndex(x => new { x.Name, x.Email.Value }, idx => idx
+    .HasStorageParameter("fillfactor", 70)
+    .HasStorageParameter("deduplicate_items", false));
+// CREATE INDEX ... ON people ("Name", email) WITH (fillfactor=70, deduplicate_items=false);
+```
+
 ## Expression (functional) indexes
 
 > Requires [`UseNpgsqlComplexIndexes()`](../README.md#runtime-wiring--the-two-features-that-need-it).

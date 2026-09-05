@@ -74,6 +74,7 @@ public class BuilderApiParityTests
         if (type == typeof(int))      return 1;               // fill factor is range-checked to 1..100
         if (type == typeof(string))   return "sample";
         if (type == typeof(string[])) return new[] { "sample" };
+        if (type == typeof(object))   return 1;               // storage parameter value
         if (type.IsEnum)              return Enum.GetValues(type).GetValue(0)!;
 
         throw new NotSupportedException(

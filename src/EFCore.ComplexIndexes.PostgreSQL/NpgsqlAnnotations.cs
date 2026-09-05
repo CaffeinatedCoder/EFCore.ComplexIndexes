@@ -13,4 +13,13 @@ internal static class NpgsqlAnnotations
     public const string IndexNullSortOrder  = "Npgsql:IndexNullSortOrder";
     public const string CreatedConcurrently = "Npgsql:CreatedConcurrently";
     public const string NullsDistinct       = "Npgsql:NullsDistinct";
+
+    /// <summary>
+    /// Prefix of the per-parameter storage-parameter keys (<c>Npgsql:StorageParameter:fillfactor</c>, …).
+    /// Npgsql's generator renders every operation annotation under this prefix as <c>WITH (name=value)</c>.
+    /// </summary>
+    public const string StorageParameterPrefix = "Npgsql:StorageParameter:";
+
+    public static bool IsStorageParameter(string annotationName)
+        => annotationName.StartsWith(StorageParameterPrefix, StringComparison.Ordinal);
 }

@@ -60,9 +60,12 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
         NpgsqlAnnotations.IndexNullSortOrder
     ];
 
-    /// <summary>Forwards exactly the Npgsql index-option annotations Npgsql's SQL generator renders.</summary>
+    /// <summary>
+    /// Forwards exactly the Npgsql index-option annotations Npgsql's SQL generator renders: the
+    /// whitelisted keys plus every <c>Npgsql:StorageParameter:*</c> key, which is per-parameter.
+    /// </summary>
     protected override bool IsForwardedIndexAnnotation(string annotationName)
-        => SupportedNpgsqlAnnotations.Contains(annotationName);
+        => SupportedNpgsqlAnnotations.Contains(annotationName) || NpgsqlAnnotations.IsStorageParameter(annotationName);
 
     /// <summary>PostgreSQL renames indexes standalone (<c>ALTER INDEX … RENAME TO</c>).</summary>
     protected override bool CanRenameIndexes => true;
@@ -78,7 +81,8 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
         foreach (var annotation in operation.GetAnnotations())
         {
             if (!annotation.Name.StartsWith("Npgsql:", StringComparison.Ordinal)
-             || SupportedNpgsqlAnnotations.Contains(annotation.Name))
+             || SupportedNpgsqlAnnotations.Contains(annotation.Name)
+             || NpgsqlAnnotations.IsStorageParameter(annotation.Name))
                 continue;
 
             // Superseded keys get their own message: they are not unknown, they are the wrong way
