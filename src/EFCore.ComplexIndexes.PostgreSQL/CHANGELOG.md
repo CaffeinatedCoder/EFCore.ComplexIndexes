@@ -26,6 +26,9 @@ covers all three packages.
 - **Fixed:** SQL Server index options (`IsClustered`, `HasFillFactor`, …) on a complex index diffed by
   this satellite are rejected at `migrations add` — property-level and entity-level alike — instead of
   reaching Npgsql's generator, which ignored them.
+- **Changed:** an exclusion constraint, temporal constraint or temporal foreign key declared on an
+  entity type mapped to no table — typically the abstract base of a TPC hierarchy — fails at
+  `migrations add` instead of producing nothing.
 
 ## 5.0.3
 

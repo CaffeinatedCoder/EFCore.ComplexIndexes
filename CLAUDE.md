@@ -393,6 +393,15 @@ Since 5.1.0 each satellite's `IsForwardedIndexAnnotation` also returns true for 
 provider's prefix (`Npgsql:` / `SqlServer:`) — forwarded solely so the same
 `ValidateCreateIndexOperation` rejects it, which keeps one message for both declaration styles.
 
+### Declarations on types with no table
+
+An entity type mapped to no table — the abstract base of a TPC hierarchy is the usual one — used to
+be skipped by every descriptor scan (`if (tableName is null) continue;`), so an index or constraint
+declared there produced nothing: no DDL, no error. Since 5.1.0 the scans call
+`ThrowIfDeclaredOnUnmappedType` when such a type carries declarations; the satellites use the same
+helper for exclusion and temporal descriptors. Types mapped to a view, SQL query or function are
+still skipped silently — an index on those is nothing this package could create.
+
 ### Key extension points
 
 - **Adding a new provider**: Subclass `CustomMigrationsModelDiffer` (override `IsForwardedIndexAnnotation`, optionally `ValidateCreateIndexOperation`/`ResolveUnmappedPart`/`ResolveTemplatePart`), implement `IDesignTimeServices` to replace the differ, and ship a `.targets` file that injects the attribute (with `ForProvider` set). The PostgreSQL project is the full-featured reference; the SQL Server project is the minimal one (whitelist + validation, no custom SQL generator).

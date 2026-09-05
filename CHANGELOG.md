@@ -16,6 +16,7 @@ covering only what changed for that package:
 - **New:** `UseCollation(params string[])` on PostgreSQL complex and expression indexes — per-column index collations (`"Name" COLLATE "C"`), positional, with an empty entry leaving that column on its default. Independent of the column's own collation, which is never copied onto the index.
 - **Fixed:** a provider option from the other satellite on a *property-level* complex index is now rejected at `migrations add`, like an entity-level one, instead of being dropped by the forwarding whitelist without a word — `.UseGin()` on a property-level index diffed by the SQL Server satellite scaffolded a plain B-tree. The PostgreSQL differ likewise rejects SQL Server options, which it previously passed through to a generator that ignored them.
 - **New:** the property-level `HasComplexIndex` overloads also exist on the non-generic `ComplexTypePropertyBuilder`, so a property configured by name (`c.Property("Value")`) or by type can carry a complex index.
+- **Changed:** a complex index, exclusion constraint or temporal constraint declared on an entity type that is mapped to no table — typically the abstract base of a TPC hierarchy — now fails at `migrations add` instead of producing nothing without a word. Declarations on view-mapped and query-mapped types are still ignored.
 
 ## 5.0.3
 

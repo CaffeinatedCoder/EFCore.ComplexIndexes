@@ -419,7 +419,12 @@ public class CustomMigrationsModelDiffer(
         {
             var tableName = entityType.GetTableName();
             var schema    = entityType.GetSchema();
-            if (tableName is null) continue;
+            if (tableName is null)
+            {
+                if (DeclaresComplexIndexes(entityType))
+                    ThrowIfDeclaredOnUnmappedType(entityType, "complex indexes");
+                continue;
+            }
 
             var storeObject = StoreObjectIdentifier.Table(tableName, schema);
 
@@ -429,6 +434,37 @@ public class CustomMigrationsModelDiffer(
 
         return result;
     }
+
+    /// <summary>
+    /// Fails when <paramref name="entityType"/> is mapped to no table yet carries declarations only a
+    /// table can satisfy. Call it after establishing both; satellites use it for their own descriptors.
+    /// </summary>
+    /// <remarks>
+    /// The usual shape is the abstract base of a TPC hierarchy: it has no table of its own, so its
+    /// declarations produced nothing — no DDL, no error. Types mapped to a view, a SQL query or a
+    /// function are left alone: an index on those is nothing this package could create, and models
+    /// have carried the annotation there harmlessly.
+    /// </remarks>
+    protected static void ThrowIfDeclaredOnUnmappedType(IEntityType entityType, string declarations)
+    {
+        if (entityType.GetViewName() is not null
+         || entityType.GetSqlQuery() is not null
+         || entityType.GetFunctionName() is not null)
+            return;
+
+        throw new InvalidOperationException(
+            $"'{entityType.DisplayName()}' declares {declarations} but is not mapped to a table, so they cannot be "
+          + "created. This is typically the abstract base of a TPC hierarchy, whose columns live on each concrete "
+          + "table: declare them on the concrete entity types instead.");
+    }
+
+    private static bool DeclaresComplexIndexes(IEntityType entityType)
+        => entityType.FindAnnotation(ComplexIndexAnnotations.CompositeIndexes)?.Value is string { Length: > 2 }
+        || DeclaresPropertyIndexes(entityType);
+
+    private static bool DeclaresPropertyIndexes(ITypeBase typeBase)
+        => typeBase.GetDeclaredProperties().Any(p => p.FindAnnotation(ComplexIndexAnnotations.IsIndexed)?.Value is true)
+        || typeBase.GetDeclaredComplexProperties().Any(cp => DeclaresPropertyIndexes(cp.ComplexType));
 
     private void ScanForSingleColumnIndexes(
         IEntityType              rootEntityType,

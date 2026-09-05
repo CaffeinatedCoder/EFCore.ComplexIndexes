@@ -20,6 +20,9 @@ covers all three packages.
   applied. An index moving between a native and a complex declaration under one name still diffs.
 - **New:** the property-level `HasComplexIndex` overloads also exist on the non-generic
   `ComplexTypePropertyBuilder` (`c.Property("Value").HasComplexIndex()`).
+- **Changed:** a complex index declared on an entity type mapped to no table — typically the abstract
+  base of a TPC hierarchy — fails at `migrations add` instead of producing nothing. View-mapped and
+  query-mapped types are still skipped.
 
 ## 5.0.3
 

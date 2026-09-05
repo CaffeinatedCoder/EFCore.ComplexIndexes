@@ -660,7 +660,11 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
                 continue;
 
             var table = entityType.GetTableName();
-            if (table is null) continue;
+            if (table is null)
+            {
+                ThrowIfDeclaredOnUnmappedType(entityType, "exclusion constraints");
+                continue;
+            }
 
             var schema      = entityType.GetSchema();
             var storeObject = StoreObjectIdentifier.Table(table, schema);
@@ -760,7 +764,11 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
                 continue;
 
             var table = entityType.GetTableName();
-            if (table is null) continue;
+            if (table is null)
+            {
+                ThrowIfDeclaredOnUnmappedType(entityType, "temporal constraints");
+                continue;
+            }
 
             var schema      = entityType.GetSchema();
             var storeObject = StoreObjectIdentifier.Table(table, schema);
@@ -816,7 +824,11 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
                 continue;
 
             var dependentTable = dependentEntityType.GetTableName();
-            if (dependentTable is null) continue;
+            if (dependentTable is null)
+            {
+                ThrowIfDeclaredOnUnmappedType(dependentEntityType, "temporal foreign keys");
+                continue;
+            }
 
             var dependentSchema      = dependentEntityType.GetSchema();
             var dependentStoreObject = StoreObjectIdentifier.Table(dependentTable, dependentSchema);
