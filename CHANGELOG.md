@@ -9,6 +9,7 @@ covering only what changed for that package:
 ## 5.1.0
 
 - **Fixed:** `HasDifferences` now reports changes to complex indexes, exclusion constraints and temporal constraints. EF Core's base implementation runs its own `Diff` rather than the `GetDifferences` this package overrides, so every check built on it reported "no changes" when only a declaration from this package had changed: `dotnet ef migrations has-pending-model-changes`, the pending-model-changes warning `Migrate()` raises since EF Core 9, and the snapshot check in `migrations remove`. A CI gate built on `has-pending-model-changes` may now fail where it previously passed — that is the gate working.
+- **New:** runtime registration of the differ. `Database.EnsureCreated()`, `GenerateCreateScript()` and the pending-model-changes check `Migrate()` performs run the context's *runtime* differ, which the design-time wiring never reaches — so `EnsureCreated()` created the tables and silently none of the complex indexes, and `Migrate()` never warned about one that was not scaffolded. `UseNpgsqlComplexIndexes()` now registers the PostgreSQL differ alongside the generator; SQL Server gets `UseSqlServerComplexIndexes()`; providers without a satellite get `UseComplexIndexes()` from the core package. Each has an `Add…ComplexIndexes` counterpart for a custom internal service provider. With a satellite installed, call the satellite's method only.
 
 ## 5.0.3
 

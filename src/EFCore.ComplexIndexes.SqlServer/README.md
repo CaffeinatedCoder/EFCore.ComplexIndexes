@@ -17,9 +17,20 @@ Brings the SQL Server option set to complex-property indexes:
 
 ## Setup
 
-None. Every option flows as a native SQL Server annotation that the provider's own migrations SQL
-generator renders, so there is **no runtime wiring at all** — install the package, declare your
-indexes, and run `dotnet ef migrations add`.
+None for migrations. Every option flows as a native SQL Server annotation that the provider's own
+migrations SQL generator renders — install the package, declare your indexes, and run
+`dotnet ef migrations add`.
+
+One optional call exists. `Database.EnsureCreated()`, `GenerateCreateScript()` and the
+pending-model-changes check in `Migrate()` run the *runtime* differ, which the design-time wiring never
+reaches; without a registration, `EnsureCreated()` creates the tables and silently none of the
+indexes. Register the differ once so those see the complex indexes too:
+
+```csharp
+options.UseSqlServer(connectionString).UseSqlServerComplexIndexes();
+```
+
+`AddSqlServerComplexIndexes()` is the equivalent for a custom internal service provider.
 
 ## Usage
 

@@ -450,4 +450,54 @@ public class PostgresIntegrationTests
             "SELECT count(*) FROM pg_indexes WHERE indexname = 'ix_ig_customers_email'", connection);
         Assert.AreEqual(1L, cmd.ExecuteScalar());
     }
+
+    // ── EnsureCreated: the runtime differ registration, end to end ──
+
+    private class EnsureCreatedContext(DbContextOptions<EnsureCreatedContext> options) : DbContext(options)
+    {
+        public DbSet<RoleGrant> Grants => Set<RoleGrant>();
+
+        protected override void OnModelCreating(ModelBuilder modelBuilder) =>
+            modelBuilder.Entity<RoleGrant>(b =>
+            {
+                b.ToTable("ig_ensure_grants");
+                b.HasKey(x => x.Id);
+                b.Property(x => x.GranteeId).HasColumnName("grantee_id");
+                b.Property(x => x.RoleId).HasColumnName("role_id");
+                b.Property(x => x.Period).HasColumnName("period");
+                b.Property(x => x.RevokedAt).HasColumnName("revoked_at");
+                b.HasComplexCompositeIndex(x => new { x.GranteeId, x.RoleId }, indexName: "ix_ig_ensure_grantee_role");
+                b.HasExclusionConstraint(x => x.GranteeId, x => x.Period, name: "ex_ig_ensure_grantee_period");
+            });
+    }
+
+    /// <summary>
+    /// <c>EnsureCreated()</c> runs the context's <em>runtime</em> differ, so it never saw the
+    /// design-time registration; without <c>UseNpgsqlComplexIndexes()</c> it creates the table and
+    /// silently nothing else. A fresh database is used because <c>EnsureCreated()</c> is a no-op on a
+    /// database that already has tables — which the shared one does by the time this runs.
+    /// </summary>
+    [TestMethod(DisplayName = "EnsureCreated builds the complex index and exclusion constraint once the runtime differ is registered")]
+    public void EnsureCreated_includes_declarations_with_runtime_registration()
+    {
+        Sql("CREATE DATABASE ig_ensure_created");
+
+        var fresh = new NpgsqlConnectionStringBuilder(ConnectionString) { Database = "ig_ensure_created" }.ConnectionString;
+        var options = new DbContextOptionsBuilder<EnsureCreatedContext>()
+                     .UseNpgsql(fresh)
+                     .UseNpgsqlComplexIndexes()
+                     .Options;
+
+        using (var context = new EnsureCreatedContext(options))
+            Assert.IsTrue(context.Database.EnsureCreated(), "EnsureCreated should have created the schema in the fresh database.");
+
+        using var connection = new NpgsqlConnection(fresh);
+        connection.Open();
+
+        using (var indexes = new NpgsqlCommand("SELECT count(*) FROM pg_indexes WHERE tablename = 'ig_ensure_grants' AND indexname = 'ix_ig_ensure_grantee_role'", connection))
+            Assert.AreEqual(1L, Convert.ToInt64(indexes.ExecuteScalar()), "The complex index was not created by EnsureCreated.");
+
+        using (var constraints = new NpgsqlCommand("SELECT count(*) FROM pg_constraint WHERE conname = 'ex_ig_ensure_grantee_period' AND contype = 'x'", connection))
+            Assert.AreEqual(1L, Convert.ToInt64(constraints.ExecuteScalar()), "The exclusion constraint was not created by EnsureCreated.");
+    }
 }

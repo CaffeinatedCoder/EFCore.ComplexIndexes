@@ -4,6 +4,13 @@ Changes to the SQL Server satellite, newest first. The
 [root changelog](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/CHANGELOG.md)
 covers all three packages.
 
+## 5.1.0
+
+- **New:** `UseSqlServerComplexIndexes()` / `AddSqlServerComplexIndexes()` — optional runtime
+  registration of the differ, so `EnsureCreated()` and `GenerateCreateScript()` include the complex
+  indexes and `Migrate()`'s pending-model-changes check sees one that was never scaffolded. Migrations
+  still need no wiring.
+
 ## 5.0.3
 
 - **Changed:** the `Microsoft.EntityFrameworkCore.SqlServer` dependency is now `[10.0.0, 11.0.0)`.

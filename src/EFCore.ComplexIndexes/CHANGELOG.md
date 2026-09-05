@@ -11,6 +11,10 @@ covers all three packages.
   `GetDifferences`, so `dotnet ef migrations has-pending-model-changes`, the pending-model-changes
   warning `Migrate()` raises, and the snapshot check in `migrations remove` all reported "no changes"
   when only a declaration from this package had changed.
+- **New:** `UseComplexIndexes()` / `AddComplexIndexes()` register the differ at runtime, for providers
+  without a satellite package. `EnsureCreated()`, `GenerateCreateScript()` and `Migrate()`'s
+  pending-model-changes check run the runtime differ, which the design-time wiring never reaches —
+  without this, `EnsureCreated()` created the tables and silently none of the complex indexes.
 
 ## 5.0.3
 

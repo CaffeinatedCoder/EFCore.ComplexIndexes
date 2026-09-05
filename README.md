@@ -81,6 +81,26 @@ var provider = new ServiceCollection()
 .BuildServiceProvider();
 ```
 
+### `EnsureCreated`, `GenerateCreateScript`, and the pending-changes check
+
+Migrations go through the design-time differ, which the packages wire up automatically. Three things
+use the **runtime** differ instead and never see that wiring: `Database.EnsureCreated()`,
+`Database.GenerateCreateScript()`, and the pending-model-changes check `Migrate()` performs. Without a
+runtime registration they run EF's stock differ, which cannot see this package's declarations —
+`EnsureCreated()` creates the tables and silently none of the indexes, and `Migrate()` does not warn
+about a complex index that was never scaffolded. Register the differ once, next to the provider:
+
+| Provider | Call |
+|---|---|
+| PostgreSQL | `UseNpgsqlComplexIndexes()` — the same call as above; since 5.1.0 it registers the differ too |
+| SQL Server | `UseSqlServerComplexIndexes()` |
+| Any other provider (SQLite, …) | `UseComplexIndexes()` from the core package |
+
+With a satellite installed, call only the satellite's method: the core differ would give
+`EnsureCreated()` a schema without the satellite's features, such as exclusion constraints. Each call
+has a counterpart for a custom internal service provider: `AddComplexIndexes()`,
+`AddNpgsqlComplexIndexes()` and `AddSqlServerComplexIndexes()`.
+
 ---
 
 ## Core usage — any relational provider

@@ -29,6 +29,7 @@ and those need a one-time opt-in:
 | Exclusion constraints | no |
 | **Expression indexes** (raw SQL, typed LINQ, JSON member) | **yes** |
 | **`DbOrder.NullsFirst` / `NullsLast`** | **yes** |
+| **`EnsureCreated()` / `GenerateCreateScript()` including the declarations** | **yes** *(since 5.1.0)* |
 
 ```csharp
 services.AddDbContext<AppDbContext>(options =>
@@ -41,7 +42,13 @@ services.AddDbContext<AppDbContext>(options =>
 > named `__requires_UseNpgsqlComplexIndexes__`, so the stock generator fails loudly with that name
 > in the error message.
 
-Building your own internal service provider? Register the generator directly instead:
+Since 5.1.0 the same call also registers the PostgreSQL differ at runtime, so
+`Database.EnsureCreated()` and `GenerateCreateScript()` build the declared indexes and constraints,
+and the pending-model-changes check in `Migrate()` sees a complex index that was never scaffolded.
+Both run the *runtime* differ, which the design-time wiring never reaches; without the call,
+`EnsureCreated()` creates the tables and silently none of the indexes.
+
+Building your own internal service provider? Register the generator and differ directly instead:
 
 ```csharp
 var provider = new ServiceCollection()

@@ -4,6 +4,7 @@ using EFCore.ComplexIndexes.SqlServer;
 using Microsoft.EntityFrameworkCore.Design;
 using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 
 namespace EFCore.ComplexIndexes.Tests;
 
@@ -63,6 +64,35 @@ public class DesignTimeServiceRegistrationTests
         new NpgsqlComplexIndexDesignTimeServices().ConfigureDesignTimeServices(services);
 
         Assert.ContainsSingle(services.Where(d => d.ServiceType == typeof(IMigrationsModelDiffer)));
+    }
+
+    /// <summary>
+    /// EF's <c>AddDbContextDesignTimeServices</c> seeds the design-time collection with the context's
+    /// own differ as a factory registration — which, once a consumer opts into the runtime wiring, is
+    /// already one of ours. The design-time registration has to win over that seed in every
+    /// combination, or a runtime <c>UseComplexIndexes()</c> could change which differ scaffolds.
+    /// </summary>
+    [TestMethod(DisplayName = "A differ seeded from the context does not displace the design-time registration")]
+    public void Context_seeded_differ_does_not_win()
+    {
+        foreach (var configurators in new IDesignTimeServices[][]
+                 {
+                     [new CustomDesignTimeServices()],
+                     [new CustomDesignTimeServices(), new NpgsqlComplexIndexDesignTimeServices()],
+                     [new SqlServerComplexIndexDesignTimeServices(), new CustomDesignTimeServices()]
+                 })
+        {
+            var services = new ServiceCollection();
+            services.TryAdd(ServiceDescriptor.Scoped<IMigrationsModelDiffer>(_ => throw new InvalidOperationException("seed")));
+
+            foreach (var configurator in configurators)
+                configurator.ConfigureDesignTimeServices(services);
+
+            var winner = services.Last(d => d.ServiceType == typeof(IMigrationsModelDiffer));
+
+            Assert.IsNotNull(winner.ImplementationType, "The context-seeded factory registration won.");
+            Assert.IsTrue(typeof(CustomMigrationsModelDiffer).IsAssignableFrom(winner.ImplementationType));
+        }
     }
 
     [TestMethod(DisplayName = "Core alone still registers the core differ")]

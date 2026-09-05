@@ -4,6 +4,14 @@ Changes to the PostgreSQL satellite, newest first. The
 [root changelog](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/CHANGELOG.md)
 covers all three packages.
 
+## 5.1.0
+
+- **Changed:** `UseNpgsqlComplexIndexes()` / `AddNpgsqlComplexIndexes()` also register the PostgreSQL
+  differ at runtime, so `EnsureCreated()` and `GenerateCreateScript()` include complex indexes,
+  expression indexes, and exclusion and temporal constraints, and `Migrate()`'s pending-model-changes
+  check sees a declaration that was never scaffolded. Previously `EnsureCreated()` created the tables
+  and silently none of them.
+
 ## 5.0.3
 
 - **Changed:** the `Npgsql.EntityFrameworkCore.PostgreSQL` dependency is now `[10.0.0, 11.0.0)`. This

@@ -281,6 +281,19 @@ There are two distinct hook points, and it matters which one a feature uses:
 - **Design-time** (`IDesignTimeServices` via the `.targets`-injected attribute) replaces `IMigrationsModelDiffer`. This runs during `dotnet ef migrations add` and is auto-wired — consumers do nothing.
 - **Runtime** (`IMigrationsSqlGenerator`) converts operations to SQL when migrations are *applied*. This is **not** auto-wired; consumers opt in with `optionsBuilder.UseNpgsqlComplexIndexes()` (a `ReplaceService` helper).
 
+Since 5.1.0 the runtime seam also carries the **differ**: `UseComplexIndexes()` (core),
+`UseNpgsqlComplexIndexes()` and `UseSqlServerComplexIndexes()` replace `IMigrationsModelDiffer` in the
+context's own service provider, because `EnsureCreated()`, `GenerateCreateScript()` and the
+pending-model-changes check in `Migrate()` run *that* differ and never see the design-time attribute —
+without it, `EnsureCreated()` creates the tables and silently none of the indexes. Design-time
+selection is unaffected: EF's `AddDbContextDesignTimeServices` seeds the design-time collection with
+the context's differ as a factory registration, and the `.targets` registration is appended after it
+(`DesignTimeServiceRegistrationTests`). Related and easy to miss: `MigrationsModelDiffer.HasDifferences`
+runs EF's protected `Diff`, not `GetDifferences`, so the core overrides it to route through
+`GetDifferences` — otherwise `dotnet ef migrations has-pending-model-changes`, `Migrate()`'s
+pending-changes warning and `migrations remove` all reported "no changes" for a complex-index-only
+change (`PendingModelChangesTests`).
+
 Anything that depends on the runtime seam silently degrades when a consumer forgets the wiring, so
 **prefer rendering DDL at design time** (a `SqlOperation` baked into the migration) whenever the
 statement can be built from resolved column names — that is why exclusion *and* temporal
