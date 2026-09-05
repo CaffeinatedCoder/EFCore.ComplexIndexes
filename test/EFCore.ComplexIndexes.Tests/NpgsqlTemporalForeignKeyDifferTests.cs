@@ -16,7 +16,7 @@ namespace EFCore.ComplexIndexes.Tests;
 [TestClass]
 public class NpgsqlTemporalForeignKeyDifferTests
 {
-    private const string DefaultName = "FK_subscription_addons_subscriptions_subscription_id_active_during";
+    private const string DefaultName = "FK_addons_subscriptions_subscription_id_active_during";
 
     // ── Helpers ──
 
@@ -63,7 +63,7 @@ public class NpgsqlTemporalForeignKeyDifferTests
 
     private static void MapAddOn(EntityTypeBuilder<SubscriptionAddOn> b)
     {
-        b.ToTable("subscription_addons");
+        b.ToTable("addons");
         b.HasKey(x => x.Id);
         b.Property(x => x.Id).HasColumnName("id");
         b.Property(x => x.SubscriptionId).HasColumnName("subscription_id");
@@ -316,7 +316,7 @@ public class NpgsqlTemporalForeignKeyDifferTests
 
     private static void MapBadDependentPeriodAddOn(EntityTypeBuilder<BadDependentPeriodAddOn> b)
     {
-        b.ToTable("subscription_addons");
+        b.ToTable("addons");
         b.HasKey(x => x.Id);
         b.Property(x => x.SubscriptionId).HasColumnName("subscription_id");
         b.Property(x => x.ActiveDuring).HasColumnName("active_during");
@@ -393,7 +393,7 @@ public class NpgsqlTemporalForeignKeyDifferTests
 
         var sql = Assert.ContainsSingle(ForeignKeySql(operations));
         Assert.AreEqual(
-            $"ALTER TABLE \"subscription_addons\" ADD CONSTRAINT \"{DefaultName}\" " +
+            $"ALTER TABLE \"addons\" ADD CONSTRAINT \"{DefaultName}\" " +
             "FOREIGN KEY (\"subscription_id\", PERIOD \"active_during\") " +
             "REFERENCES \"subscriptions\" (\"subscription_id\", PERIOD \"valid_during\");",
             sql);
@@ -434,7 +434,7 @@ public class NpgsqlTemporalForeignKeyDifferTests
 
         var sql = Assert.ContainsSingle(ForeignKeySql(operations));
         Assert.AreEqual(
-            "ALTER TABLE \"subscription_addons\" ADD CONSTRAINT \"fk_addons_subscriptions_temporal\" " +
+            "ALTER TABLE \"addons\" ADD CONSTRAINT \"fk_addons_subscriptions_temporal\" " +
             "FOREIGN KEY (\"tenant_id\", \"subscription_id\", PERIOD \"active_during\") " +
             "REFERENCES \"subscriptions\" (\"tenant_id\", \"subscription_id\", PERIOD \"valid_during\");",
             sql);
@@ -459,7 +459,7 @@ public class NpgsqlTemporalForeignKeyDifferTests
 
         var drop = Assert.ContainsSingle(operations.OfType<DropForeignKeyOperation>());
         Assert.AreEqual(DefaultName,           drop.Name);
-        Assert.AreEqual("subscription_addons", drop.Table);
+        Assert.AreEqual("addons", drop.Table);
         Assert.IsEmpty(ForeignKeySql(operations));
     }
 
@@ -492,7 +492,7 @@ public class NpgsqlTemporalForeignKeyDifferTests
             target: BuildRelationalModel<PrincipalOnlyNoDependentTableContext>());
 
         Assert.IsEmpty(operations.OfType<DropForeignKeyOperation>());
-        Assert.IsTrue(operations.OfType<DropTableOperation>().Any(o => o.Name == "subscription_addons"));
+        Assert.IsTrue(operations.OfType<DropTableOperation>().Any(o => o.Name == "addons"));
     }
 
     [TestMethod(DisplayName = "Dropping the principal table drops temporal FK first")]
@@ -517,7 +517,7 @@ public class NpgsqlTemporalForeignKeyDifferTests
             target: BuildRelationalModel<DependentPeriodDroppedContext>()).ToList();
 
         var dropForeignKey = operations.FindIndex(o => o is DropForeignKeyOperation);
-        var dropColumn = operations.FindIndex(o => o is DropColumnOperation { Name: "active_during", Table: "subscription_addons" });
+        var dropColumn = operations.FindIndex(o => o is DropColumnOperation { Name: "active_during", Table: "addons" });
 
         Assert.IsTrue(dropForeignKey >= 0);
         Assert.IsTrue(dropColumn     > dropForeignKey);

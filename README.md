@@ -117,6 +117,19 @@ builder.ComplexProperty(x => x.EmailAddress, c =>
 The same overloads exist on the non-generic builder, so a property configured by name works too:
 `c.Property("Value").HasComplexIndex()`.
 
+A filter may name properties instead of columns: `{Property.Path}` placeholders resolve to the
+mapped column at `migrations add` — `HasColumnName`, complex members and (on PostgreSQL) `ToJson()`
+members included — so the filter and the column mapping cannot drift apart:
+
+```csharp
+c.Property(x => x.Value).HasComplexIndex(isUnique: true, filter: "{DeletedAt} IS NULL");
+// WHERE "deleted_at" IS NULL   (PostgreSQL)   WHERE [deleted_at] IS NULL   (SQL Server)
+```
+
+The resolved text is baked into the migration, so no runtime wiring is involved. Only a brace pair
+holding a dotted identifier path, outside a single-quoted literal, is a placeholder — `'{urgent}'`
+and `'{"a": 1}'` stay what they are — and one that names no property fails loudly.
+
 A property-level declaration holds **one** index per property. To give the same column several
 differently-filtered indexes (the classic soft-delete pattern), declare them at the **entity level**
 — the selector reaches into complex properties, and each index needs its own explicit name:
@@ -128,10 +141,18 @@ builder.HasComplexIndex(x => x.EmailAddress.Value,
     indexName: "ix_person_email_all");
 ```
 
+Selectors also see through a value converter: for a value object mapped as one column
+(`HasConversion(e => e.Value, v => new(v))`), `x => x.Email.Value` resolves to that column,
+provided the member's type is the converter's provider type. `x => x.CreatedAt.Year` does not
+resolve, and says so.
+
 Index names must be unique per table, and the package enforces it rather than letting the database
 reject the migration: reusing a name throws at the declaration, and two declarations that resolve to
 the same name — including a property-level and an entity-level index over one column, which share a
-default name — throw during `dotnet ef migrations add`.
+default name — throw during `dotnet ef migrations add`. So does a name longer than the provider's
+identifier limit: PostgreSQL would otherwise truncate it to 63 bytes with a NOTICE and apply the
+migration cleanly, leaving the index under a name that no declaration and no constraint-violation
+error ever reports. Default names are checked too, since this package never truncates them.
 
 ### Composite index across scalar and nested properties
 
@@ -156,6 +177,51 @@ Direction maps to EF Core's native `CreateIndexOperation.IsDescending`, so it is
 
 Markers of different kinds compose in any order; markers of the same kind do not — `DbOrder.Asc(DbOrder.Desc(x.A))` is a contradiction and throws. To control where nulls sort, see [null ordering](docs/postgresql-indexes.md#per-column-null-ordering) (PostgreSQL only).
 
+### Reading declarations back
+
+Every index declared through this package can be read back from the model — the finalized
+`context.Model`, or the mutable one inside `OnModelCreating` — so an application can enforce its
+own conventions instead of trusting each configuration to remember them:
+
+```csharp
+// "Every unique index on a withdrawable aggregate is filtered to live rows."
+var unfiltered = modelBuilder.Model.GetEntityTypes()
+    .Where(IsWithdrawable)
+    .SelectMany(e => e.GetComplexIndexes())
+    .Where(ix => ix.IsUnique && ix.Filter is null)
+    .ToList();
+
+var byName = modelBuilder.Model.FindComplexIndex("ux_person_email_active");
+```
+
+`GetComplexIndexes()` unifies property-level, entity-level, composite and expression indexes as
+`ComplexIndexDeclaration`s: parts as property paths, `IsUnique`, `Filter`, the explicit `Name`
+(null when the differ derives the default from resolved column names — those are not matched by
+`FindComplexIndex`), and for entity-level declarations the provider options. It reports what was
+*declared*; column names are resolved by the differ only. `GetDeclaredComplexIndexes()` leaves
+inherited declarations to the type that declares them. The differ reads the model through the
+same code, so the read model and the migration cannot disagree. PostgreSQL exclusion constraints
+have the same surface — see [reading constraints back](docs/postgresql-constraints.md#reading-constraints-back).
+
+### Amending declarations
+
+The same convention can be *installed* rather than checked. On the mutable model,
+`AddComplexIndexFilter` ANDs a predicate onto the filter of every selected declaration —
+property-level and entity-level alike — and `AddComplexIndex` adds an entity-level declaration
+with the fluent API's identity rules:
+
+```csharp
+// At the end of OnModelCreating, after the configurations have been applied:
+foreach (var entityType in modelBuilder.Model.GetEntityTypes().Where(IsWithdrawable))
+    entityType.AddComplexIndexFilter("{RevokedAt} IS NULL", ix => ix.IsUnique);
+```
+
+An unfiltered index gets the predicate; a filtered one gets `(existing) AND (predicate)`; one that
+already carries it is left alone, so the call is safe to repeat. It amends what is declared *at the
+time of the call*, which is why it belongs after the configurations — and why the read model is
+still worth a check for what a later declaration might add. Exclusion constraints have
+`AddExclusionConstraintFilter` — see [amending constraints](docs/postgresql-constraints.md#amending-constraints).
+
 ---
 
 ## Documentation
@@ -164,8 +230,8 @@ Provider-specific features live in their own pages:
 
 | Page | Covers |
 |---|---|
-| **[PostgreSQL — indexes](docs/postgresql-indexes.md)** | Index methods (GIN, GiST, BRIN, SP-GiST, Hash), operator classes, `INCLUDE`, expression (functional) indexes in raw SQL and typed LINQ, JSON member indexes, `NULLS FIRST/LAST` |
-| **[PostgreSQL — temporal and exclusion constraints](docs/postgresql-constraints.md)** | `UNIQUE … WITHOUT OVERLAPS`, temporal foreign keys (`PERIOD`), `EXCLUDE` constraints with `WHERE` predicates, the `btree_gist` extension |
+| **[PostgreSQL — indexes](docs/postgresql-indexes.md)** | Index methods (GIN, GiST, BRIN, SP-GiST, Hash), operator classes, `INCLUDE`, expression (functional) indexes in raw SQL and typed LINQ, typed filter predicates, JSON member indexes, `NULLS FIRST/LAST` |
+| **[PostgreSQL — temporal and exclusion constraints](docs/postgresql-constraints.md)** | `UNIQUE … WITHOUT OVERLAPS`, temporal foreign keys (`PERIOD`), `EXCLUDE` constraints with `WHERE` predicates, reading and amending them, the `btree_gist` extension |
 | **[SQL Server](docs/sqlserver.md)** | Clustered/nonclustered, covering (`INCLUDE`), online builds, fill factor, sort-in-tempdb, data compression — and the declarations SQL Server rejects outright |
 
 Working on the package itself: [CONTRIBUTING.md](CONTRIBUTING.md) covers the setup and the quality

@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Metadata;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
 
 namespace EFCore.ComplexIndexes;
@@ -19,8 +20,12 @@ internal static class ComplexIndexStorage
     /// collide in the database.
     /// </summary>
     public static void AddOrReplace(EntityTypeBuilder entityTypeBuilder, CompositeIndexDefinition definition)
+        => AddOrReplace(entityTypeBuilder.Metadata, definition);
+
+    /// <inheritdoc cref="AddOrReplace(EntityTypeBuilder, CompositeIndexDefinition)"/>
+    public static void AddOrReplace(IMutableEntityType entityType, CompositeIndexDefinition definition)
     {
-        var existing = GetExisting(entityTypeBuilder);
+        var existing = GetExisting(entityType);
         existing.RemoveAll(d => HasSameParts(d, definition) && d.Filter == definition.Filter);
 
         var unnamedSibling = existing.FirstOrDefault(
@@ -40,16 +45,35 @@ internal static class ComplexIndexStorage
                 "this entity. Index names must be unique per table.");
 
         existing.Add(definition);
-        entityTypeBuilder.HasAnnotation(ComplexIndexAnnotations.CompositeIndexes, CompositeIndexSerializer.Serialize(existing));
+        Write(entityType, existing);
     }
 
-    public static List<CompositeIndexDefinition> GetExisting(EntityTypeBuilder entityTypeBuilder)
+    public static List<CompositeIndexDefinition> GetExisting(IReadOnlyEntityType entityType)
     {
-        var annotation = entityTypeBuilder.Metadata.FindAnnotation(ComplexIndexAnnotations.CompositeIndexes);
+        var annotation = entityType.FindAnnotation(ComplexIndexAnnotations.CompositeIndexes);
 
         return annotation?.Value is string json && !string.IsNullOrEmpty(json)
                    ? CompositeIndexSerializer.Deserialize(json)
                    : [];
+    }
+
+    public static void Write(IMutableEntityType entityType, IReadOnlyList<CompositeIndexDefinition> definitions)
+        => entityType.SetAnnotation(ComplexIndexAnnotations.CompositeIndexes, CompositeIndexSerializer.Serialize(definitions));
+
+    /// <summary>
+    /// The filter that results from adding <paramref name="predicate"/> to <paramref name="existing"/>
+    /// with AND, or null when it is already there — either as the whole filter or as the conjunct
+    /// this method itself appended — so that applying an amendment twice is a no-op.
+    /// </summary>
+    public static string? Conjoin(string? existing, string predicate)
+    {
+        if (existing is null)
+            return predicate;
+
+        if (existing == predicate || existing.EndsWith($" AND ({predicate})", StringComparison.Ordinal))
+            return null;
+
+        return $"({existing}) AND ({predicate})";
     }
 
     // Direction is deliberately ignored: re-declaring with a different DbOrder updates the index.

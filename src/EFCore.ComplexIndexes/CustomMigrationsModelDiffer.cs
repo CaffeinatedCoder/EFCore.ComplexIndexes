@@ -1,4 +1,5 @@
-using System.Text.Json;
+using System.Reflection;
+using System.Text;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata;
 using Microsoft.EntityFrameworkCore.Migrations;
@@ -76,6 +77,7 @@ public class CustomMigrationsModelDiffer(
         // still be diffable, or the model could never be fixed.
         ValidateUniqueIndexNames(targetIndexes);
         ValidateNoNativeIndexNameCollision(target, targetIndexes);
+        ValidateIndexNameLengths(target, targetIndexes);
 
         if (sourceIndexes.Count == 0 && targetIndexes.Count == 0)
             return operations;
@@ -317,16 +319,160 @@ public class CustomMigrationsModelDiffer(
 
     /// <summary>
     /// Resolves a template part (<c>{Property.Path}</c> placeholders from a typed-expression
-    /// translator) into a final SQL expression. Identifier quoting is provider-specific, so the
-    /// core has no implementation — provider satellites override this.
+    /// translator) into a final SQL expression: each placeholder becomes a quoted column reference
+    /// — or, through <see cref="ResolveUnmappedPart"/>, a parenthesized expression such as a JSON
+    /// extraction — and <c>{{</c>/<c>}}</c> unescape to literal braces. Quoting goes through
+    /// <see cref="QuoteIdentifier"/>, so a satellite normally has nothing to override here.
     /// </summary>
     protected virtual ResolvedIndexPart ResolveTemplatePart(
         IEntityType           entityType,
         IndexPartDefinition   part,
         StoreObjectIdentifier storeObject
-    ) => throw new InvalidOperationException(
-             $"The index template '{part.Template}' on entity '{entityType.Name}' requires a provider " +
-             "satellite differ (e.g. EFCore.ComplexIndexes.PostgreSQL) to resolve column references.");
+    )
+    {
+        var template = part.Template!;
+        var sql      = new StringBuilder(template.Length);
+
+        for (var i = 0; i < template.Length; i++)
+        {
+            var ch = template[i];
+
+            if (ch == '{')
+            {
+                if (i + 1 < template.Length && template[i + 1] == '{')
+                {
+                    sql.Append('{');
+                    i++;
+                    continue;
+                }
+
+                var end = template.IndexOf('}', i + 1);
+                if (end < 0)
+                    throw new InvalidOperationException($"Malformed index expression template '{template}' on entity '{entityType.Name}'.");
+
+                sql.Append(ResolvePlaceholder(entityType, template[(i + 1)..end], storeObject, "an index expression"));
+                i = end;
+                continue;
+            }
+
+            if (ch == '}')
+            {
+                if (i + 1 < template.Length && template[i + 1] == '}')
+                {
+                    sql.Append('}');
+                    i++;
+                    continue;
+                }
+
+                throw new InvalidOperationException($"Malformed index expression template '{template}' on entity '{entityType.Name}'.");
+            }
+
+            sql.Append(ch);
+        }
+
+        return new ResolvedIndexPart(true, sql.ToString(), part.Descending, part.NullSort);
+    }
+
+    /// <summary>
+    /// Resolves the <c>{Property.Path}</c> placeholders in a filter predicate to quoted column
+    /// references — or parenthesized JSON extractions — the way <see cref="ResolveTemplatePart"/>
+    /// does for expression parts, so a filter can name properties instead of column names. The
+    /// resolved text is what the operation carries, rendered by the stock generator with no runtime
+    /// wiring, and what source and target are compared on, so a filter written with placeholders
+    /// diffs exactly like one written with column names.
+    /// </summary>
+    /// <remarks>
+    /// Filters are existing SQL, so the rule is narrower than for templates: only a brace pair
+    /// whose content is a dotted identifier path, outside a single-quoted string literal, is a
+    /// placeholder. Everything else stays verbatim — <c>'{urgent}'</c> is a PostgreSQL array
+    /// literal, <c>'{"a": 1}'</c> a JSON document, <c>'{{1,2},{3,4}}'</c> a two-dimensional array —
+    /// which is also why there is no <c>{{</c> escape here. A placeholder that names no property
+    /// throws: outside a literal, braces are never valid SQL, so it can only be a mistake.
+    /// </remarks>
+    /// <param name="entityType">The entity type the placeholders are resolved against.</param>
+    /// <param name="filter">The filter as declared, or null.</param>
+    /// <param name="storeObject">The table whose column names are used.</param>
+    /// <returns>The filter with every placeholder replaced, or <paramref name="filter"/> unchanged when it has none.</returns>
+    protected string? ResolveFilter(IEntityType entityType, string? filter, StoreObjectIdentifier storeObject)
+    {
+        if (filter is null || !filter.Contains('{'))
+            return filter;
+
+        var sql       = new StringBuilder(filter.Length);
+        var inLiteral = false;
+
+        for (var i = 0; i < filter.Length; i++)
+        {
+            var ch = filter[i];
+
+            // A doubled quote inside a literal toggles twice and lands back inside it.
+            if (ch == '\'')
+                inLiteral = !inLiteral;
+
+            if (ch == '{' && !inLiteral)
+            {
+                var end = filter.IndexOf('}', i + 1);
+                if (end > i + 1 && IsPropertyPath(filter.AsSpan(i + 1, end - i - 1)))
+                {
+                    sql.Append(ResolvePlaceholder(entityType, filter[(i + 1)..end], storeObject, "a filter"));
+                    i = end;
+                    continue;
+                }
+            }
+
+            sql.Append(ch);
+        }
+
+        return sql.ToString();
+    }
+
+    // Dotted identifier segments: letters, digits and underscores, each starting with a letter or
+    // an underscore. Anything else between braces is SQL text, not a placeholder.
+    private static bool IsPropertyPath(ReadOnlySpan<char> text)
+    {
+        var segmentStart = true;
+
+        foreach (var ch in text)
+        {
+            if (ch == '.')
+            {
+                if (segmentStart) return false;
+                segmentStart = true;
+                continue;
+            }
+
+            var valid = segmentStart ? char.IsLetter(ch) || ch == '_' : char.IsLetterOrDigit(ch) || ch == '_';
+            if (!valid) return false;
+
+            segmentStart = false;
+        }
+
+        return !segmentStart;
+    }
+
+    private string ResolvePlaceholder(IEntityType entityType, string path, StoreObjectIdentifier storeObject, string usage)
+    {
+        var column = ResolveColumnName(entityType, path, storeObject);
+        if (column is not null)
+            return QuoteIdentifier(column);
+
+        var unmapped = ResolveUnmappedPart(entityType, new IndexPartDefinition { PropertyPath = path }, storeObject);
+        if (unmapped is not null)
+            return unmapped.IsExpression ? $"({unmapped.Value})" : QuoteIdentifier(unmapped.Value);
+
+        throw new InvalidOperationException(
+            $"Could not resolve property path '{path}' referenced by {usage} on entity '{entityType.Name}'.");
+    }
+
+    /// <summary>
+    /// Delimits an identifier for the SQL this differ renders itself: resolved template parts and
+    /// filter placeholders. ANSI double quotes by default, which PostgreSQL and SQLite use; the SQL
+    /// Server satellite overrides this with brackets.
+    /// </summary>
+    /// <param name="identifier">The raw column name.</param>
+    /// <returns>The delimited identifier.</returns>
+    protected virtual string QuoteIdentifier(string identifier)
+        => "\"" + identifier.Replace("\"", "\"\"") + "\"";
 
     /// <summary>
     /// Fails when two distinct declarations resolve to the same index name on the same table.
@@ -410,6 +556,62 @@ public class CustomMigrationsModelDiffer(
         }
     }
 
+    private void ValidateIndexNameLengths(IRelationalModel? target, HashSet<IndexDescriptor> descriptors)
+    {
+        if (target is null)
+            return;
+
+        foreach (var descriptor in descriptors)
+            ThrowIfIdentifierTooLong(target.Model, descriptor.IndexName, "complex index", descriptor.TableName, "indexName");
+    }
+
+    /// <summary>
+    /// Fails when <paramref name="name"/> is longer than the provider's identifier limit
+    /// (<see cref="RelationalModelExtensions.GetMaxIdentifierLength"/>). Satellites call it for the
+    /// names of the constraints they emit; the core calls it for every complex index name.
+    /// </summary>
+    /// <remarks>
+    /// The names this package derives are never truncated, unlike EF's own default names. PostgreSQL
+    /// cuts a longer identifier down to 63 bytes with a NOTICE and applies the migration cleanly, so
+    /// the index exists under a name that neither the declaration nor a later constraint-violation
+    /// error ever matches — a slice that dispatches on the constraint name falls through in silence.
+    /// SQL Server rejects the statement instead. Both are caught here, at <c>migrations add</c>.
+    /// Validate the <em>target</em> model only: a snapshot already carrying such a name has to stay
+    /// diffable, or the model could never be fixed.
+    /// </remarks>
+    /// <param name="model">The target model, whose provider sets the identifier limit.</param>
+    /// <param name="name">The resolved index or constraint name.</param>
+    /// <param name="kind">What the name belongs to, for the message — <c>"complex index"</c>, <c>"exclusion constraint"</c>, …</param>
+    /// <param name="table">The table the declaration targets, for the message.</param>
+    /// <param name="parameter">The declaration parameter that sets an explicit name, for the message.</param>
+    protected void ThrowIfIdentifierTooLong(IReadOnlyModel model, string name, string kind, string table, string parameter)
+    {
+        var limit            = model.GetMaxIdentifierLength();
+        var (length, unit)   = MeasureIdentifier(name);
+
+        if (length <= limit)
+            return;
+
+        throw new InvalidOperationException(
+            $"The {kind} name '{name}' on table '{table}' is {length} {unit} long, but the provider allows at most {limit}. "
+          + $"A longer name is truncated or rejected when the migration is applied, so the {kind} would exist under a "
+          + "name that neither this declaration nor a constraint-violation error ever reports. "
+          + $"Give the declaration an explicit, shorter name ({parameter}).");
+    }
+
+    /// <summary>
+    /// Measures an identifier the way the provider does when enforcing
+    /// <see cref="RelationalModelExtensions.GetMaxIdentifierLength"/>. The core counts characters,
+    /// which is what SQL Server's 128-character limit means; PostgreSQL's 63 is a byte count, so its
+    /// satellite overrides this to measure UTF-8 bytes.
+    /// </summary>
+    /// <param name="identifier">The identifier to measure.</param>
+    /// <returns>The length and the unit it is expressed in, for error messages.</returns>
+    protected virtual (int Length, string Unit) MeasureIdentifier(string identifier)
+        => (identifier.Length, "characters");
+
+    // Declarations come from the same reader an application uses (ComplexIndexModelExtensions),
+    // so the read model and the migration cannot disagree about what was declared.
     private HashSet<IndexDescriptor> ExtractAllIndexDescriptors(IRelationalModel? relationalModel)
     {
         var result = new HashSet<IndexDescriptor>();
@@ -417,19 +619,26 @@ public class CustomMigrationsModelDiffer(
 
         foreach (var entityType in relationalModel.Model.GetEntityTypes())
         {
+            var declarations = entityType.GetDeclaredComplexIndexes();
+            if (declarations.Count == 0)
+                continue;
+
             var tableName = entityType.GetTableName();
             var schema    = entityType.GetSchema();
             if (tableName is null)
             {
-                if (DeclaresComplexIndexes(entityType))
-                    ThrowIfDeclaredOnUnmappedType(entityType, "complex indexes");
+                ThrowIfDeclaredOnUnmappedType(entityType, "complex indexes");
                 continue;
             }
 
             var storeObject = StoreObjectIdentifier.Table(tableName, schema);
 
-            ScanForSingleColumnIndexes(entityType, entityType, pathPrefix: "", tableName, schema, storeObject, result);
-            ScanForCompositeIndexes(entityType, tableName, schema, result);
+            foreach (var declaration in declarations)
+            {
+                result.Add(declaration.Property is { } property
+                               ? ResolvePropertyLevelIndex(entityType, declaration, property, tableName, schema, storeObject)
+                               : ResolveEntityLevelIndex(entityType, declaration, tableName, schema, storeObject));
+            }
         }
 
         return result;
@@ -458,175 +667,89 @@ public class CustomMigrationsModelDiffer(
           + "table: declare them on the concrete entity types instead.");
     }
 
-    private static bool DeclaresComplexIndexes(IEntityType entityType)
-        => entityType.FindAnnotation(ComplexIndexAnnotations.CompositeIndexes)?.Value is string { Length: > 2 }
-        || DeclaresPropertyIndexes(entityType);
-
-    private static bool DeclaresPropertyIndexes(ITypeBase typeBase)
-        => typeBase.GetDeclaredProperties().Any(p => p.FindAnnotation(ComplexIndexAnnotations.IsIndexed)?.Value is true)
-        || typeBase.GetDeclaredComplexProperties().Any(cp => DeclaresPropertyIndexes(cp.ComplexType));
-
-    private void ScanForSingleColumnIndexes(
-        IEntityType              rootEntityType,
-        ITypeBase                typeBase,
-        string                   pathPrefix,
-        string                   tableName,
-        string?                  schema,
-        StoreObjectIdentifier    storeObject,
-        HashSet<IndexDescriptor> results
+    private IndexDescriptor ResolvePropertyLevelIndex(
+        IEntityType             entityType,
+        ComplexIndexDeclaration declaration,
+        IReadOnlyProperty       property,
+        string                  tableName,
+        string?                 schema,
+        StoreObjectIdentifier   storeObject
     )
     {
-        foreach (var property in typeBase.GetDeclaredProperties())
+        var columnName = property.GetColumnName(storeObject);
+
+        // No table column — a JSON-mapped complex member, for example. Give the provider
+        // satellite a chance to resolve it to an expression part before giving up.
+        var part = columnName is not null
+                       ? new ResolvedIndexPart(false, columnName)
+                       : ResolveUnmappedPart(entityType, declaration.Parts[0], storeObject)
+                      ?? throw new InvalidOperationException(
+                             $"The property '{property.Name}' on '{property.DeclaringType.Name}' is marked with " +
+                             $"HasComplexIndex but has no column mapping for table '{tableName}'. " +
+                             "A property mapped to JSON (or not mapped to this table) cannot carry " +
+                             "a complex index here; use an expression index over the JSON column instead.");
+
+        var indexName = declaration.Name ?? $"IX_{tableName}_{BuildPartToken(part)}";
+
+        // Collect only whitelisted provider index options; everything else on the property is a
+        // column facet that does not belong on an index operation.
+        var providerAnnotations = new Dictionary<string, object?>();
+        foreach (var annotation in property.GetAnnotations())
         {
-            if (property.FindAnnotation(ComplexIndexAnnotations.IsIndexed)?.Value is not true)
+            if (IsForwardedIndexAnnotation(annotation.Name))
+                providerAnnotations[annotation.Name] = TransformIndexAnnotation(entityType, annotation.Name, annotation.Value, storeObject);
+        }
+
+        return new IndexDescriptor(tableName, schema, [part], indexName, declaration.IsUnique, ResolveFilter(entityType, declaration.Filter, storeObject), providerAnnotations);
+    }
+
+    private IndexDescriptor ResolveEntityLevelIndex(
+        IEntityType             entityType,
+        ComplexIndexDeclaration declaration,
+        string                  tableName,
+        string?                 schema,
+        StoreObjectIdentifier   storeObject
+    )
+    {
+        var parts = new List<ResolvedIndexPart>(declaration.Parts.Count);
+
+        foreach (var part in declaration.Parts)
+        {
+            if (part.IsExpression)
+            {
+                parts.Add(new ResolvedIndexPart(true, part.Expression!, part.Descending, part.NullSort));
                 continue;
-
-            var columnName = property.GetColumnName(storeObject);
-
-            // No table column — a JSON-mapped complex member, for example. Give the provider
-            // satellite a chance to resolve it to an expression part before giving up.
-            var part = columnName is not null
-                           ? new ResolvedIndexPart(false, columnName)
-                           : ResolveUnmappedPart(
-                                 rootEntityType,
-                                 new IndexPartDefinition { PropertyPath = pathPrefix + property.Name },
-                                 storeObject)
-                          ?? throw new InvalidOperationException(
-                                 $"The property '{property.Name}' on '{typeBase.Name}' is marked with " +
-                                 $"HasComplexIndex but has no column mapping for table '{tableName}'. " +
-                                 "A property mapped to JSON (or not mapped to this table) cannot carry " +
-                                 "a complex index here; use an expression index over the JSON column instead.");
-
-            var isUnique = property.FindAnnotation(ComplexIndexAnnotations.IsUnique)?.Value is true;
-            var filter   = property.FindAnnotation(ComplexIndexAnnotations.Filter)?.Value as string;
-            var indexName = property.FindAnnotation(ComplexIndexAnnotations.IndexName)?.Value as string
-                         ?? $"IX_{tableName}_{BuildPartToken(part)}";
-
-            // Collect only whitelisted provider index options; everything else on the property is a
-            // column facet that does not belong on an index operation.
-            var providerAnnotations = new Dictionary<string, object?>();
-            foreach (var ann in property.GetAnnotations())
-            {
-                if (IsForwardedIndexAnnotation(ann.Name))
-                    providerAnnotations[ann.Name] = TransformIndexAnnotation(rootEntityType, ann.Name, ann.Value, storeObject);
             }
 
-            results.Add(new IndexDescriptor(tableName, schema, [part], indexName, isUnique, filter, providerAnnotations));
-        }
-
-        foreach (var cp in typeBase.GetDeclaredComplexProperties())
-            ScanForSingleColumnIndexes(rootEntityType, cp.ComplexType, $"{pathPrefix}{cp.Name}.", tableName, schema, storeObject, results);
-    }
-
-    private void ScanForCompositeIndexes(
-        IEntityType              entityType,
-        string                   tableName,
-        string?                  schema,
-        HashSet<IndexDescriptor> results
-    )
-    {
-        var annotation = entityType.FindAnnotation(ComplexIndexAnnotations.CompositeIndexes);
-
-        if (annotation?.Value is not string json || string.IsNullOrEmpty(json))
-            return;
-
-        var definitions = CompositeIndexSerializer.Deserialize(json);
-        var storeObject = StoreObjectIdentifier.Table(tableName, schema);
-
-        foreach (var def in definitions)
-        {
-            var parts = new List<ResolvedIndexPart>(def.EffectiveParts.Count);
-
-            foreach (var part in def.EffectiveParts)
+            if (part.IsTemplate)
             {
-                if (part.IsExpression)
-                {
-                    parts.Add(new ResolvedIndexPart(true, part.Expression!, part.Descending, part.NullSort));
-                    continue;
-                }
-
-                if (part.IsTemplate)
-                {
-                    parts.Add(ResolveTemplatePart(entityType, part, storeObject));
-                    continue;
-                }
-
-                var col = ResolveColumnName(entityType, part.PropertyPath!, storeObject);
-                if (col is not null)
-                {
-                    parts.Add(new ResolvedIndexPart(false, col, part.Descending, part.NullSort));
-                    continue;
-                }
-
-                // No table column — give the provider satellite a chance (JSON members, …).
-                var unmapped = ResolveUnmappedPart(entityType, part, storeObject)
-                            ?? throw new InvalidOperationException(
-                                   $"Could not resolve property path '{part.PropertyPath}' for index on entity {entityType.Name}."
-                               );
-
-                parts.Add(unmapped);
+                parts.Add(ResolveTemplatePart(entityType, part, storeObject));
+                continue;
             }
 
-            var indexName = def.IndexName ?? $"IX_{tableName}_{string.Join("_", parts.Select(BuildPartToken))}";
+            var col = ResolveColumnName(entityType, part.PropertyPath!, storeObject);
+            if (col is not null)
+            {
+                parts.Add(new ResolvedIndexPart(false, col, part.Descending, part.NullSort));
+                continue;
+            }
 
-            var normalized = NormalizeProviderAnnotations(def.ProviderAnnotations);
-            foreach (var key in normalized.Keys.ToList())
-                normalized[key] = TransformIndexAnnotation(entityType, key, normalized[key], storeObject);
+            // No table column — give the provider satellite a chance (JSON members, …).
+            var unmapped = ResolveUnmappedPart(entityType, part, storeObject)
+                        ?? throw new InvalidOperationException(
+                               $"Could not resolve property path '{part.PropertyPath}' for index on entity {entityType.Name}."
+                           );
 
-            results.Add(
-                new IndexDescriptor(
-                    tableName,
-                    schema,
-                    parts,
-                    indexName,
-                    def.IsUnique,
-                    def.Filter,
-                    normalized
-                )
-            );
-        }
-    }
-
-    private static Dictionary<string, object?> NormalizeProviderAnnotations(Dictionary<string, object?>? annotations)
-    {
-        if (annotations is null) return [];
-
-        var result = new Dictionary<string, object?>(annotations.Count);
-
-        foreach (var (key, value) in annotations)
-        {
-            result[key] = value is JsonElement je
-                              ? NormalizeJsonElement(je)
-                              : value;
+            parts.Add(unmapped);
         }
 
-        return result;
-    }
+        var indexName = declaration.Name ?? $"IX_{tableName}_{string.Join("_", parts.Select(BuildPartToken))}";
 
-    private static object? NormalizeJsonElement(JsonElement je)
-    {
-        return je.ValueKind switch
-               {
-                   JsonValueKind.String => je.GetString(),
-                   JsonValueKind.True   => true,
-                   JsonValueKind.False  => false,
-                   JsonValueKind.Number => NormalizeNumber(je),
-                   JsonValueKind.Null   => null,
-                   JsonValueKind.Array => je.EnumerateArray()
-                                            .Select(e => e.ValueKind == JsonValueKind.String ? e.GetString() : e.ToString())
-                                            .ToArray(),
-                   _ => je.ToString()
-               };
-    }
+        var providerAnnotations = new Dictionary<string, object?>(declaration.ProviderAnnotations.Count);
+        foreach (var (key, value) in declaration.ProviderAnnotations)
+            providerAnnotations[key] = TransformIndexAnnotation(entityType, key, value, storeObject);
 
-    // int first: provider generators read their numeric index options with `as int?` (e.g. SQL
-    // Server's FILLFACTOR), which returns null for a boxed long or double — the option would be
-    // silently dropped. (A ternary here would also coerce every integral to double.)
-    private static object NormalizeNumber(JsonElement je)
-    {
-        if (je.TryGetInt32(out var i)) return i;
-        if (je.TryGetInt64(out var l)) return l;
-        return je.GetDouble();
+        return new IndexDescriptor(tableName, schema, parts, indexName, declaration.IsUnique, ResolveFilter(entityType, declaration.Filter, storeObject), providerAnnotations);
     }
 
     // Builds a default index-name token for a part: column names pass through; expressions are
@@ -646,21 +769,61 @@ public class CustomMigrationsModelDiffer(
         string                dotPath,
         StoreObjectIdentifier storeObject
     )
+        => ResolveProperty(entityType, dotPath)?.GetColumnName(storeObject);
+
+    /// <summary>
+    /// Resolves a dotted property path to the scalar property it names, walking complex
+    /// properties, or null when there is no such property.
+    /// </summary>
+    /// <remarks>
+    /// A path may also end one step <em>past</em> a scalar property, at a member of its CLR type:
+    /// <c>Email.Value</c> where <c>Email</c> is a value object mapped through a value converter.
+    /// The member unwraps to the property when the property has a converter and the member's type
+    /// is the converter's provider type — the column holds exactly that member. Without the type
+    /// check, <c>CreatedAt.Year</c> would resolve to the whole column and index something other
+    /// than what was written.
+    /// </remarks>
+    /// <param name="typeBase">The entity or complex type the path starts from.</param>
+    /// <param name="dotPath">The path, e.g. <c>Address.City</c>.</param>
+    /// <returns>The property, or null.</returns>
+    protected static IProperty? ResolveProperty(ITypeBase typeBase, string dotPath)
     {
-        var       parts   = dotPath.Split('.');
-        ITypeBase current = entityType;
+        var parts   = dotPath.Split('.');
+        var current = typeBase;
 
         for (var i = 0; i < parts.Length; i++)
         {
             if (i == parts.Length - 1)
-                return current.FindProperty(parts[i])?.GetColumnName(storeObject);
+                return current.FindProperty(parts[i]);
 
-            var cp = current.FindComplexProperty(parts[i]);
-            if (cp is null) return null;
-            current = cp.ComplexType;
+            var complexProperty = current.FindComplexProperty(parts[i]);
+            if (complexProperty is not null)
+            {
+                current = complexProperty.ComplexType;
+                continue;
+            }
+
+            return i == parts.Length - 2 ? FindConvertedMember(current, parts[i], parts[i + 1]) : null;
         }
 
         return null;
+    }
+
+    private static IProperty? FindConvertedMember(ITypeBase typeBase, string propertyName, string memberName)
+    {
+        var property  = typeBase.FindProperty(propertyName);
+        var converter = property?.FindTypeMapping()?.Converter ?? property?.GetValueConverter();
+        if (property is null || converter is null)
+            return null;
+
+        var memberType = property.ClrType.GetProperty(memberName, BindingFlags.Public | BindingFlags.Instance)?.PropertyType
+                      ?? property.ClrType.GetField(memberName, BindingFlags.Public | BindingFlags.Instance)?.FieldType;
+        if (memberType is null)
+            return null;
+
+        return Unwrap(memberType) == Unwrap(converter.ProviderClrType) ? property : null;
+
+        static Type Unwrap(Type type) => Nullable.GetUnderlyingType(type) ?? type;
     }
 
     internal sealed record IndexDescriptor(

@@ -5,7 +5,7 @@ namespace EFCore.ComplexIndexes.PostgreSQL;
 /// <c>HasExclusionConstraint</c>. These use the <c>CustomExclusion:</c> prefix so they never
 /// collide with the <c>Npgsql:</c> keys validated on index operations.
 /// </summary>
-internal static class NpgsqlExclusionAnnotations
+public static class NpgsqlExclusionAnnotations
 {
     /// <summary>
     /// Stamped on an entity type to hold the JSON-serialized list of exclusion constraints

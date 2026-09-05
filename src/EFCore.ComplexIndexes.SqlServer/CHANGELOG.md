@@ -4,6 +4,13 @@ Changes to the SQL Server satellite, newest first. The
 [root changelog](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/CHANGELOG.md)
 covers all three packages.
 
+## 5.2.0
+
+- **New:** filters resolve `{Property.Path}` placeholders to the mapped column, bracket-quoted, at
+  `migrations add` — `filter: "{DeletedAt} IS NULL"` becomes `[deleted_at] IS NULL` in the migration.
+- **Changed:** an index name longer than 128 characters is rejected at `migrations add` instead of
+  failing when the migration is applied.
+
 ## 5.1.0
 
 - **New:** `UseSqlServerComplexIndexes()` / `AddSqlServerComplexIndexes()` — optional runtime

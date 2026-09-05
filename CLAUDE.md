@@ -278,6 +278,29 @@ revoked rows" collapsed to one constraint. Name collisions matter more here than
 every ADD is preceded by `DROP CONSTRAINT IF EXISTS`, so a duplicate name does not fail at apply
 time — the second constraint silently replaces the first.
 
+### The read model is the differ's reader
+
+`ComplexIndexModelExtensions.GetDeclaredComplexIndexes` (core) and
+`NpgsqlExclusionModelExtensions.GetDeclaredExclusionConstraints` (PostgreSQL) turn the annotations
+into `ComplexIndexDeclaration` / `ExclusionConstraintDeclaration` objects — the public surface an
+application uses to check its own conventions ("every unique index and exclusion constraint on a
+withdrawable aggregate is filtered"). Since 5.2.0 the differs build their descriptors from exactly
+these readers and resolve columns on top; there is no second parser. Keep it that way: a read model
+that disagrees with the differ silently checks something other than what the migration enforces,
+which is the outcome the guard exists to prevent. Declarations are reported unresolved — parts as
+property paths, `Name` null for a default-named one — because resolution needs the relational model
+and, for JSON members and templates, the satellite; `FindComplexIndex` therefore matches explicit
+names only.
+
+The mutable side (`ComplexIndexMutableExtensions`, `NpgsqlExclusionMutableExtensions`) works on
+`IMutableEntityType`: `AddComplexIndex` is `ComplexIndexStorage.AddOrReplace` retyped, so it
+carries the same identity and name rules; `AddComplexIndexFilter` / `AddExclusionConstraintFilter`
+AND a predicate onto selected declarations through `ComplexIndexStorage.Conjoin`, whose
+idempotence rule is deliberately narrow — the predicate is "already there" only when it is the
+whole filter or the exact conjunct this method appends. They amend what is declared *at the time
+of the call*: from `OnModelCreating` after the configurations, never from a model-finalizing
+convention, since a convention-source annotation write cannot overwrite the explicit blob.
+
 ### Two integration seams: design-time vs. runtime
 
 There are two distinct hook points, and it matters which one a feature uses:
@@ -340,7 +363,28 @@ differ let satellites resolve what the core cannot:
   nested inside the document resolves to a `->` extraction yielding `jsonb`. A table-split complex
   property stays unresolved: there is no single column to stand for it.
 - `ResolveTemplatePart` — substitutes template placeholders with quoted columns or parenthesized
-  JSON extractions; core throws (identifier quoting is provider-specific).
+  JSON extractions. Since 5.2.0 the core implements it, quoting through the `QuoteIdentifier`
+  virtual (ANSI by default; the SQL Server satellite brackets), so satellites override neither.
+
+Filters go through the same placeholder resolver (`ResolveFilter`, called while building
+descriptors for indexes and, in the Npgsql differ, exclusion constraints), with a narrower rule
+because filters are pre-existing SQL: only a brace pair holding a dotted identifier path *outside a
+single-quoted literal* is a placeholder, there is no `{{` escape (`'{{1,2},{3,4}}'` is an array
+literal), and an unresolvable placeholder throws. The resolved filter is what the descriptor
+carries on both sides of the diff, so placeholder filters never churn and need no runtime wiring.
+`ResolveProperty` (core, shared by every path walk) also unwraps one member of a converter-mapped
+value object — `Email.Value` resolves to the `Email` column only when the property has a converter
+and the member's type equals the converter's provider type; without that check `CreatedAt.Year`
+would silently index the whole column.
+
+Typed filters (`NpgsqlTypedFilterExtensions`, PostgreSQL only) run
+`NpgsqlLinqIndexTranslator.TranslatePredicate` at the declaration and store the resulting
+placeholder template as the filter string — nothing downstream knows the filter was typed. The
+predicate subset is boolean structure over the expression translator's operands, with two
+deliberate refusals: enums, because the stored form depends on a value conversion the translator
+cannot see (`Status == Status.Active` would compare `text` against `0` and fail at apply), and
+literals without a portable SQL spelling (`DateTime`, `Guid`), which `IFormattable` used to render
+as bare text. Both throw at the declaration.
 
 `NULLS FIRST/LAST` (`DbOrder.NullsFirst/NullsLast`, `ExpressionIndexBuilder.NullsFirst()/NullsLast()`)
 rides on the parts as `NullSort`. EF's native `CreateIndexOperation` has no slot for it, so any
@@ -404,7 +448,7 @@ still skipped silently — an index on those is nothing this package could creat
 
 ### Key extension points
 
-- **Adding a new provider**: Subclass `CustomMigrationsModelDiffer` (override `IsForwardedIndexAnnotation`, optionally `ValidateCreateIndexOperation`/`ResolveUnmappedPart`/`ResolveTemplatePart`), implement `IDesignTimeServices` to replace the differ, and ship a `.targets` file that injects the attribute (with `ForProvider` set). The PostgreSQL project is the full-featured reference; the SQL Server project is the minimal one (whitelist + validation, no custom SQL generator).
+- **Adding a new provider**: Subclass `CustomMigrationsModelDiffer` (override `IsForwardedIndexAnnotation`, optionally `ValidateCreateIndexOperation`/`ResolveUnmappedPart`/`QuoteIdentifier`), implement `IDesignTimeServices` to replace the differ, and ship a `.targets` file that injects the attribute (with `ForProvider` set). The PostgreSQL project is the full-featured reference; the SQL Server project is the minimal one (whitelist + validation, no custom SQL generator).
 - **New index options**: Add constants to `ComplexIndexAnnotations.cs` (or `NpgsqlAnnotations.cs`), expose them via `ComplexIndexBuilder`, and read them in the differ when constructing `CreateIndexOperation`.
 
 ### Expression path extraction

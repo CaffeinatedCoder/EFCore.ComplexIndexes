@@ -53,6 +53,10 @@ public class SqlServerComplexIndexMigrationsModelDiffer(
     /// <summary>SQL Server renames indexes standalone (<c>sp_rename</c>).</summary>
     protected override bool CanRenameIndexes => true;
 
+    /// <summary>SQL Server delimits identifiers with brackets.</summary>
+    protected override string QuoteIdentifier(string identifier)
+        => "[" + identifier.Replace("]", "]]") + "]";
+
     /// <summary>
     /// Resolves property paths inside INCLUDE lists to column names (verbatim fallback), and
     /// restores the data-compression enum after its JSON round trip.

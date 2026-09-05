@@ -178,7 +178,13 @@ builder.HasExclusionConstraint(ex => ex
     .IsDeferrable(initiallyDeferred: true));
 ```
 
-Selectors resolve complex-property members to their mapped columns, exactly like complex indexes.
+Selectors resolve complex-property members to their mapped columns, exactly like complex indexes,
+and the filter takes the same `{Property.Path}` placeholders a complex index filter does —
+`filter: "{RevokedAt} IS NULL"` renders `WHERE ("revoked_at" IS NULL)` whatever `HasColumnName`
+decided, JSON members become extractions, and a path that names no property fails at
+`migrations add`. Or write it typed — the scheduling overload takes a predicate in place of the
+string, and the builder has `HasFilter(x => x.RevokedAt == null)` — with the subset described under
+[typed filters](postgresql-indexes.md#typed-filters).
 Scalar equality elements under `gist` need the `btree_gist` extension — the differ injects
 `CREATE EXTENSION IF NOT EXISTS btree_gist` automatically, shared with temporal constraints and
 governed by the same `UseBtreeGist()` / `SuppressTemporalExtensionAutoInjection()` switches.
@@ -210,3 +216,41 @@ just make sure the declared name matches the existing one.
 > `CustomExclusion:Constraints` annotation means the compiled snapshot is stale — typically
 > scaffolding with `--no-build`, or a migrations assembly (`MigrationsAssembly(...)`) resolved from
 > an out-of-date build output. Rebuild the project that hosts the snapshot and re-scaffold.
+
+### Reading constraints back
+
+Exclusion constraints can be read back from the model, mutable or finalized, exactly like
+[complex indexes](../README.md#reading-declarations-back) — which is what makes an application-level
+convention checkable in full rather than for the index half only:
+
+```csharp
+var unfiltered = modelBuilder.Model.GetEntityTypes()
+    .Where(IsWithdrawable)
+    .SelectMany(e => e.GetExclusionConstraints())
+    .Where(ex => ex.Filter is null);
+
+var active = modelBuilder.Model.FindExclusionConstraint("ex_role_grant_active_period");
+```
+
+Each `ExclusionConstraintDeclaration` carries the elements as property paths or expressions with
+their operators, `Method` (`gist` unless set), `Filter`, deferrability and the explicit `Name` —
+null for a default-named constraint, which `FindExclusionConstraint` therefore does not match.
+`GetDeclaredExclusionConstraints()` leaves inherited declarations to the declaring type. The differ
+builds its constraint DDL from the same reader.
+
+### Amending constraints
+
+On the mutable model, `AddExclusionConstraintFilter` ANDs a predicate onto the filter of every
+selected constraint, the way [`AddComplexIndexFilter`](../README.md#amending-declarations) does
+for indexes — an unfiltered constraint gets the predicate, a filtered one `(existing) AND
+(predicate)`, one that already carries it is left alone:
+
+```csharp
+foreach (var entityType in modelBuilder.Model.GetEntityTypes().Where(IsWithdrawable))
+    entityType.AddExclusionConstraintFilter("{RevokedAt} IS NULL");
+```
+
+Both amend calls have a typed form, `AddComplexIndexFilter<TEntity>(x => x.RevokedAt == null)` and
+`AddExclusionConstraintFilter<TEntity>(…)`, with the entity type given explicitly.
+
+It amends what is declared at the time of the call, so it belongs after the configurations.

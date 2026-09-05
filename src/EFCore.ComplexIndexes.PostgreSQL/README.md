@@ -105,7 +105,8 @@ builder.HasExpressionIndex(x => x.Email.Value.ToLower(), isUnique: true);
 
 The translated subset is deliberately small — `ToLower`/`ToUpper`, `Trim` variants, `Substring`,
 `Replace`, `string.Length`, concatenation, `??`, constants — and anything else throws
-`NotSupportedException` **at declaration time**, pointing at the raw-SQL overload.
+`NotSupportedException` **at declaration time**, pointing at the raw-SQL overload. A value object
+mapped through a converter resolves through its member: `x.Email.Value` is the `email` column.
 
 ### JSON member indexes
 
@@ -146,7 +147,18 @@ builder.HasExclusionConstraint(
 ```
 
 Constraint identity is the ordered elements **plus** the filter, so the same columns under different
-predicates give you two coexisting partial constraints (both must be named).
+predicates give you two coexisting partial constraints (both must be named). Filters — here and on
+indexes — resolve `{Property.Path}` placeholders to columns or JSON extractions at `migrations add`,
+and every `filter:` has a typed form: `x => x.RevokedAt == null`, or `HasFilter(x => …)` on the
+builders (`HasFilter<TEntity>` on the non-generic index builders). The translated subset is small —
+null checks, comparisons, `&&`/`||`/`!`, the string functions above — and refuses enums and dates
+at the declaration.
+
+Declared constraints can be read back — `GetExclusionConstraints()` on an entity type or the
+model, `FindExclusionConstraint(name)` — with elements, method, filter, deferrability and name, from
+the mutable model in `OnModelCreating` as well as the finalized one; and amended there:
+`AddExclusionConstraintFilter(predicate, where)` ANDs a predicate onto every selected constraint's
+filter, idempotently.
 
 ### `btree_gist`
 

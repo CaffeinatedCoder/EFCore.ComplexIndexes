@@ -4,6 +4,39 @@ Changes to the PostgreSQL satellite, newest first. The
 [root changelog](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/CHANGELOG.md)
 covers all three packages.
 
+## 5.2.0
+
+- **Changed:** an index, exclusion constraint, temporal constraint or temporal foreign key whose
+  name exceeds 63 bytes is rejected at `migrations add`. PostgreSQL would truncate it with a NOTICE
+  and apply the migration cleanly, leaving the object under a name that no declaration and no
+  constraint-violation error ever reports. Measured in UTF-8 bytes, as PostgreSQL does. Default
+  temporal foreign key names, built from two table names, are the first to hit it: give the
+  declaration a `name` — a name-only change renames the constraint in place.
+
+- **New:** `GetExclusionConstraints()` / `GetDeclaredExclusionConstraints()` on `IReadOnlyEntityType`,
+  `GetExclusionConstraints()` and `FindExclusionConstraint(name)` on `IReadOnlyModel` — exclusion
+  constraints read back as `ExclusionConstraintDeclaration`s (elements with operators, method,
+  filter, deferrability, explicit name). `ExclusionPartDefinition` and
+  `NpgsqlExclusionAnnotations` are public now. The differ reads the model through the same code.
+
+- **New:** filters on complex, composite and expression indexes and on exclusion constraints
+  resolve `{Property.Path}` placeholders — columns, `HasColumnName`, `ToJson()` members as
+  extractions — at `migrations add`, into the migration itself. Existing filters with array or JSON
+  literals are unaffected.
+- **New:** `x => x.Email.Value` on a converter-mapped value object resolves to the converted column
+  in typed expression indexes and exclusion elements too.
+
+- **New:** `AddExclusionConstraintFilter(predicate, where)` on `IMutableEntityType` — ANDs a
+  predicate onto every selected exclusion constraint's filter, idempotently.
+
+- **New:** typed filter predicates — `x => x.RevokedAt == null` in place of every `filter:` string,
+  `HasFilter(x => …)` on the builders, `AddComplexIndexFilter<TEntity>` / `AddExclusionConstraintFilter<TEntity>`.
+  Translated at the declaration into a placeholder filter: null checks, comparisons, `&&`/`||`/`!`,
+  boolean properties, the string functions of typed expression indexes. Enums and values without a
+  portable SQL spelling are refused at the declaration.
+- **Changed:** the typed expression translator no longer renders a `DateTime`, `Guid` or enum
+  constant as bare text; it throws at the declaration.
+
 ## 5.1.0
 
 - **Changed:** `UseNpgsqlComplexIndexes()` / `AddNpgsqlComplexIndexes()` also register the PostgreSQL

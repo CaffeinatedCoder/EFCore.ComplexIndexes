@@ -4,6 +4,32 @@ Changes to the core package, newest first. The
 [root changelog](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/CHANGELOG.md)
 covers all three packages.
 
+## 5.2.0
+
+- **Changed:** a complex index name longer than the provider's identifier limit
+  (`GetMaxIdentifierLength`, 63 on PostgreSQL, 128 on SQL Server) is rejected at `migrations add`.
+  Default names are checked too — this package never truncates them, unlike EF Core's own — and a
+  provider without a limit is left alone.
+
+- **New:** `GetComplexIndexes()` / `GetDeclaredComplexIndexes()` on `IReadOnlyEntityType`,
+  `GetComplexIndexes()` and `FindComplexIndex(name)` on `IReadOnlyModel` — the declarations read
+  back as `ComplexIndexDeclaration`s (parts as property paths, `IsUnique`, `Filter`, explicit `Name`,
+  provider options of entity-level declarations), from the mutable model in `OnModelCreating` too.
+  The differ reads the model through the same code.
+
+- **New:** filters resolve `{Property.Path}` placeholders to the mapped column at `migrations add`,
+  quoted through the new `QuoteIdentifier` seam (ANSI by default); the resolved text is baked into
+  the migration and compared against the snapshot. Only a dotted identifier path in braces outside
+  a single-quoted literal is a placeholder; an unknown one throws. Template resolution moved into
+  the core differ on the same seam.
+- **New:** a property path may end at a member of a converter-mapped value object
+  (`x => x.Email.Value`), which resolves to the converted column when the member's type is the
+  converter's provider type.
+
+- **New:** `AddComplexIndexFilter(predicate, where)` and `AddComplexIndex(definition)` on
+  `IMutableEntityType` — install a filter on every selected declaration (AND-ed onto an existing
+  one, idempotent) or add a declaration with the fluent API's identity rules, from `OnModelCreating`.
+
 ## 5.1.0
 
 - **Fixed:** `HasDifferences` now reports changes to complex indexes (and, through the satellites'

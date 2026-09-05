@@ -37,6 +37,11 @@ builder.ComplexProperty(x => x.EmailAddress, c =>
 Column names are resolved against the real model, so both convention-based names (`Origin_Source`)
 and explicit `HasColumnName` overrides are honored.
 
+A filter may name properties instead of columns — `filter: "{DeletedAt} IS NULL"` resolves to the
+mapped column at `migrations add`, quoted for the provider, and is baked into the migration. A
+selector reaches into complex properties and, for a value object mapped through a converter, one
+step further: `x => x.Email.Value` resolves to the converted column.
+
 ### Several indexes over one column
 
 A property-level declaration holds **one** index per property. To give a column several
@@ -50,8 +55,9 @@ builder.HasComplexIndex(x => x.EmailAddress.Value,
     indexName: "ix_person_email_all");
 ```
 
-Index names must be unique per table, and the package enforces it rather than letting the database
-reject the migration.
+Index names must be unique per table and within the provider's identifier limit (63 bytes on
+PostgreSQL, which would otherwise truncate silently), and the package enforces both at
+`dotnet ef migrations add` rather than letting the database reject — or quietly shorten — the name.
 
 ### Composite index across scalar and nested properties
 
@@ -78,6 +84,25 @@ anonymous type.
 see the PostgreSQL package.
 
 ---
+
+### Reading declarations back
+
+`GetComplexIndexes()` on an entity type (or the model) returns every declaration — property-level,
+entity-level, composite, expression — with its parts, `IsUnique`, `Filter` and explicit `Name`, so an
+application can check its own conventions; `FindComplexIndex(name)` looks one up by explicit name.
+It works on the mutable model inside `OnModelCreating` too, and the differ reads declarations
+through the same code.
+
+```csharp
+var unfiltered = modelBuilder.Model.GetEntityTypes()
+    .SelectMany(e => e.GetComplexIndexes())
+    .Where(ix => ix.IsUnique && ix.Filter is null);
+```
+
+Or install the convention: on the mutable model, `AddComplexIndexFilter(predicate, where)` ANDs a
+predicate onto every selected declaration's filter, idempotently, and `AddComplexIndex(definition)`
+adds one with the fluent API's identity rules. Both amend what is declared at the time of the call,
+so run them after the configurations.
 
 ## Documentation
 

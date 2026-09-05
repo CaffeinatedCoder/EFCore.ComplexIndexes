@@ -77,6 +77,13 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
     protected override bool CanRenameIndexes => true;
 
     /// <summary>
+    /// PostgreSQL's identifier limit (<c>NAMEDATALEN - 1</c>, 63) is a byte count: a name made of
+    /// non-ASCII characters hits it well before its 63rd character.
+    /// </summary>
+    protected override (int Length, string Unit) MeasureIdentifier(string identifier)
+        => (System.Text.Encoding.UTF8.GetByteCount(identifier), "bytes");
+
+    /// <summary>
     /// Npgsql's generator reads index collations from <c>Relational:Collation</c> on the operation;
     /// the option is stored under Npgsql's model key so that a property-level declaration is never
     /// mistaken for the column's collation.
@@ -232,74 +239,6 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
     }
 
     /// <summary>
-    /// Resolves a typed-expression template into final SQL: <c>{Property.Path}</c> placeholders
-    /// become quoted column references — or parenthesized JSON extractions for <c>ToJson()</c>
-    /// members; <c>{{</c>/<c>}}</c> unescape to literal braces.
-    /// </summary>
-    protected override ResolvedIndexPart ResolveTemplatePart(
-        IEntityType           entityType,
-        IndexPartDefinition   part,
-        StoreObjectIdentifier storeObject
-    )
-    {
-        var template = part.Template!;
-        var sql      = new System.Text.StringBuilder(template.Length);
-
-        for (var i = 0; i < template.Length; i++)
-        {
-            var ch = template[i];
-
-            if (ch == '{')
-            {
-                if (i + 1 < template.Length && template[i + 1] == '{')
-                {
-                    sql.Append('{');
-                    i++;
-                    continue;
-                }
-
-                var end = template.IndexOf('}', i + 1);
-                if (end < 0)
-                    throw new InvalidOperationException($"Malformed index expression template '{template}' on entity '{entityType.Name}'.");
-
-                sql.Append(ResolvePlaceholder(entityType, template[(i + 1)..end], storeObject));
-                i = end;
-                continue;
-            }
-
-            if (ch == '}')
-            {
-                if (i + 1 < template.Length && template[i + 1] == '}')
-                {
-                    sql.Append('}');
-                    i++;
-                    continue;
-                }
-
-                throw new InvalidOperationException($"Malformed index expression template '{template}' on entity '{entityType.Name}'.");
-            }
-
-            sql.Append(ch);
-        }
-
-        return new ResolvedIndexPart(true, sql.ToString(), part.Descending, part.NullSort);
-    }
-
-    private string ResolvePlaceholder(IEntityType entityType, string path, StoreObjectIdentifier storeObject)
-    {
-        var column = ResolveProperty(entityType, path)?.GetColumnName(storeObject);
-        if (column is not null)
-            return Quote(column);
-
-        var jsonPart = ResolveUnmappedPart(entityType, new IndexPartDefinition { PropertyPath = path }, storeObject);
-        if (jsonPart is not null)
-            return jsonPart.IsExpression ? $"({jsonPart.Value})" : Quote(jsonPart.Value);
-
-        throw new InvalidOperationException(
-            $"Could not resolve property path '{path}' referenced by an index expression on entity '{entityType.Name}'.");
-    }
-
-    /// <summary>
     /// Runs the core complex-index diff, then adds PostgreSQL-specific DDL: temporal <c>UNIQUE …
     /// WITHOUT OVERLAPS</c> constraints, temporal foreign keys, exclusion constraints, and a single
     /// shared <c>CREATE EXTENSION btree_gist</c> when any of them needs it.
@@ -332,7 +271,7 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
     // types. Drops are emitted as EF's own Drop* operations (the stock generator renders those
     // correctly) and placed before the base EF operations; adds are fully rendered DDL emitted as
     // SqlOperations after them, with UNIQUE constraints before FOREIGN KEYs.
-    private static IReadOnlyList<MigrationOperation> ApplyTemporalConstraints(
+    private IReadOnlyList<MigrationOperation> ApplyTemporalConstraints(
         IReadOnlyList<MigrationOperation> operations,
         IRelationalModel?                 source,
         IRelationalModel?                 target,
@@ -346,6 +285,16 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
         var targetConstraints = BuildDescriptors(target, typeMappingSource);
         var sourceForeignKeys = BuildForeignKeyDescriptors(source, typeMappingSource, sourceConstraints);
         var targetForeignKeys = BuildForeignKeyDescriptors(target, typeMappingSource, targetConstraints);
+
+        // Target only — the source is history.
+        if (target is not null)
+        {
+            foreach (var constraint in targetConstraints)
+                ThrowIfIdentifierTooLong(target.Model, constraint.Name, "temporal constraint", constraint.Table, "name");
+
+            foreach (var foreignKey in targetForeignKeys)
+                ThrowIfIdentifierTooLong(target.Model, foreignKey.Name, "temporal foreign key", foreignKey.DependentTable, "name");
+        }
 
         if (sourceConstraints.Count == 0 && targetConstraints.Count == 0
                                         && sourceForeignKeys.Count == 0 && targetForeignKeys.Count == 0)
@@ -516,7 +465,7 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
     // SQL operations (EF has no exclusion-constraint operation type). The DDL is fully rendered at
     // design time, so no runtime SQL-generator wiring is needed. Drops are placed before the base EF
     // operations, adds after — mirroring the index and temporal ordering.
-    private static IReadOnlyList<MigrationOperation> ApplyExclusionConstraints(
+    private IReadOnlyList<MigrationOperation> ApplyExclusionConstraints(
         IReadOnlyList<MigrationOperation> operations,
         IRelationalModel?                 source,
         IRelationalModel?                 target,
@@ -530,6 +479,12 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
 
         // Target only — a snapshot that already contains a collision must stay diffable.
         ValidateUniqueExclusionNames(targetConstraints);
+
+        if (target is not null)
+        {
+            foreach (var constraint in targetConstraints)
+                ThrowIfIdentifierTooLong(target.Model, constraint.Name, "exclusion constraint", constraint.Table, "name");
+        }
 
         if (sourceConstraints.Count == 0 && targetConstraints.Count == 0)
             return operations;
@@ -648,15 +603,16 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
         return renamed;
     }
 
-    private static HashSet<ExclusionDescriptor> BuildExclusionDescriptors(IRelationalModel? model)
+    private HashSet<ExclusionDescriptor> BuildExclusionDescriptors(IRelationalModel? model)
     {
         var set = new HashSet<ExclusionDescriptor>();
         if (model is null) return set;
 
+        // Declarations come from the same reader an application uses (NpgsqlExclusionModelExtensions).
         foreach (var entityType in model.Model.GetEntityTypes())
         {
-            if (entityType.FindAnnotation(NpgsqlExclusionAnnotations.Constraints)?.Value is not string json
-             || string.IsNullOrEmpty(json))
+            var declarations = entityType.GetDeclaredExclusionConstraints();
+            if (declarations.Count == 0)
                 continue;
 
             var table = entityType.GetTableName();
@@ -669,7 +625,7 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
             var schema      = entityType.GetSchema();
             var storeObject = StoreObjectIdentifier.Table(table, schema);
 
-            foreach (var def in ExclusionConstraintSerializer.Deserialize(json))
+            foreach (var def in declarations)
             {
                 var parts = new List<ResolvedExclusionPart>(def.Parts.Count);
                 foreach (var part in def.Parts)
@@ -698,8 +654,8 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
                     schema,
                     name,
                     parts,
-                    def.Method ?? "gist",
-                    def.Filter,
+                    def.Method,
+                    ResolveFilter(entityType, def.Filter, storeObject),
                     def.Deferrable,
                     def.InitiallyDeferred));
             }
@@ -1022,24 +978,6 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
     private static bool IsMultirangeClrType(Type type)
         => type.Namespace is "NpgsqlTypes"
         && type.Name.EndsWith("Multirange", StringComparison.Ordinal);
-
-    private static IProperty? ResolveProperty(ITypeBase entityType, string dotPath)
-    {
-        var       parts   = dotPath.Split('.');
-        ITypeBase current = entityType;
-
-        for (var i = 0; i < parts.Length; i++)
-        {
-            if (i == parts.Length - 1)
-                return current.FindProperty(parts[i]);
-
-            var cp = current.FindComplexProperty(parts[i]);
-            if (cp is null) return null;
-            current = cp.ComplexType;
-        }
-
-        return null;
-    }
 
     private static bool ShouldInjectExtension(IRelationalModel? target)
     {
