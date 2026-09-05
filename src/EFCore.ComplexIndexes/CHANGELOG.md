@@ -15,6 +15,9 @@ covers all three packages.
   without a satellite package. `EnsureCreated()`, `GenerateCreateScript()` and `Migrate()`'s
   pending-model-changes check run the runtime differ, which the design-time wiring never reaches —
   without this, `EnsureCreated()` created the tables and silently none of the complex indexes.
+- **Fixed:** a complex index named like a native `HasIndex` on the same table is rejected at
+  `migrations add` instead of scaffolding two `CREATE INDEX` statements under one name that fail when
+  applied. An index moving between a native and a complex declaration under one name still diffs.
 
 ## 5.0.3
 

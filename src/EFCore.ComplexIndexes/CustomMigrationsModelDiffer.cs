@@ -75,6 +75,7 @@ public class CustomMigrationsModelDiffer(
         // Target only: the source is history. A snapshot that already contains a collision must
         // still be diffable, or the model could never be fixed.
         ValidateUniqueIndexNames(targetIndexes);
+        ValidateNoNativeIndexNameCollision(target, targetIndexes);
 
         if (sourceIndexes.Count == 0 && targetIndexes.Count == 0)
             return operations;
@@ -343,6 +344,55 @@ public class CustomMigrationsModelDiffer(
             var parts = string.Join(", ", descriptor.Parts.Select(p => p.Value));
             var facets = descriptor.Filter is null ? "" : $" WHERE {descriptor.Filter}";
             return $"({parts}){(descriptor.IsUnique ? " UNIQUE" : "")}{facets}";
+        }
+    }
+
+    /// <summary>
+    /// Fails when a complex index resolves to the name of a native <c>HasIndex</c> on the same table.
+    /// </summary>
+    /// <remarks>
+    /// The base differ emits the native index and this differ emits the complex one, neither seeing
+    /// the other, so the migration scaffolded two <c>CREATE INDEX</c> statements under one name and
+    /// failed at apply time (PostgreSQL 42P07). Only the target model's native indexes are consulted:
+    /// an index <em>moving</em> between a native declaration and a complex one under the same name
+    /// is a legitimate drop-and-create, not a collision, and must keep diffing.
+    /// </remarks>
+    private static void ValidateNoNativeIndexNameCollision(IRelationalModel? target, HashSet<IndexDescriptor> descriptors)
+    {
+        if (target is null || descriptors.Count == 0)
+            return;
+
+        var native = new Dictionary<(string Table, string? Schema, string Name), string>();
+
+        foreach (var entityType in target.Model.GetEntityTypes())
+        {
+            var tableName = entityType.GetTableName();
+            if (tableName is null) continue;
+
+            var schema      = entityType.GetSchema();
+            var storeObject = StoreObjectIdentifier.Table(tableName, schema);
+
+            // GetIndexes includes inherited ones; under TPH the base and derived types share the table
+            // and report the same index, which TryAdd collapses.
+            foreach (var index in entityType.GetIndexes())
+            {
+                var name = index.GetDatabaseName(storeObject);
+                if (name is null) continue;
+
+                native.TryAdd((tableName, schema, name), string.Join(", ", index.Properties.Select(p => p.Name)));
+            }
+        }
+
+        foreach (var descriptor in descriptors)
+        {
+            if (!native.TryGetValue((descriptor.TableName, descriptor.Schema, descriptor.IndexName), out var properties))
+                continue;
+
+            throw new InvalidOperationException(
+                $"The complex index '{descriptor.IndexName}' on table '{descriptor.TableName}' has the same name as "
+              + $"the native index on ({properties}) declared with HasIndex. Index names must be unique per table — "
+              + "the migration would scaffold two CREATE INDEX statements under one name and fail when applied. "
+              + "Give one of them a different name.");
         }
     }
 
