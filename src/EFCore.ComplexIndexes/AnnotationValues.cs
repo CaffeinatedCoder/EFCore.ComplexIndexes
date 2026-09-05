@@ -1,4 +1,5 @@
 using System.Collections;
+using System.Text.Json;
 
 namespace EFCore.ComplexIndexes;
 
@@ -32,5 +33,52 @@ internal static class AnnotationValues
                 hash.Add(item);
         else
             hash.Add(value);
+    }
+
+    /// <summary>
+    /// Replaces the <see cref="JsonElement"/>s a deserialized definition carries with plain values,
+    /// so provider annotations compare and render the same whether they came from the code model
+    /// or from the snapshot.
+    /// </summary>
+    public static Dictionary<string, object?> NormalizeProviderAnnotations(Dictionary<string, object?>? annotations)
+    {
+        if (annotations is null) return [];
+
+        var result = new Dictionary<string, object?>(annotations.Count);
+
+        foreach (var (key, value) in annotations)
+        {
+            result[key] = value is JsonElement je
+                              ? NormalizeJsonElement(je)
+                              : value;
+        }
+
+        return result;
+    }
+
+    private static object? NormalizeJsonElement(JsonElement je)
+    {
+        return je.ValueKind switch
+               {
+                   JsonValueKind.String => je.GetString(),
+                   JsonValueKind.True   => true,
+                   JsonValueKind.False  => false,
+                   JsonValueKind.Number => NormalizeNumber(je),
+                   JsonValueKind.Null   => null,
+                   JsonValueKind.Array => je.EnumerateArray()
+                                            .Select(e => e.ValueKind == JsonValueKind.String ? e.GetString() : e.ToString())
+                                            .ToArray(),
+                   _ => je.ToString()
+               };
+    }
+
+    // int first: provider generators read their numeric index options with `as int?` (e.g. SQL
+    // Server's FILLFACTOR), which returns null for a boxed long or double — the option would be
+    // silently dropped. (A ternary here would also coerce every integral to double.)
+    private static object NormalizeNumber(JsonElement je)
+    {
+        if (je.TryGetInt32(out var i)) return i;
+        if (je.TryGetInt64(out var l)) return l;
+        return je.GetDouble();
     }
 }

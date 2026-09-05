@@ -210,3 +210,24 @@ just make sure the declared name matches the existing one.
 > `CustomExclusion:Constraints` annotation means the compiled snapshot is stale — typically
 > scaffolding with `--no-build`, or a migrations assembly (`MigrationsAssembly(...)`) resolved from
 > an out-of-date build output. Rebuild the project that hosts the snapshot and re-scaffold.
+
+### Reading constraints back
+
+Exclusion constraints can be read back from the model, mutable or finalized, exactly like
+[complex indexes](../README.md#reading-declarations-back) — which is what makes an application-level
+convention checkable in full rather than for the index half only:
+
+```csharp
+var unfiltered = modelBuilder.Model.GetEntityTypes()
+    .Where(IsWithdrawable)
+    .SelectMany(e => e.GetExclusionConstraints())
+    .Where(ex => ex.Filter is null);
+
+var active = modelBuilder.Model.FindExclusionConstraint("ex_role_grant_active_period");
+```
+
+Each `ExclusionConstraintDeclaration` carries the elements as property paths or expressions with
+their operators, `Method` (`gist` unless set), `Filter`, deferrability and the explicit `Name` —
+null for a default-named constraint, which `FindExclusionConstraint` therefore does not match.
+`GetDeclaredExclusionConstraints()` leaves inherited declarations to the declaring type. The differ
+builds its constraint DDL from the same reader.

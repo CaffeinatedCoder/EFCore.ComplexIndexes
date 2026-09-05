@@ -148,6 +148,10 @@ builder.HasExclusionConstraint(
 Constraint identity is the ordered elements **plus** the filter, so the same columns under different
 predicates give you two coexisting partial constraints (both must be named).
 
+Declared constraints can be read back — `GetExclusionConstraints()` on an entity type or the
+model, `FindExclusionConstraint(name)` — with elements, method, filter, deferrability and name, from
+the mutable model in `OnModelCreating` as well as the finalized one.
+
 ### `btree_gist`
 
 Scalar equality elements under `gist` need the extension; the differ injects

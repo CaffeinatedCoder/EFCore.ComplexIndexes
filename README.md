@@ -159,6 +159,32 @@ Direction maps to EF Core's native `CreateIndexOperation.IsDescending`, so it is
 
 Markers of different kinds compose in any order; markers of the same kind do not — `DbOrder.Asc(DbOrder.Desc(x.A))` is a contradiction and throws. To control where nulls sort, see [null ordering](docs/postgresql-indexes.md#per-column-null-ordering) (PostgreSQL only).
 
+### Reading declarations back
+
+Every index declared through this package can be read back from the model — the finalized
+`context.Model`, or the mutable one inside `OnModelCreating` — so an application can enforce its
+own conventions instead of trusting each configuration to remember them:
+
+```csharp
+// "Every unique index on a withdrawable aggregate is filtered to live rows."
+var unfiltered = modelBuilder.Model.GetEntityTypes()
+    .Where(IsWithdrawable)
+    .SelectMany(e => e.GetComplexIndexes())
+    .Where(ix => ix.IsUnique && ix.Filter is null)
+    .ToList();
+
+var byName = modelBuilder.Model.FindComplexIndex("ux_person_email_active");
+```
+
+`GetComplexIndexes()` unifies property-level, entity-level, composite and expression indexes as
+`ComplexIndexDeclaration`s: parts as property paths, `IsUnique`, `Filter`, the explicit `Name`
+(null when the differ derives the default from resolved column names — those are not matched by
+`FindComplexIndex`), and for entity-level declarations the provider options. It reports what was
+*declared*; column names are resolved by the differ only. `GetDeclaredComplexIndexes()` leaves
+inherited declarations to the type that declares them. The differ reads the model through the
+same code, so the read model and the migration cannot disagree. PostgreSQL exclusion constraints
+have the same surface — see [reading constraints back](docs/postgresql-constraints.md#reading-constraints-back).
+
 ---
 
 ## Documentation

@@ -52,7 +52,7 @@ public class DocumentationApiTests
         // EF Core
         "ComplexProperty", "ComplexCollection", "Property", "HasColumnName", "HasKey", "ToJson", "Entity",
         "MigrationsAssembly", "UseInternalServiceProvider",
-        "EnsureCreated", "GenerateCreateScript", "Migrate",
+        "EnsureCreated", "GenerateCreateScript", "Migrate", "GetEntityTypes",
         // Npgsql
         "UseNpgsql", "AddEntityFrameworkNpgsql",
         // SQL Server
@@ -60,7 +60,7 @@ public class DocumentationApiTests
         // Dependency injection
         "ServiceCollection", "BuildServiceProvider", "AddDbContext",
         // BCL
-        "ToLower", "Trim"
+        "ToLower", "Trim", "Where", "SelectMany", "ToList"
     };
 
     [TestMethod(DisplayName = "Every API the documentation names exists")]

@@ -676,10 +676,11 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
         var set = new HashSet<ExclusionDescriptor>();
         if (model is null) return set;
 
+        // Declarations come from the same reader an application uses (NpgsqlExclusionModelExtensions).
         foreach (var entityType in model.Model.GetEntityTypes())
         {
-            if (entityType.FindAnnotation(NpgsqlExclusionAnnotations.Constraints)?.Value is not string json
-             || string.IsNullOrEmpty(json))
+            var declarations = entityType.GetDeclaredExclusionConstraints();
+            if (declarations.Count == 0)
                 continue;
 
             var table = entityType.GetTableName();
@@ -692,7 +693,7 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
             var schema      = entityType.GetSchema();
             var storeObject = StoreObjectIdentifier.Table(table, schema);
 
-            foreach (var def in ExclusionConstraintSerializer.Deserialize(json))
+            foreach (var def in declarations)
             {
                 var parts = new List<ResolvedExclusionPart>(def.Parts.Count);
                 foreach (var part in def.Parts)
@@ -721,7 +722,7 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
                     schema,
                     name,
                     parts,
-                    def.Method ?? "gist",
+                    def.Method,
                     def.Filter,
                     def.Deferrable,
                     def.InitiallyDeferred));

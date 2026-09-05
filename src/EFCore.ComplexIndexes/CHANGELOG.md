@@ -11,6 +11,12 @@ covers all three packages.
   Default names are checked too — this package never truncates them, unlike EF Core's own — and a
   provider without a limit is left alone.
 
+- **New:** `GetComplexIndexes()` / `GetDeclaredComplexIndexes()` on `IReadOnlyEntityType`,
+  `GetComplexIndexes()` and `FindComplexIndex(name)` on `IReadOnlyModel` — the declarations read
+  back as `ComplexIndexDeclaration`s (parts as property paths, `IsUnique`, `Filter`, explicit `Name`,
+  provider options of entity-level declarations), from the mutable model in `OnModelCreating` too.
+  The differ reads the model through the same code.
+
 ## 5.1.0
 
 - **Fixed:** `HasDifferences` now reports changes to complex indexes (and, through the satellites'

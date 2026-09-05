@@ -80,6 +80,20 @@ see the PostgreSQL package.
 
 ---
 
+### Reading declarations back
+
+`GetComplexIndexes()` on an entity type (or the model) returns every declaration — property-level,
+entity-level, composite, expression — with its parts, `IsUnique`, `Filter` and explicit `Name`, so an
+application can check its own conventions; `FindComplexIndex(name)` looks one up by explicit name.
+It works on the mutable model inside `OnModelCreating` too, and the differ reads declarations
+through the same code.
+
+```csharp
+var unfiltered = modelBuilder.Model.GetEntityTypes()
+    .SelectMany(e => e.GetComplexIndexes())
+    .Where(ix => ix.IsUnique && ix.Filter is null);
+```
+
 ## Documentation
 
 Full documentation, including every provider-specific feature:

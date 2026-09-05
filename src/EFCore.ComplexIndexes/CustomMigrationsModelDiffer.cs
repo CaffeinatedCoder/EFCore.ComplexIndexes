@@ -1,4 +1,3 @@
-using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata;
 using Microsoft.EntityFrameworkCore.Migrations;
@@ -465,6 +464,8 @@ public class CustomMigrationsModelDiffer(
     protected virtual (int Length, string Unit) MeasureIdentifier(string identifier)
         => (identifier.Length, "characters");
 
+    // Declarations come from the same reader an application uses (ComplexIndexModelExtensions),
+    // so the read model and the migration cannot disagree about what was declared.
     private HashSet<IndexDescriptor> ExtractAllIndexDescriptors(IRelationalModel? relationalModel)
     {
         var result = new HashSet<IndexDescriptor>();
@@ -472,19 +473,26 @@ public class CustomMigrationsModelDiffer(
 
         foreach (var entityType in relationalModel.Model.GetEntityTypes())
         {
+            var declarations = entityType.GetDeclaredComplexIndexes();
+            if (declarations.Count == 0)
+                continue;
+
             var tableName = entityType.GetTableName();
             var schema    = entityType.GetSchema();
             if (tableName is null)
             {
-                if (DeclaresComplexIndexes(entityType))
-                    ThrowIfDeclaredOnUnmappedType(entityType, "complex indexes");
+                ThrowIfDeclaredOnUnmappedType(entityType, "complex indexes");
                 continue;
             }
 
             var storeObject = StoreObjectIdentifier.Table(tableName, schema);
 
-            ScanForSingleColumnIndexes(entityType, entityType, pathPrefix: "", tableName, schema, storeObject, result);
-            ScanForCompositeIndexes(entityType, tableName, schema, result);
+            foreach (var declaration in declarations)
+            {
+                result.Add(declaration.Property is { } property
+                               ? ResolvePropertyLevelIndex(entityType, declaration, property, tableName, schema, storeObject)
+                               : ResolveEntityLevelIndex(entityType, declaration, tableName, schema, storeObject));
+            }
         }
 
         return result;
@@ -513,175 +521,89 @@ public class CustomMigrationsModelDiffer(
           + "table: declare them on the concrete entity types instead.");
     }
 
-    private static bool DeclaresComplexIndexes(IEntityType entityType)
-        => entityType.FindAnnotation(ComplexIndexAnnotations.CompositeIndexes)?.Value is string { Length: > 2 }
-        || DeclaresPropertyIndexes(entityType);
-
-    private static bool DeclaresPropertyIndexes(ITypeBase typeBase)
-        => typeBase.GetDeclaredProperties().Any(p => p.FindAnnotation(ComplexIndexAnnotations.IsIndexed)?.Value is true)
-        || typeBase.GetDeclaredComplexProperties().Any(cp => DeclaresPropertyIndexes(cp.ComplexType));
-
-    private void ScanForSingleColumnIndexes(
-        IEntityType              rootEntityType,
-        ITypeBase                typeBase,
-        string                   pathPrefix,
-        string                   tableName,
-        string?                  schema,
-        StoreObjectIdentifier    storeObject,
-        HashSet<IndexDescriptor> results
+    private IndexDescriptor ResolvePropertyLevelIndex(
+        IEntityType             entityType,
+        ComplexIndexDeclaration declaration,
+        IReadOnlyProperty       property,
+        string                  tableName,
+        string?                 schema,
+        StoreObjectIdentifier   storeObject
     )
     {
-        foreach (var property in typeBase.GetDeclaredProperties())
+        var columnName = property.GetColumnName(storeObject);
+
+        // No table column — a JSON-mapped complex member, for example. Give the provider
+        // satellite a chance to resolve it to an expression part before giving up.
+        var part = columnName is not null
+                       ? new ResolvedIndexPart(false, columnName)
+                       : ResolveUnmappedPart(entityType, declaration.Parts[0], storeObject)
+                      ?? throw new InvalidOperationException(
+                             $"The property '{property.Name}' on '{property.DeclaringType.Name}' is marked with " +
+                             $"HasComplexIndex but has no column mapping for table '{tableName}'. " +
+                             "A property mapped to JSON (or not mapped to this table) cannot carry " +
+                             "a complex index here; use an expression index over the JSON column instead.");
+
+        var indexName = declaration.Name ?? $"IX_{tableName}_{BuildPartToken(part)}";
+
+        // Collect only whitelisted provider index options; everything else on the property is a
+        // column facet that does not belong on an index operation.
+        var providerAnnotations = new Dictionary<string, object?>();
+        foreach (var annotation in property.GetAnnotations())
         {
-            if (property.FindAnnotation(ComplexIndexAnnotations.IsIndexed)?.Value is not true)
+            if (IsForwardedIndexAnnotation(annotation.Name))
+                providerAnnotations[annotation.Name] = TransformIndexAnnotation(entityType, annotation.Name, annotation.Value, storeObject);
+        }
+
+        return new IndexDescriptor(tableName, schema, [part], indexName, declaration.IsUnique, declaration.Filter, providerAnnotations);
+    }
+
+    private IndexDescriptor ResolveEntityLevelIndex(
+        IEntityType             entityType,
+        ComplexIndexDeclaration declaration,
+        string                  tableName,
+        string?                 schema,
+        StoreObjectIdentifier   storeObject
+    )
+    {
+        var parts = new List<ResolvedIndexPart>(declaration.Parts.Count);
+
+        foreach (var part in declaration.Parts)
+        {
+            if (part.IsExpression)
+            {
+                parts.Add(new ResolvedIndexPart(true, part.Expression!, part.Descending, part.NullSort));
                 continue;
-
-            var columnName = property.GetColumnName(storeObject);
-
-            // No table column — a JSON-mapped complex member, for example. Give the provider
-            // satellite a chance to resolve it to an expression part before giving up.
-            var part = columnName is not null
-                           ? new ResolvedIndexPart(false, columnName)
-                           : ResolveUnmappedPart(
-                                 rootEntityType,
-                                 new IndexPartDefinition { PropertyPath = pathPrefix + property.Name },
-                                 storeObject)
-                          ?? throw new InvalidOperationException(
-                                 $"The property '{property.Name}' on '{typeBase.Name}' is marked with " +
-                                 $"HasComplexIndex but has no column mapping for table '{tableName}'. " +
-                                 "A property mapped to JSON (or not mapped to this table) cannot carry " +
-                                 "a complex index here; use an expression index over the JSON column instead.");
-
-            var isUnique = property.FindAnnotation(ComplexIndexAnnotations.IsUnique)?.Value is true;
-            var filter   = property.FindAnnotation(ComplexIndexAnnotations.Filter)?.Value as string;
-            var indexName = property.FindAnnotation(ComplexIndexAnnotations.IndexName)?.Value as string
-                         ?? $"IX_{tableName}_{BuildPartToken(part)}";
-
-            // Collect only whitelisted provider index options; everything else on the property is a
-            // column facet that does not belong on an index operation.
-            var providerAnnotations = new Dictionary<string, object?>();
-            foreach (var ann in property.GetAnnotations())
-            {
-                if (IsForwardedIndexAnnotation(ann.Name))
-                    providerAnnotations[ann.Name] = TransformIndexAnnotation(rootEntityType, ann.Name, ann.Value, storeObject);
             }
 
-            results.Add(new IndexDescriptor(tableName, schema, [part], indexName, isUnique, filter, providerAnnotations));
-        }
-
-        foreach (var cp in typeBase.GetDeclaredComplexProperties())
-            ScanForSingleColumnIndexes(rootEntityType, cp.ComplexType, $"{pathPrefix}{cp.Name}.", tableName, schema, storeObject, results);
-    }
-
-    private void ScanForCompositeIndexes(
-        IEntityType              entityType,
-        string                   tableName,
-        string?                  schema,
-        HashSet<IndexDescriptor> results
-    )
-    {
-        var annotation = entityType.FindAnnotation(ComplexIndexAnnotations.CompositeIndexes);
-
-        if (annotation?.Value is not string json || string.IsNullOrEmpty(json))
-            return;
-
-        var definitions = CompositeIndexSerializer.Deserialize(json);
-        var storeObject = StoreObjectIdentifier.Table(tableName, schema);
-
-        foreach (var def in definitions)
-        {
-            var parts = new List<ResolvedIndexPart>(def.EffectiveParts.Count);
-
-            foreach (var part in def.EffectiveParts)
+            if (part.IsTemplate)
             {
-                if (part.IsExpression)
-                {
-                    parts.Add(new ResolvedIndexPart(true, part.Expression!, part.Descending, part.NullSort));
-                    continue;
-                }
-
-                if (part.IsTemplate)
-                {
-                    parts.Add(ResolveTemplatePart(entityType, part, storeObject));
-                    continue;
-                }
-
-                var col = ResolveColumnName(entityType, part.PropertyPath!, storeObject);
-                if (col is not null)
-                {
-                    parts.Add(new ResolvedIndexPart(false, col, part.Descending, part.NullSort));
-                    continue;
-                }
-
-                // No table column — give the provider satellite a chance (JSON members, …).
-                var unmapped = ResolveUnmappedPart(entityType, part, storeObject)
-                            ?? throw new InvalidOperationException(
-                                   $"Could not resolve property path '{part.PropertyPath}' for index on entity {entityType.Name}."
-                               );
-
-                parts.Add(unmapped);
+                parts.Add(ResolveTemplatePart(entityType, part, storeObject));
+                continue;
             }
 
-            var indexName = def.IndexName ?? $"IX_{tableName}_{string.Join("_", parts.Select(BuildPartToken))}";
+            var col = ResolveColumnName(entityType, part.PropertyPath!, storeObject);
+            if (col is not null)
+            {
+                parts.Add(new ResolvedIndexPart(false, col, part.Descending, part.NullSort));
+                continue;
+            }
 
-            var normalized = NormalizeProviderAnnotations(def.ProviderAnnotations);
-            foreach (var key in normalized.Keys.ToList())
-                normalized[key] = TransformIndexAnnotation(entityType, key, normalized[key], storeObject);
+            // No table column — give the provider satellite a chance (JSON members, …).
+            var unmapped = ResolveUnmappedPart(entityType, part, storeObject)
+                        ?? throw new InvalidOperationException(
+                               $"Could not resolve property path '{part.PropertyPath}' for index on entity {entityType.Name}."
+                           );
 
-            results.Add(
-                new IndexDescriptor(
-                    tableName,
-                    schema,
-                    parts,
-                    indexName,
-                    def.IsUnique,
-                    def.Filter,
-                    normalized
-                )
-            );
-        }
-    }
-
-    private static Dictionary<string, object?> NormalizeProviderAnnotations(Dictionary<string, object?>? annotations)
-    {
-        if (annotations is null) return [];
-
-        var result = new Dictionary<string, object?>(annotations.Count);
-
-        foreach (var (key, value) in annotations)
-        {
-            result[key] = value is JsonElement je
-                              ? NormalizeJsonElement(je)
-                              : value;
+            parts.Add(unmapped);
         }
 
-        return result;
-    }
+        var indexName = declaration.Name ?? $"IX_{tableName}_{string.Join("_", parts.Select(BuildPartToken))}";
 
-    private static object? NormalizeJsonElement(JsonElement je)
-    {
-        return je.ValueKind switch
-               {
-                   JsonValueKind.String => je.GetString(),
-                   JsonValueKind.True   => true,
-                   JsonValueKind.False  => false,
-                   JsonValueKind.Number => NormalizeNumber(je),
-                   JsonValueKind.Null   => null,
-                   JsonValueKind.Array => je.EnumerateArray()
-                                            .Select(e => e.ValueKind == JsonValueKind.String ? e.GetString() : e.ToString())
-                                            .ToArray(),
-                   _ => je.ToString()
-               };
-    }
+        var providerAnnotations = new Dictionary<string, object?>(declaration.ProviderAnnotations.Count);
+        foreach (var (key, value) in declaration.ProviderAnnotations)
+            providerAnnotations[key] = TransformIndexAnnotation(entityType, key, value, storeObject);
 
-    // int first: provider generators read their numeric index options with `as int?` (e.g. SQL
-    // Server's FILLFACTOR), which returns null for a boxed long or double — the option would be
-    // silently dropped. (A ternary here would also coerce every integral to double.)
-    private static object NormalizeNumber(JsonElement je)
-    {
-        if (je.TryGetInt32(out var i)) return i;
-        if (je.TryGetInt64(out var l)) return l;
-        return je.GetDouble();
+        return new IndexDescriptor(tableName, schema, parts, indexName, declaration.IsUnique, declaration.Filter, providerAnnotations);
     }
 
     // Builds a default index-name token for a part: column names pass through; expressions are

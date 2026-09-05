@@ -9,7 +9,7 @@ namespace EFCore.ComplexIndexes.PostgreSQL;
 /// compared with (e.g. <c>=</c>, <c>&amp;&amp;</c>). Exactly one of <see cref="PropertyPath"/> /
 /// <see cref="Expression"/> is set.
 /// </summary>
-internal sealed class ExclusionPartDefinition : IEquatable<ExclusionPartDefinition>
+public sealed class ExclusionPartDefinition : IEquatable<ExclusionPartDefinition>
 {
     /// <summary>Dotted property path (e.g. <c>Address.City</c>) resolved to a column name. Null for expression parts.</summary>
     [JsonPropertyName("path")] public string? PropertyPath { get; init; }
@@ -20,16 +20,22 @@ internal sealed class ExclusionPartDefinition : IEquatable<ExclusionPartDefiniti
     /// <summary>The comparison operator rendered after <c>WITH</c>.</summary>
     [JsonPropertyName("op")] public string Operator { get; init; } = "";
 
+    /// <summary>Whether this element is a verbatim SQL expression rather than a column reference.</summary>
     [JsonIgnore] public bool IsExpression => Expression is not null;
 
+    /// <summary>Compares path, expression and operator.</summary>
+    /// <param name="other">The element to compare with.</param>
+    /// <returns><c>true</c> if the two describe the same element.</returns>
     public bool Equals(ExclusionPartDefinition? other) =>
         other is not null
      && PropertyPath == other.PropertyPath
      && Expression   == other.Expression
      && Operator     == other.Operator;
 
+    /// <inheritdoc />
     public override bool Equals(object? obj) => Equals(obj as ExclusionPartDefinition);
 
+    /// <inheritdoc />
     public override int GetHashCode() => HashCode.Combine(PropertyPath, Expression, Operator);
 }
 

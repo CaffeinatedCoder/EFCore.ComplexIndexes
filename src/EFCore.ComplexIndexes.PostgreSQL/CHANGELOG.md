@@ -13,6 +13,12 @@ covers all three packages.
   temporal foreign key names, built from two table names, are the first to hit it: give the
   declaration a `name` — a name-only change renames the constraint in place.
 
+- **New:** `GetExclusionConstraints()` / `GetDeclaredExclusionConstraints()` on `IReadOnlyEntityType`,
+  `GetExclusionConstraints()` and `FindExclusionConstraint(name)` on `IReadOnlyModel` — exclusion
+  constraints read back as `ExclusionConstraintDeclaration`s (elements with operators, method,
+  filter, deferrability, explicit name). `ExclusionPartDefinition` and
+  `NpgsqlExclusionAnnotations` are public now. The differ reads the model through the same code.
+
 ## 5.1.0
 
 - **Changed:** `UseNpgsqlComplexIndexes()` / `AddNpgsqlComplexIndexes()` also register the PostgreSQL

@@ -278,6 +278,20 @@ revoked rows" collapsed to one constraint. Name collisions matter more here than
 every ADD is preceded by `DROP CONSTRAINT IF EXISTS`, so a duplicate name does not fail at apply
 time — the second constraint silently replaces the first.
 
+### The read model is the differ's reader
+
+`ComplexIndexModelExtensions.GetDeclaredComplexIndexes` (core) and
+`NpgsqlExclusionModelExtensions.GetDeclaredExclusionConstraints` (PostgreSQL) turn the annotations
+into `ComplexIndexDeclaration` / `ExclusionConstraintDeclaration` objects — the public surface an
+application uses to check its own conventions ("every unique index and exclusion constraint on a
+withdrawable aggregate is filtered"). Since 5.2.0 the differs build their descriptors from exactly
+these readers and resolve columns on top; there is no second parser. Keep it that way: a read model
+that disagrees with the differ silently checks something other than what the migration enforces,
+which is the outcome the guard exists to prevent. Declarations are reported unresolved — parts as
+property paths, `Name` null for a default-named one — because resolution needs the relational model
+and, for JSON members and templates, the satellite; `FindComplexIndex` therefore matches explicit
+names only.
+
 ### Two integration seams: design-time vs. runtime
 
 There are two distinct hook points, and it matters which one a feature uses:
