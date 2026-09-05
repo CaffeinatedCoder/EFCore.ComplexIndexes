@@ -131,7 +131,10 @@ builder.HasComplexIndex(x => x.EmailAddress.Value,
 Index names must be unique per table, and the package enforces it rather than letting the database
 reject the migration: reusing a name throws at the declaration, and two declarations that resolve to
 the same name — including a property-level and an entity-level index over one column, which share a
-default name — throw during `dotnet ef migrations add`.
+default name — throw during `dotnet ef migrations add`. So does a name longer than the provider's
+identifier limit: PostgreSQL would otherwise truncate it to 63 bytes with a NOTICE and apply the
+migration cleanly, leaving the index under a name that no declaration and no constraint-violation
+error ever reports. Default names are checked too, since this package never truncates them.
 
 ### Composite index across scalar and nested properties
 

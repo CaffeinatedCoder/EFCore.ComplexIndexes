@@ -76,6 +76,7 @@ public class CustomMigrationsModelDiffer(
         // still be diffable, or the model could never be fixed.
         ValidateUniqueIndexNames(targetIndexes);
         ValidateNoNativeIndexNameCollision(target, targetIndexes);
+        ValidateIndexNameLengths(target, targetIndexes);
 
         if (sourceIndexes.Count == 0 && targetIndexes.Count == 0)
             return operations;
@@ -409,6 +410,60 @@ public class CustomMigrationsModelDiffer(
               + "Give one of them a different name.");
         }
     }
+
+    private void ValidateIndexNameLengths(IRelationalModel? target, HashSet<IndexDescriptor> descriptors)
+    {
+        if (target is null)
+            return;
+
+        foreach (var descriptor in descriptors)
+            ThrowIfIdentifierTooLong(target.Model, descriptor.IndexName, "complex index", descriptor.TableName, "indexName");
+    }
+
+    /// <summary>
+    /// Fails when <paramref name="name"/> is longer than the provider's identifier limit
+    /// (<see cref="RelationalModelExtensions.GetMaxIdentifierLength"/>). Satellites call it for the
+    /// names of the constraints they emit; the core calls it for every complex index name.
+    /// </summary>
+    /// <remarks>
+    /// The names this package derives are never truncated, unlike EF's own default names. PostgreSQL
+    /// cuts a longer identifier down to 63 bytes with a NOTICE and applies the migration cleanly, so
+    /// the index exists under a name that neither the declaration nor a later constraint-violation
+    /// error ever matches — a slice that dispatches on the constraint name falls through in silence.
+    /// SQL Server rejects the statement instead. Both are caught here, at <c>migrations add</c>.
+    /// Validate the <em>target</em> model only: a snapshot already carrying such a name has to stay
+    /// diffable, or the model could never be fixed.
+    /// </remarks>
+    /// <param name="model">The target model, whose provider sets the identifier limit.</param>
+    /// <param name="name">The resolved index or constraint name.</param>
+    /// <param name="kind">What the name belongs to, for the message — <c>"complex index"</c>, <c>"exclusion constraint"</c>, …</param>
+    /// <param name="table">The table the declaration targets, for the message.</param>
+    /// <param name="parameter">The declaration parameter that sets an explicit name, for the message.</param>
+    protected void ThrowIfIdentifierTooLong(IReadOnlyModel model, string name, string kind, string table, string parameter)
+    {
+        var limit            = model.GetMaxIdentifierLength();
+        var (length, unit)   = MeasureIdentifier(name);
+
+        if (length <= limit)
+            return;
+
+        throw new InvalidOperationException(
+            $"The {kind} name '{name}' on table '{table}' is {length} {unit} long, but the provider allows at most {limit}. "
+          + $"A longer name is truncated or rejected when the migration is applied, so the {kind} would exist under a "
+          + "name that neither this declaration nor a constraint-violation error ever reports. "
+          + $"Give the declaration an explicit, shorter name ({parameter}).");
+    }
+
+    /// <summary>
+    /// Measures an identifier the way the provider does when enforcing
+    /// <see cref="RelationalModelExtensions.GetMaxIdentifierLength"/>. The core counts characters,
+    /// which is what SQL Server's 128-character limit means; PostgreSQL's 63 is a byte count, so its
+    /// satellite overrides this to measure UTF-8 bytes.
+    /// </summary>
+    /// <param name="identifier">The identifier to measure.</param>
+    /// <returns>The length and the unit it is expressed in, for error messages.</returns>
+    protected virtual (int Length, string Unit) MeasureIdentifier(string identifier)
+        => (identifier.Length, "characters");
 
     private HashSet<IndexDescriptor> ExtractAllIndexDescriptors(IRelationalModel? relationalModel)
     {

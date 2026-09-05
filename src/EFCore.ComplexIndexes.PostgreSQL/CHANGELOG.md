@@ -4,6 +4,15 @@ Changes to the PostgreSQL satellite, newest first. The
 [root changelog](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/CHANGELOG.md)
 covers all three packages.
 
+## 5.2.0
+
+- **Changed:** an index, exclusion constraint, temporal constraint or temporal foreign key whose
+  name exceeds 63 bytes is rejected at `migrations add`. PostgreSQL would truncate it with a NOTICE
+  and apply the migration cleanly, leaving the object under a name that no declaration and no
+  constraint-violation error ever reports. Measured in UTF-8 bytes, as PostgreSQL does. Default
+  temporal foreign key names, built from two table names, are the first to hit it: give the
+  declaration a `name` — a name-only change renames the constraint in place.
+
 ## 5.1.0
 
 - **Changed:** `UseNpgsqlComplexIndexes()` / `AddNpgsqlComplexIndexes()` also register the PostgreSQL

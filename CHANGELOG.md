@@ -6,6 +6,15 @@ covering only what changed for that package:
 [PostgreSQL](src/EFCore.ComplexIndexes.PostgreSQL/CHANGELOG.md),
 [SQL Server](src/EFCore.ComplexIndexes.SqlServer/CHANGELOG.md).
 
+## 5.2.0
+
+The features AuditOffice's review of its own workarounds asked for, in the order they pay off:
+a validation for a failure that reports nothing, a read model so an application can check its
+own obligations, filters that resolve property paths the way index parts already do, an amend
+API, and typed filter predicates.
+
+- **Changed:** an index or constraint name longer than the provider's identifier limit is rejected at `dotnet ef migrations add`. PostgreSQL truncates a name past 63 bytes with a NOTICE and applies the migration cleanly, so the index exists under a name that neither the declaration nor a later constraint-violation error reports — a slice dispatching on the constraint name falls through in silence; SQL Server rejects the statement at apply time instead. Explicit and default names alike are checked, measured the way the provider measures them (bytes on PostgreSQL, characters on SQL Server), on the target model only. The names this package derives are never truncated, unlike EF Core's own default names, so a long table name plus a long column path reaches the limit quietly, and a default temporal foreign key name, built from two table names, is the first to. Give the declaration a name; a name-only change renames in place.
+
 ## 5.1.0
 
 Small enhancements around the two seams, plus the silent failures found while planning the next

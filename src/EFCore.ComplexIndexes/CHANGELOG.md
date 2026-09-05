@@ -4,6 +4,13 @@ Changes to the core package, newest first. The
 [root changelog](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/CHANGELOG.md)
 covers all three packages.
 
+## 5.2.0
+
+- **Changed:** a complex index name longer than the provider's identifier limit
+  (`GetMaxIdentifierLength`, 63 on PostgreSQL, 128 on SQL Server) is rejected at `migrations add`.
+  Default names are checked too — this package never truncates them, unlike EF Core's own — and a
+  provider without a limit is left alone.
+
 ## 5.1.0
 
 - **Fixed:** `HasDifferences` now reports changes to complex indexes (and, through the satellites'

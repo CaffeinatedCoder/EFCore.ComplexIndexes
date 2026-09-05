@@ -50,8 +50,9 @@ builder.HasComplexIndex(x => x.EmailAddress.Value,
     indexName: "ix_person_email_all");
 ```
 
-Index names must be unique per table, and the package enforces it rather than letting the database
-reject the migration.
+Index names must be unique per table and within the provider's identifier limit (63 bytes on
+PostgreSQL, which would otherwise truncate silently), and the package enforces both at
+`dotnet ef migrations add` rather than letting the database reject — or quietly shorten — the name.
 
 ### Composite index across scalar and nested properties
 

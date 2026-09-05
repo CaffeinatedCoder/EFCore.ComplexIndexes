@@ -77,6 +77,13 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
     protected override bool CanRenameIndexes => true;
 
     /// <summary>
+    /// PostgreSQL's identifier limit (<c>NAMEDATALEN - 1</c>, 63) is a byte count: a name made of
+    /// non-ASCII characters hits it well before its 63rd character.
+    /// </summary>
+    protected override (int Length, string Unit) MeasureIdentifier(string identifier)
+        => (System.Text.Encoding.UTF8.GetByteCount(identifier), "bytes");
+
+    /// <summary>
     /// Npgsql's generator reads index collations from <c>Relational:Collation</c> on the operation;
     /// the option is stored under Npgsql's model key so that a property-level declaration is never
     /// mistaken for the column's collation.
@@ -332,7 +339,7 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
     // types. Drops are emitted as EF's own Drop* operations (the stock generator renders those
     // correctly) and placed before the base EF operations; adds are fully rendered DDL emitted as
     // SqlOperations after them, with UNIQUE constraints before FOREIGN KEYs.
-    private static IReadOnlyList<MigrationOperation> ApplyTemporalConstraints(
+    private IReadOnlyList<MigrationOperation> ApplyTemporalConstraints(
         IReadOnlyList<MigrationOperation> operations,
         IRelationalModel?                 source,
         IRelationalModel?                 target,
@@ -346,6 +353,16 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
         var targetConstraints = BuildDescriptors(target, typeMappingSource);
         var sourceForeignKeys = BuildForeignKeyDescriptors(source, typeMappingSource, sourceConstraints);
         var targetForeignKeys = BuildForeignKeyDescriptors(target, typeMappingSource, targetConstraints);
+
+        // Target only — the source is history.
+        if (target is not null)
+        {
+            foreach (var constraint in targetConstraints)
+                ThrowIfIdentifierTooLong(target.Model, constraint.Name, "temporal constraint", constraint.Table, "name");
+
+            foreach (var foreignKey in targetForeignKeys)
+                ThrowIfIdentifierTooLong(target.Model, foreignKey.Name, "temporal foreign key", foreignKey.DependentTable, "name");
+        }
 
         if (sourceConstraints.Count == 0 && targetConstraints.Count == 0
                                         && sourceForeignKeys.Count == 0 && targetForeignKeys.Count == 0)
@@ -516,7 +533,7 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
     // SQL operations (EF has no exclusion-constraint operation type). The DDL is fully rendered at
     // design time, so no runtime SQL-generator wiring is needed. Drops are placed before the base EF
     // operations, adds after — mirroring the index and temporal ordering.
-    private static IReadOnlyList<MigrationOperation> ApplyExclusionConstraints(
+    private IReadOnlyList<MigrationOperation> ApplyExclusionConstraints(
         IReadOnlyList<MigrationOperation> operations,
         IRelationalModel?                 source,
         IRelationalModel?                 target,
@@ -530,6 +547,12 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
 
         // Target only — a snapshot that already contains a collision must stay diffable.
         ValidateUniqueExclusionNames(targetConstraints);
+
+        if (target is not null)
+        {
+            foreach (var constraint in targetConstraints)
+                ThrowIfIdentifierTooLong(target.Model, constraint.Name, "exclusion constraint", constraint.Table, "name");
+        }
 
         if (sourceConstraints.Count == 0 && targetConstraints.Count == 0)
             return operations;
