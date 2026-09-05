@@ -4,6 +4,14 @@ Changes to the core package, newest first. The
 [root changelog](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/CHANGELOG.md)
 covers all three packages.
 
+## 5.1.0
+
+- **Fixed:** `HasDifferences` now reports changes to complex indexes (and, through the satellites'
+  overrides, exclusion and temporal constraints). EF Core's base implementation bypasses
+  `GetDifferences`, so `dotnet ef migrations has-pending-model-changes`, the pending-model-changes
+  warning `Migrate()` raises, and the snapshot check in `migrations remove` all reported "no changes"
+  when only a declaration from this package had changed.
+
 ## 5.0.3
 
 - **Changed:** the `Microsoft.EntityFrameworkCore.Abstractions` dependency is now `[10.0.0, 11.0.0)`.

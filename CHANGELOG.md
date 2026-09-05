@@ -6,6 +6,10 @@ covering only what changed for that package:
 [PostgreSQL](src/EFCore.ComplexIndexes.PostgreSQL/CHANGELOG.md),
 [SQL Server](src/EFCore.ComplexIndexes.SqlServer/CHANGELOG.md).
 
+## 5.1.0
+
+- **Fixed:** `HasDifferences` now reports changes to complex indexes, exclusion constraints and temporal constraints. EF Core's base implementation runs its own `Diff` rather than the `GetDifferences` this package overrides, so every check built on it reported "no changes" when only a declaration from this package had changed: `dotnet ef migrations has-pending-model-changes`, the pending-model-changes warning `Migrate()` raises since EF Core 9, and the snapshot check in `migrations remove`. A CI gate built on `has-pending-model-changes` may now fail where it previously passed — that is the gate working.
+
 ## 5.0.3
 
 A packaging and documentation release. No behaviour changes to the differ or the generated SQL.

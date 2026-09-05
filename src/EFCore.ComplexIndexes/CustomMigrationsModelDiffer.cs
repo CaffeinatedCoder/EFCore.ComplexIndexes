@@ -198,6 +198,24 @@ public class CustomMigrationsModelDiffer(
     }
 
     /// <summary>
+    /// Reports whether the two models differ, including in the declarations this package owns.
+    /// </summary>
+    /// <remarks>
+    /// EF Core's implementation runs its protected <c>Diff</c> directly rather than the public
+    /// <see cref="GetDifferences"/> this class overrides, so it never saw a complex index, exclusion
+    /// constraint or temporal constraint change. Everything built on it then reported "no changes"
+    /// for exactly those changes: <c>dotnet ef migrations has-pending-model-changes</c>, the
+    /// pending-model-changes warning <c>Migrate()</c> raises, and the snapshot check in
+    /// <c>migrations remove</c>. Routing through <see cref="GetDifferences"/> also picks up whatever
+    /// a provider satellite adds in its own override.
+    /// </remarks>
+    /// <param name="source">The model migrated from — typically the snapshot.</param>
+    /// <param name="target">The model migrated to — the current <c>OnModelCreating</c> result.</param>
+    /// <returns><c>true</c> if migrating from <paramref name="source"/> to <paramref name="target"/> needs any operation.</returns>
+    public override bool HasDifferences(IRelationalModel? source, IRelationalModel? target)
+        => GetDifferences(source, target).Count > 0;
+
+    /// <summary>
     /// Called for each <see cref="CreateIndexOperation"/> this differ emits, before it joins the
     /// operation list. Provider satellites override this to reject declarations their provider
     /// cannot express.
