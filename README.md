@@ -230,8 +230,8 @@ Provider-specific features live in their own pages:
 
 | Page | Covers |
 |---|---|
-| **[PostgreSQL — indexes](docs/postgresql-indexes.md)** | Index methods (GIN, GiST, BRIN, SP-GiST, Hash), operator classes, `INCLUDE`, expression (functional) indexes in raw SQL and typed LINQ, JSON member indexes, `NULLS FIRST/LAST` |
-| **[PostgreSQL — temporal and exclusion constraints](docs/postgresql-constraints.md)** | `UNIQUE … WITHOUT OVERLAPS`, temporal foreign keys (`PERIOD`), `EXCLUDE` constraints with `WHERE` predicates, the `btree_gist` extension |
+| **[PostgreSQL — indexes](docs/postgresql-indexes.md)** | Index methods (GIN, GiST, BRIN, SP-GiST, Hash), operator classes, `INCLUDE`, expression (functional) indexes in raw SQL and typed LINQ, typed filter predicates, JSON member indexes, `NULLS FIRST/LAST` |
+| **[PostgreSQL — temporal and exclusion constraints](docs/postgresql-constraints.md)** | `UNIQUE … WITHOUT OVERLAPS`, temporal foreign keys (`PERIOD`), `EXCLUDE` constraints with `WHERE` predicates, reading and amending them, the `btree_gist` extension |
 | **[SQL Server](docs/sqlserver.md)** | Clustered/nonclustered, covering (`INCLUDE`), online builds, fill factor, sort-in-tempdb, data compression — and the declarations SQL Server rejects outright |
 
 Working on the package itself: [CONTRIBUTING.md](CONTRIBUTING.md) covers the setup and the quality
