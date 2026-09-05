@@ -4,6 +4,26 @@ Changes to the core package, newest first. The
 [root changelog](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/CHANGELOG.md)
 covers all three packages.
 
+## 5.1.0
+
+- **Fixed:** `HasDifferences` now reports changes to complex indexes (and, through the satellites'
+  overrides, exclusion and temporal constraints). EF Core's base implementation bypasses
+  `GetDifferences`, so `dotnet ef migrations has-pending-model-changes`, the pending-model-changes
+  warning `Migrate()` raises, and the snapshot check in `migrations remove` all reported "no changes"
+  when only a declaration from this package had changed.
+- **New:** `UseComplexIndexes()` / `AddComplexIndexes()` register the differ at runtime, for providers
+  without a satellite package. `EnsureCreated()`, `GenerateCreateScript()` and `Migrate()`'s
+  pending-model-changes check run the runtime differ, which the design-time wiring never reaches —
+  without this, `EnsureCreated()` created the tables and silently none of the complex indexes.
+- **Fixed:** a complex index named like a native `HasIndex` on the same table is rejected at
+  `migrations add` instead of scaffolding two `CREATE INDEX` statements under one name that fail when
+  applied. An index moving between a native and a complex declaration under one name still diffs.
+- **New:** the property-level `HasComplexIndex` overloads also exist on the non-generic
+  `ComplexTypePropertyBuilder` (`c.Property("Value").HasComplexIndex()`).
+- **Changed:** a complex index declared on an entity type mapped to no table — typically the abstract
+  base of a TPC hierarchy — fails at `migrations add` instead of producing nothing. View-mapped and
+  query-mapped types are still skipped.
+
 ## 5.0.3
 
 - **Changed:** the `Microsoft.EntityFrameworkCore.Abstractions` dependency is now `[10.0.0, 11.0.0)`.

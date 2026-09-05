@@ -1,8 +1,14 @@
 # SQL Server
 
 Provided by the **EFCore.ComplexIndexes.SqlServer** package. The core package is included
-automatically, and there is **no runtime wiring at all** — every option flows as a native SQL Server
+automatically, and migrations need **no runtime wiring** — every option flows as a native SQL Server
 annotation that the provider's own migrations SQL generator renders.
+
+One optional call exists: `UseSqlServerComplexIndexes()` registers the differ at runtime, so
+`Database.EnsureCreated()` and `GenerateCreateScript()` include the complex indexes and the
+pending-model-changes check in `Migrate()` sees one that was never scaffolded. See
+[the runtime wiring section](../README.md#ensurecreated-generatecreatescript-and-the-pending-changes-check)
+in the root README.
 
 ## Index options
 

@@ -27,7 +27,7 @@ EF Core 8.0 introduced complex properties, but migration tooling doesn't automat
 | Package | NuGet | Description |
 |---|---|---|
 | **EFCore.ComplexIndexes** | [![nuget](https://img.shields.io/nuget/v/EFCore.ComplexIndexes.svg)](https://www.nuget.org/packages/EFCore.ComplexIndexes/) | Core library — single-column, composite, unique, and filtered indexes on complex type properties. Works with any EF Core relational provider. |
-| **EFCore.ComplexIndexes.PostgreSQL** | [![nuget](https://img.shields.io/nuget/v/EFCore.ComplexIndexes.PostgreSQL.svg)](https://www.nuget.org/packages/EFCore.ComplexIndexes.PostgreSQL/) | PostgreSQL extensions via [Npgsql](https://www.npgsql.org/efcore/) — adds GIN, GiST, BRIN, SP-GiST, and Hash index methods, operator classes, covering indexes (`INCLUDE`), concurrent creation, nulls-distinct control, `NULLS FIRST/LAST`, **expression (functional) indexes** (raw SQL and **typed LINQ**), **JSON member indexes**, **temporal `UNIQUE` constraints (`WITHOUT OVERLAPS`)**, and **exclusion constraints (`EXCLUDE`)**. |
+| **EFCore.ComplexIndexes.PostgreSQL** | [![nuget](https://img.shields.io/nuget/v/EFCore.ComplexIndexes.PostgreSQL.svg)](https://www.nuget.org/packages/EFCore.ComplexIndexes.PostgreSQL/) | PostgreSQL extensions via [Npgsql](https://www.npgsql.org/efcore/) — adds GIN, GiST, BRIN, SP-GiST, and Hash index methods, operator classes, covering indexes (`INCLUDE`), concurrent creation, nulls-distinct control, per-column collation, storage parameters, `NULLS FIRST/LAST`, **expression (functional) indexes** (raw SQL and **typed LINQ**), **JSON member indexes**, **temporal `UNIQUE` constraints (`WITHOUT OVERLAPS`)**, and **exclusion constraints (`EXCLUDE`)**. |
 | **EFCore.ComplexIndexes.SqlServer** | [![nuget](https://img.shields.io/nuget/v/EFCore.ComplexIndexes.SqlServer.svg)](https://www.nuget.org/packages/EFCore.ComplexIndexes.SqlServer/) | SQL Server extensions — clustered/nonclustered control, covering indexes (`INCLUDE`), online index builds, fill factor, sort-in-tempdb, and data compression on complex-property indexes. Rendered by the stock SQL Server generator; no runtime wiring. |
 
 > **Which package do I need?**
@@ -81,6 +81,26 @@ var provider = new ServiceCollection()
 .BuildServiceProvider();
 ```
 
+### `EnsureCreated`, `GenerateCreateScript`, and the pending-changes check
+
+Migrations go through the design-time differ, which the packages wire up automatically. Three things
+use the **runtime** differ instead and never see that wiring: `Database.EnsureCreated()`,
+`Database.GenerateCreateScript()`, and the pending-model-changes check `Migrate()` performs. Without a
+runtime registration they run EF's stock differ, which cannot see this package's declarations —
+`EnsureCreated()` creates the tables and silently none of the indexes, and `Migrate()` does not warn
+about a complex index that was never scaffolded. Register the differ once, next to the provider:
+
+| Provider | Call |
+|---|---|
+| PostgreSQL | `UseNpgsqlComplexIndexes()` — the same call as above; since 5.1.0 it registers the differ too |
+| SQL Server | `UseSqlServerComplexIndexes()` |
+| Any other provider (SQLite, …) | `UseComplexIndexes()` from the core package |
+
+With a satellite installed, call only the satellite's method: the core differ would give
+`EnsureCreated()` a schema without the satellite's features, such as exclusion constraints. Each call
+has a counterpart for a custom internal service provider: `AddComplexIndexes()`,
+`AddNpgsqlComplexIndexes()` and `AddSqlServerComplexIndexes()`.
+
 ---
 
 ## Core usage — any relational provider
@@ -93,6 +113,9 @@ builder.ComplexProperty(x => x.EmailAddress, c =>
      .HasComplexIndex(isUnique: true, filter: "deleted_at IS NULL")
 );
 ```
+
+The same overloads exist on the non-generic builder, so a property configured by name works too:
+`c.Property("Value").HasComplexIndex()`.
 
 A property-level declaration holds **one** index per property. To give the same column several
 differently-filtered indexes (the classic soft-delete pattern), declare them at the **entity level**

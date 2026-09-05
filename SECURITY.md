@@ -50,8 +50,8 @@ remedy for those is to upgrade.
 
 | Version | Supported |
 |---|---|
-| 5.0.x | ✅ |
-| < 5.0 | ❌ |
+| 5.1.x | ✅ |
+| < 5.1 | ❌ |
 
 ### For how long
 
@@ -82,7 +82,10 @@ The package has **no runtime presence in your application's request path**. It r
 1. **Design time** — a replacement `IMigrationsModelDiffer` invoked by `dotnet ef migrations add`.
    It reads your model and emits migration operations.
 2. **Migration apply time** — only for PostgreSQL expression indexes and `NULLS FIRST/LAST`
-   ordering, and only when a consumer opts in with `UseNpgsqlComplexIndexes()`.
+   ordering, and only when a consumer opts in with `UseNpgsqlComplexIndexes()`. Since 5.1.0 that
+   call (and `UseComplexIndexes()` / `UseSqlServerComplexIndexes()`) also registers the differ at
+   runtime, where `EnsureCreated()`, `GenerateCreateScript()` and `Migrate()`'s pending-model-changes
+   check run it — still against your own model, still opt-in.
 
 Its inputs come from your own `OnModelCreating` code, not from user input. Anyone who can change
 that code can already run arbitrary code in your build.

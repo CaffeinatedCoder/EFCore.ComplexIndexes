@@ -7,10 +7,12 @@ PostgreSQL index and constraint features for
 Adds, on top of the core's complex-property, composite, unique, and filtered indexes:
 
 - **Index methods** — GIN, GiST, BRIN, SP-GiST, Hash — plus operator classes, covering (`INCLUDE`)
-  indexes, concurrent creation, and nulls-distinct control
+  indexes, concurrent creation, nulls-distinct control, per-column collation, and storage parameters
+  (`WITH (fillfactor=70)`)
 - **`NULLS FIRST` / `NULLS LAST`** per-column null ordering
 - **Expression (functional) indexes** — raw SQL *or* typed LINQ, on any entity, complex or not
-- **JSON member indexes** — index members of `ToJson()` complex properties as `->>` extractions
+- **JSON indexes** — index members of `ToJson()` complex properties as `->>` extractions, or the
+  whole document (or a complex collection) with a GIN over the `jsonb` column
 - **Temporal `UNIQUE … WITHOUT OVERLAPS` constraints and temporal foreign keys** (PostgreSQL 18)
 - **Exclusion (`EXCLUDE`) constraints** — filtered overlap protection, on every supported version
 
@@ -29,6 +31,7 @@ and those need a one-time opt-in:
 | Exclusion constraints | no |
 | **Expression indexes** (raw SQL, typed LINQ, JSON member) | **yes** |
 | **`DbOrder.NullsFirst` / `NullsLast`** | **yes** |
+| **`EnsureCreated()` / `GenerateCreateScript()` including the declarations** | **yes** *(since 5.1.0)* |
 
 ```csharp
 services.AddDbContext<AppDbContext>(options =>
@@ -41,7 +44,13 @@ services.AddDbContext<AppDbContext>(options =>
 > named `__requires_UseNpgsqlComplexIndexes__`, so the stock generator fails loudly with that name
 > in the error message.
 
-Building your own internal service provider? Register the generator directly instead:
+Since 5.1.0 the same call also registers the PostgreSQL differ at runtime, so
+`Database.EnsureCreated()` and `GenerateCreateScript()` build the declared indexes and constraints,
+and the pending-model-changes check in `Migrate()` sees a complex index that was never scaffolded.
+Both run the *runtime* differ, which the design-time wiring never reaches; without the call,
+`EnsureCreated()` creates the tables and silently none of the indexes.
+
+Building your own internal service provider? Register the generator and differ directly instead:
 
 ```csharp
 var provider = new ServiceCollection()

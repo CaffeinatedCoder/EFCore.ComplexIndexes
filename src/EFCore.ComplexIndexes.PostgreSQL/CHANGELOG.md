@@ -4,6 +4,32 @@ Changes to the PostgreSQL satellite, newest first. The
 [root changelog](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/CHANGELOG.md)
 covers all three packages.
 
+## 5.1.0
+
+- **Changed:** `UseNpgsqlComplexIndexes()` / `AddNpgsqlComplexIndexes()` also register the PostgreSQL
+  differ at runtime, so `EnsureCreated()` and `GenerateCreateScript()` include complex indexes,
+  expression indexes, and exclusion and temporal constraints, and `Migrate()`'s pending-model-changes
+  check sees a declaration that was never scaffolded. Previously `EnsureCreated()` created the tables
+  and silently none of them.
+- **New:** whole-document JSON indexes. A `HasComplexIndex` selector ending at a `ToJson()` complex
+  property or a complex collection indexes the `jsonb` container column — the idiomatic
+  `USING gin (payload jsonb_path_ops)` — through the stock generator, no runtime wiring. Previously
+  the path failed to resolve, and complex collections could not be indexed at all. A complex property
+  nested inside the document resolves to a `->` extraction (an expression index).
+- **New:** `HasStorageParameter(name, value)` — PostgreSQL storage parameters (`WITH (fillfactor=70)`)
+  on complex and expression indexes, one call per parameter. Forwarded under the per-parameter
+  `Npgsql:StorageParameter:` prefix, which the whitelist and the unknown-key rejection now both accept.
+- **New:** `UseCollation(params string[])` — per-column index collations, positional (`UseCollation("C", "")`
+  collates only the first column). Stored under Npgsql's model key and mapped to `Relational:Collation`
+  on the operation, where Npgsql's generator reads it; a column's own collation is never copied onto
+  the index.
+- **Fixed:** SQL Server index options (`IsClustered`, `HasFillFactor`, …) on a complex index diffed by
+  this satellite are rejected at `migrations add` — property-level and entity-level alike — instead of
+  reaching Npgsql's generator, which ignored them.
+- **Changed:** an exclusion constraint, temporal constraint or temporal foreign key declared on an
+  entity type mapped to no table — typically the abstract base of a TPC hierarchy — fails at
+  `migrations add` instead of producing nothing.
+
 ## 5.0.3
 
 - **Changed:** the `Npgsql.EntityFrameworkCore.PostgreSQL` dependency is now `[10.0.0, 11.0.0)`. This

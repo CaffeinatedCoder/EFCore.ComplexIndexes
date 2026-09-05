@@ -75,6 +75,7 @@ public class CustomMigrationsModelDiffer(
         // Target only: the source is history. A snapshot that already contains a collision must
         // still be diffable, or the model could never be fixed.
         ValidateUniqueIndexNames(targetIndexes);
+        ValidateNoNativeIndexNameCollision(target, targetIndexes);
 
         if (sourceIndexes.Count == 0 && targetIndexes.Count == 0)
             return operations;
@@ -176,7 +177,7 @@ public class CustomMigrationsModelDiffer(
 
             // Forward the whitelisted provider annotations — provider SQL generators handle their own
             foreach (var (key, value) in tgt.ProviderAnnotations)
-                op.AddAnnotation(key, value);
+                op.AddAnnotation(ToOperationAnnotationName(key), value);
 
             // Ordered parts are needed when the stock generator can't render the index: expression
             // parts have no slot in Columns, and NULLS FIRST/LAST has no slot on the native
@@ -196,6 +197,24 @@ public class CustomMigrationsModelDiffer(
 
         return [.. drops, .. operations, .. renames, .. creates];
     }
+
+    /// <summary>
+    /// Reports whether the two models differ, including in the declarations this package owns.
+    /// </summary>
+    /// <remarks>
+    /// EF Core's implementation runs its protected <c>Diff</c> directly rather than the public
+    /// <see cref="GetDifferences"/> this class overrides, so it never saw a complex index, exclusion
+    /// constraint or temporal constraint change. Everything built on it then reported "no changes"
+    /// for exactly those changes: <c>dotnet ef migrations has-pending-model-changes</c>, the
+    /// pending-model-changes warning <c>Migrate()</c> raises, and the snapshot check in
+    /// <c>migrations remove</c>. Routing through <see cref="GetDifferences"/> also picks up whatever
+    /// a provider satellite adds in its own override.
+    /// </remarks>
+    /// <param name="source">The model migrated from — typically the snapshot.</param>
+    /// <param name="target">The model migrated to — the current <c>OnModelCreating</c> result.</param>
+    /// <returns><c>true</c> if migrating from <paramref name="source"/> to <paramref name="target"/> needs any operation.</returns>
+    public override bool HasDifferences(IRelationalModel? source, IRelationalModel? target)
+        => GetDifferences(source, target).Count > 0;
 
     /// <summary>
     /// Called for each <see cref="CreateIndexOperation"/> this differ emits, before it joins the
@@ -241,6 +260,20 @@ public class CustomMigrationsModelDiffer(
     /// operations, where snapshot/code-model asymmetries caused phantom drop/create churn.
     /// </summary>
     protected virtual bool IsForwardedIndexAnnotation(string annotationName) => false;
+
+    /// <summary>
+    /// Maps the key an index option is <em>stored</em> under to the key the provider's SQL generator
+    /// <em>reads</em> from the operation, when the two differ. The default keeps the key.
+    /// </summary>
+    /// <remarks>
+    /// Options are stored under provider model keys (<c>Npgsql:IndexCollation</c>) because the
+    /// property-level API writes them onto the property, where an EF relational key such as
+    /// <c>Relational:Collation</c> would be read as a <em>column</em> facet. Npgsql's generator,
+    /// however, reads index collations from <c>Relational:Collation</c> on the operation — the model
+    /// annotation provider does that mapping for native indexes, and this hook does it for ours.
+    /// Comparison happens on the stored key, so the mapping never affects diffing.
+    /// </remarks>
+    protected virtual string ToOperationAnnotationName(string annotationName) => annotationName;
 
     /// <summary>
     /// Transforms a forwarded provider-annotation value before it is compared and stamped onto the
@@ -328,6 +361,55 @@ public class CustomMigrationsModelDiffer(
         }
     }
 
+    /// <summary>
+    /// Fails when a complex index resolves to the name of a native <c>HasIndex</c> on the same table.
+    /// </summary>
+    /// <remarks>
+    /// The base differ emits the native index and this differ emits the complex one, neither seeing
+    /// the other, so the migration scaffolded two <c>CREATE INDEX</c> statements under one name and
+    /// failed at apply time (PostgreSQL 42P07). Only the target model's native indexes are consulted:
+    /// an index <em>moving</em> between a native declaration and a complex one under the same name
+    /// is a legitimate drop-and-create, not a collision, and must keep diffing.
+    /// </remarks>
+    private static void ValidateNoNativeIndexNameCollision(IRelationalModel? target, HashSet<IndexDescriptor> descriptors)
+    {
+        if (target is null || descriptors.Count == 0)
+            return;
+
+        var native = new Dictionary<(string Table, string? Schema, string Name), string>();
+
+        foreach (var entityType in target.Model.GetEntityTypes())
+        {
+            var tableName = entityType.GetTableName();
+            if (tableName is null) continue;
+
+            var schema      = entityType.GetSchema();
+            var storeObject = StoreObjectIdentifier.Table(tableName, schema);
+
+            // GetIndexes includes inherited ones; under TPH the base and derived types share the table
+            // and report the same index, which TryAdd collapses.
+            foreach (var index in entityType.GetIndexes())
+            {
+                var name = index.GetDatabaseName(storeObject);
+                if (name is null) continue;
+
+                native.TryAdd((tableName, schema, name), string.Join(", ", index.Properties.Select(p => p.Name)));
+            }
+        }
+
+        foreach (var descriptor in descriptors)
+        {
+            if (!native.TryGetValue((descriptor.TableName, descriptor.Schema, descriptor.IndexName), out var properties))
+                continue;
+
+            throw new InvalidOperationException(
+                $"The complex index '{descriptor.IndexName}' on table '{descriptor.TableName}' has the same name as "
+              + $"the native index on ({properties}) declared with HasIndex. Index names must be unique per table — "
+              + "the migration would scaffold two CREATE INDEX statements under one name and fail when applied. "
+              + "Give one of them a different name.");
+        }
+    }
+
     private HashSet<IndexDescriptor> ExtractAllIndexDescriptors(IRelationalModel? relationalModel)
     {
         var result = new HashSet<IndexDescriptor>();
@@ -337,7 +419,12 @@ public class CustomMigrationsModelDiffer(
         {
             var tableName = entityType.GetTableName();
             var schema    = entityType.GetSchema();
-            if (tableName is null) continue;
+            if (tableName is null)
+            {
+                if (DeclaresComplexIndexes(entityType))
+                    ThrowIfDeclaredOnUnmappedType(entityType, "complex indexes");
+                continue;
+            }
 
             var storeObject = StoreObjectIdentifier.Table(tableName, schema);
 
@@ -347,6 +434,37 @@ public class CustomMigrationsModelDiffer(
 
         return result;
     }
+
+    /// <summary>
+    /// Fails when <paramref name="entityType"/> is mapped to no table yet carries declarations only a
+    /// table can satisfy. Call it after establishing both; satellites use it for their own descriptors.
+    /// </summary>
+    /// <remarks>
+    /// The usual shape is the abstract base of a TPC hierarchy: it has no table of its own, so its
+    /// declarations produced nothing — no DDL, no error. Types mapped to a view, a SQL query or a
+    /// function are left alone: an index on those is nothing this package could create, and models
+    /// have carried the annotation there harmlessly.
+    /// </remarks>
+    protected static void ThrowIfDeclaredOnUnmappedType(IEntityType entityType, string declarations)
+    {
+        if (entityType.GetViewName() is not null
+         || entityType.GetSqlQuery() is not null
+         || entityType.GetFunctionName() is not null)
+            return;
+
+        throw new InvalidOperationException(
+            $"'{entityType.DisplayName()}' declares {declarations} but is not mapped to a table, so they cannot be "
+          + "created. This is typically the abstract base of a TPC hierarchy, whose columns live on each concrete "
+          + "table: declare them on the concrete entity types instead.");
+    }
+
+    private static bool DeclaresComplexIndexes(IEntityType entityType)
+        => entityType.FindAnnotation(ComplexIndexAnnotations.CompositeIndexes)?.Value is string { Length: > 2 }
+        || DeclaresPropertyIndexes(entityType);
+
+    private static bool DeclaresPropertyIndexes(ITypeBase typeBase)
+        => typeBase.GetDeclaredProperties().Any(p => p.FindAnnotation(ComplexIndexAnnotations.IsIndexed)?.Value is true)
+        || typeBase.GetDeclaredComplexProperties().Any(cp => DeclaresPropertyIndexes(cp.ComplexType));
 
     private void ScanForSingleColumnIndexes(
         IEntityType              rootEntityType,

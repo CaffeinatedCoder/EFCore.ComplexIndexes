@@ -178,8 +178,11 @@ public sealed class ShopContext : DbContext
 {
     public DbSet<Order> Orders => Set<Order>();
 
+    // The runtime wiring also registers the differ in the context's own service provider, which EF's
+    // design-time host copies before applying the .targets-injected registration. Present here so the
+    // scaffold below proves that the design-time registration still wins with it in place.
     protected override void OnConfiguring(DbContextOptionsBuilder options)
-        => options.UseNpgsql("Host=localhost;Database=smoke");
+        => options.UseNpgsql("Host=localhost;Database=smoke").UseNpgsqlComplexIndexes();
 
     protected override void OnModelCreating(ModelBuilder model)
     {
@@ -247,8 +250,10 @@ public sealed class ShopContext : DbContext
 {
     public DbSet<Order> Orders => Set<Order>();
 
+    // Runtime wiring present for the same reason as in the PostgreSQL consumer.
     protected override void OnConfiguring(DbContextOptionsBuilder options)
-        => options.UseSqlServer("Server=localhost;Database=smoke;Trusted_Connection=True;TrustServerCertificate=True");
+        => options.UseSqlServer("Server=localhost;Database=smoke;Trusted_Connection=True;TrustServerCertificate=True")
+                  .UseSqlServerComplexIndexes();
 
     protected override void OnModelCreating(ModelBuilder model)
     {

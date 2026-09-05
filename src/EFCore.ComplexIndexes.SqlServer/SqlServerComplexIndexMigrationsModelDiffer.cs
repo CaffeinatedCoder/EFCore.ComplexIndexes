@@ -39,9 +39,16 @@ public class SqlServerComplexIndexMigrationsModelDiffer(
         SqlServerAnnotations.DataCompression
     ];
 
-    /// <summary>Forwards exactly the SQL Server index-option annotations the provider's SQL generator renders.</summary>
+    /// <summary>
+    /// Forwards exactly the SQL Server index-option annotations the provider's SQL generator renders —
+    /// and every <c>Npgsql:*</c> key, which is forwarded only so that
+    /// <see cref="ValidateCreateIndexOperation"/> rejects it. A property-level <c>.UseGin()</c> on a
+    /// model diffed by this satellite would otherwise be dropped by the whitelist without a word,
+    /// leaving a plain B-tree where the entity-level declaration of the same option fails loudly.
+    /// </summary>
     protected override bool IsForwardedIndexAnnotation(string annotationName)
-        => SupportedSqlServerAnnotations.Contains(annotationName);
+        => SupportedSqlServerAnnotations.Contains(annotationName)
+        || annotationName.StartsWith("Npgsql:", StringComparison.Ordinal);
 
     /// <summary>SQL Server renames indexes standalone (<c>sp_rename</c>).</summary>
     protected override bool CanRenameIndexes => true;

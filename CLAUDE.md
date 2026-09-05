@@ -224,7 +224,11 @@ that stands alone, and `DocumentationLinkTests` guards only the part that fails 
 
 Property-level annotations reach the `CreateIndexOperation` only through
 `IsForwardedIndexAnnotation` (virtual on the core differ, default **nothing**; the Npgsql differ
-whitelists exactly its five `Npgsql:*` index-option keys). Never revert to sweeping "everything
+whitelists exactly its six `Npgsql:*` index-option keys, plus every key under the per-parameter
+`Npgsql:StorageParameter:` prefix). The key an option is *stored* under can differ from the key the
+provider generator *reads*: `ToOperationAnnotationName` maps `Npgsql:IndexCollation` to
+`Relational:Collation` at stamping time, because the property-level API writes options onto the
+property, where the relational key would be read as the column's collation. Never revert to sweeping "everything
 except known keys": column facets (`Relational:ColumnName`, `Relational:ColumnType`, …) leaked into
 scaffolded migrations that way, and snapshot/code-model asymmetries caused phantom drop/create
 churn (see `PhantomIndexChurnTests`).
@@ -281,6 +285,19 @@ There are two distinct hook points, and it matters which one a feature uses:
 - **Design-time** (`IDesignTimeServices` via the `.targets`-injected attribute) replaces `IMigrationsModelDiffer`. This runs during `dotnet ef migrations add` and is auto-wired — consumers do nothing.
 - **Runtime** (`IMigrationsSqlGenerator`) converts operations to SQL when migrations are *applied*. This is **not** auto-wired; consumers opt in with `optionsBuilder.UseNpgsqlComplexIndexes()` (a `ReplaceService` helper).
 
+Since 5.1.0 the runtime seam also carries the **differ**: `UseComplexIndexes()` (core),
+`UseNpgsqlComplexIndexes()` and `UseSqlServerComplexIndexes()` replace `IMigrationsModelDiffer` in the
+context's own service provider, because `EnsureCreated()`, `GenerateCreateScript()` and the
+pending-model-changes check in `Migrate()` run *that* differ and never see the design-time attribute —
+without it, `EnsureCreated()` creates the tables and silently none of the indexes. Design-time
+selection is unaffected: EF's `AddDbContextDesignTimeServices` seeds the design-time collection with
+the context's differ as a factory registration, and the `.targets` registration is appended after it
+(`DesignTimeServiceRegistrationTests`). Related and easy to miss: `MigrationsModelDiffer.HasDifferences`
+runs EF's protected `Diff`, not `GetDifferences`, so the core overrides it to route through
+`GetDifferences` — otherwise `dotnet ef migrations has-pending-model-changes`, `Migrate()`'s
+pending-changes warning and `migrations remove` all reported "no changes" for a complex-index-only
+change (`PendingModelChangesTests`).
+
 Anything that depends on the runtime seam silently degrades when a consumer forgets the wiring, so
 **prefer rendering DDL at design time** (a `SqlOperation` baked into the migration) whenever the
 statement can be built from resolved column names — that is why exclusion *and* temporal
@@ -317,7 +334,11 @@ differ let satellites resolve what the core cannot:
 - `ResolveUnmappedPart` — a path with no table column; the Npgsql differ builds a JSON extraction
   (`"col" -> 'A' ->> 'B'`) when the path traverses a `ToJson()` complex property, honoring
   `HasJsonPropertyName`. Members extract as text — no automatic casts (text→timestamptz casts are
-  not IMMUTABLE and would blow up `CREATE INDEX`).
+  not IMMUTABLE and would blow up `CREATE INDEX`). A path that *ends* at the JSON-mapped complex
+  property — or at a complex collection, which is always JSON — resolves to the container column
+  as a plain **column** part (so a whole-document GIN needs no runtime wiring); a complex property
+  nested inside the document resolves to a `->` extraction yielding `jsonb`. A table-split complex
+  property stays unresolved: there is no single column to stand for it.
 - `ResolveTemplatePart` — substitutes template placeholders with quoted columns or parenthesized
   JSON extractions; core throws (identifier quoting is provider-specific).
 
@@ -365,7 +386,21 @@ policing those turns any provider index option the satellite doesn't happen to k
 hard failure of the consumer's whole `migrations add` — for indexes that never touched this package.
 The check has to exist because entity-level provider annotations reach the operation *unfiltered*
 (only the property-level path goes through `IsForwardedIndexAnnotation`), so `.UseGin()` on a SQL
-Server model is caught, while a native `HasIndex(...).HasMethod("gin")` is left alone.
+Server model is caught, while a native `HasIndex(...).HasMethod("gin")` is left alone. The
+property-level path used to be the loophole: the whitelist dropped the other satellite's options
+without a word, so a property-level `.UseGin()` diffed by SQL Server applied as a plain B-tree.
+Since 5.1.0 each satellite's `IsForwardedIndexAnnotation` also returns true for the *other*
+provider's prefix (`Npgsql:` / `SqlServer:`) — forwarded solely so the same
+`ValidateCreateIndexOperation` rejects it, which keeps one message for both declaration styles.
+
+### Declarations on types with no table
+
+An entity type mapped to no table — the abstract base of a TPC hierarchy is the usual one — used to
+be skipped by every descriptor scan (`if (tableName is null) continue;`), so an index or constraint
+declared there produced nothing: no DDL, no error. Since 5.1.0 the scans call
+`ThrowIfDeclaredOnUnmappedType` when such a type carries declarations; the satellites use the same
+helper for exclusion and temporal descriptors. Types mapped to a view, SQL query or function are
+still skipped silently — an index on those is nothing this package could create.
 
 ### Key extension points
 

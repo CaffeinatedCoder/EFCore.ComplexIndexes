@@ -44,7 +44,8 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
         NpgsqlAnnotations.IndexOperators,
         NpgsqlAnnotations.IndexInclude,
         NpgsqlAnnotations.CreatedConcurrently,
-        NpgsqlAnnotations.NullsDistinct
+        NpgsqlAnnotations.NullsDistinct,
+        NpgsqlAnnotations.IndexCollation
     ];
 
     /// <summary>
@@ -60,25 +61,52 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
         NpgsqlAnnotations.IndexNullSortOrder
     ];
 
-    /// <summary>Forwards exactly the Npgsql index-option annotations Npgsql's SQL generator renders.</summary>
+    /// <summary>
+    /// Forwards exactly the Npgsql index-option annotations Npgsql's SQL generator renders: the
+    /// whitelisted keys plus every <c>Npgsql:StorageParameter:*</c> key, which is per-parameter. Every
+    /// <c>SqlServer:*</c> key is forwarded too, only so that <see cref="ValidateCreateIndexOperation"/>
+    /// rejects it — a property-level <c>.IsClustered()</c> on a model diffed by this satellite would
+    /// otherwise be dropped by the whitelist without a word.
+    /// </summary>
     protected override bool IsForwardedIndexAnnotation(string annotationName)
-        => SupportedNpgsqlAnnotations.Contains(annotationName);
+        => SupportedNpgsqlAnnotations.Contains(annotationName)
+        || NpgsqlAnnotations.IsStorageParameter(annotationName)
+        || annotationName.StartsWith("SqlServer:", StringComparison.Ordinal);
 
     /// <summary>PostgreSQL renames indexes standalone (<c>ALTER INDEX … RENAME TO</c>).</summary>
     protected override bool CanRenameIndexes => true;
 
     /// <summary>
+    /// Npgsql's generator reads index collations from <c>Relational:Collation</c> on the operation;
+    /// the option is stored under Npgsql's model key so that a property-level declaration is never
+    /// mistaken for the column's collation.
+    /// </summary>
+    protected override string ToOperationAnnotationName(string annotationName)
+        => annotationName == NpgsqlAnnotations.IndexCollation
+               ? RelationalAnnotationNames.Collation
+               : base.ToOperationAnnotationName(annotationName);
+
+    /// <summary>
     /// Rejects <c>Npgsql:*</c> index options this package does not render — typically an entity-level
     /// declaration carrying an option the satellite has no support for, since entity-level provider
     /// annotations reach the operation unfiltered (the property-level path is already whitelisted by
-    /// <see cref="IsForwardedIndexAnnotation"/>).
+    /// <see cref="IsForwardedIndexAnnotation"/>) — and every <c>SqlServer:*</c> option, which belongs
+    /// to the other satellite.
     /// </summary>
     protected override void ValidateCreateIndexOperation(CreateIndexOperation operation)
     {
         foreach (var annotation in operation.GetAnnotations())
         {
+            // The other satellite's options: Npgsql's generator would ignore them, so a clustered or
+            // fill-factor declaration would apply as a plain index without a word.
+            if (annotation.Name.StartsWith("SqlServer:", StringComparison.Ordinal))
+                throw new InvalidOperationException(
+                    $"Complex index '{operation.Name}' carries the SQL Server annotation '{annotation.Name}', but the " +
+                    "model is diffed with the PostgreSQL satellite. Use the EFCore.ComplexIndexes.PostgreSQL options instead.");
+
             if (!annotation.Name.StartsWith("Npgsql:", StringComparison.Ordinal)
-             || SupportedNpgsqlAnnotations.Contains(annotation.Name))
+             || SupportedNpgsqlAnnotations.Contains(annotation.Name)
+             || NpgsqlAnnotations.IsStorageParameter(annotation.Name))
                 continue;
 
             // Superseded keys get their own message: they are not unknown, they are the wrong way
@@ -106,12 +134,15 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
              : base.TransformIndexAnnotation(entityType, annotationName, value, storeObject);
 
     /// <summary>
-    /// Resolves an index part whose path traverses a complex property mapped to JSON
-    /// (<c>ToJson()</c>) into a PostgreSQL extraction expression, e.g.
-    /// <c>"name" -&gt; 'Inner' -&gt;&gt; 'Leaf'</c>. Members are extracted as text
-    /// (<c>-&gt;&gt;</c>) and honor <c>HasJsonPropertyName</c>; for typed semantics use
-    /// <c>HasExpressionIndex</c> with an explicit cast. Like all expression parts, rendering
-    /// requires the <c>UseNpgsqlComplexIndexes()</c> runtime wiring.
+    /// Resolves an index part whose path has no table column: a member of a complex property mapped
+    /// to JSON via <c>ToJson()</c>, or the JSON-mapped complex property (or complex collection)
+    /// itself. A member becomes a PostgreSQL text extraction, e.g.
+    /// <c>"name" -&gt; 'Inner' -&gt;&gt; 'Leaf'</c>, honoring <c>HasJsonPropertyName</c>; for typed
+    /// semantics use <c>HasExpressionIndex</c> with an explicit cast. A path ending at the JSON-mapped
+    /// complex property resolves to its container column — a plain column index, typically
+    /// <c>USING gin</c>, that the stock generator renders with no runtime wiring. A complex property
+    /// nested inside the document resolves to a <c>-&gt;</c> extraction yielding <c>jsonb</c>, which
+    /// GIN indexes too. Expression parts require the <c>UseNpgsqlComplexIndexes()</c> runtime wiring.
     /// </summary>
     protected override ResolvedIndexPart? ResolveUnmappedPart(
         IEntityType           entityType,
@@ -143,24 +174,61 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
             current = complexProperty.ComplexType;
         }
 
-        if (containerColumn is null)
-            return null;
-
         var leaf = current.FindProperty(segments[^1]);
         if (leaf is null)
+            return ResolveComplexLeaf(current, segments[^1], containerColumn, jsonPath, part);
+
+        if (containerColumn is null)
             return null;
 
         jsonPath.Add(leaf.GetJsonPropertyName() ?? leaf.Name);
 
+        return new ResolvedIndexPart(true, BuildJsonExtraction(containerColumn, jsonPath, asText: true), part.Descending, part.NullSort);
+    }
+
+    // The path ends at a complex property rather than a scalar: the whole document, or a
+    // sub-document. At the top of a ToJson() mapping — and a complex collection is always JSON —
+    // that is the container column itself, so the index is a plain column index the stock generator
+    // renders. Nested inside a document it is a `->` extraction, which yields jsonb rather than text.
+    // A table-split complex property has no single column to stand for it, so that stays unresolved.
+    private static ResolvedIndexPart? ResolveComplexLeaf(
+        ITypeBase           current,
+        string              name,
+        string?             containerColumn,
+        List<string>        jsonPath,
+        IndexPartDefinition part
+    )
+    {
+        var complexProperty = current.FindComplexProperty(name);
+        if (complexProperty is null)
+            return null;
+
+        if (containerColumn is null)
+        {
+            var column = complexProperty.ComplexType.GetContainerColumnName();
+            return column is null
+                       ? null
+                       : new ResolvedIndexPart(false, column, part.Descending, part.NullSort);
+        }
+
+        jsonPath.Add(complexProperty.GetJsonPropertyName() ?? complexProperty.Name);
+
+        return new ResolvedIndexPart(true, BuildJsonExtraction(containerColumn, jsonPath, asText: false), part.Descending, part.NullSort);
+    }
+
+    // "col" -> 'A' -> 'B' (jsonb) or, with asText, "col" -> 'A' ->> 'B' (text) for the last step.
+    private static string BuildJsonExtraction(string containerColumn, List<string> jsonPath, bool asText)
+    {
         var sql = new System.Text.StringBuilder(Quote(containerColumn));
         for (var i = 0; i < jsonPath.Count; i++)
         {
-            sql.Append(i == jsonPath.Count - 1 ? " ->> '" : " -> '")
+            var last = i == jsonPath.Count - 1;
+            sql.Append(last && asText ? " ->> '" : " -> '")
                .Append(jsonPath[i].Replace("'", "''"))
                .Append('\'');
         }
 
-        return new ResolvedIndexPart(true, sql.ToString(), part.Descending, part.NullSort);
+        return sql.ToString();
     }
 
     /// <summary>
@@ -225,7 +293,7 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
 
         var jsonPart = ResolveUnmappedPart(entityType, new IndexPartDefinition { PropertyPath = path }, storeObject);
         if (jsonPart is not null)
-            return $"({jsonPart.Value})";
+            return jsonPart.IsExpression ? $"({jsonPart.Value})" : Quote(jsonPart.Value);
 
         throw new InvalidOperationException(
             $"Could not resolve property path '{path}' referenced by an index expression on entity '{entityType.Name}'.");
@@ -592,7 +660,11 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
                 continue;
 
             var table = entityType.GetTableName();
-            if (table is null) continue;
+            if (table is null)
+            {
+                ThrowIfDeclaredOnUnmappedType(entityType, "exclusion constraints");
+                continue;
+            }
 
             var schema      = entityType.GetSchema();
             var storeObject = StoreObjectIdentifier.Table(table, schema);
@@ -692,7 +764,11 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
                 continue;
 
             var table = entityType.GetTableName();
-            if (table is null) continue;
+            if (table is null)
+            {
+                ThrowIfDeclaredOnUnmappedType(entityType, "temporal constraints");
+                continue;
+            }
 
             var schema      = entityType.GetSchema();
             var storeObject = StoreObjectIdentifier.Table(table, schema);
@@ -748,7 +824,11 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
                 continue;
 
             var dependentTable = dependentEntityType.GetTableName();
-            if (dependentTable is null) continue;
+            if (dependentTable is null)
+            {
+                ThrowIfDeclaredOnUnmappedType(dependentEntityType, "temporal foreign keys");
+                continue;
+            }
 
             var dependentSchema      = dependentEntityType.GetSchema();
             var dependentStoreObject = StoreObjectIdentifier.Table(dependentTable, dependentSchema);
