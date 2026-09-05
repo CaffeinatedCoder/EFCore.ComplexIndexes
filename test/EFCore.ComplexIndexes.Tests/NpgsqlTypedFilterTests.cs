@@ -140,7 +140,12 @@ public class NpgsqlTypedFilterTests
     [TestMethod(DisplayName = "The typed amend calls translate and delegate")]
     public void Typed_amend_calls()
     {
-        using var context = new AmendingContext(new DbContextOptionsBuilder<AmendingContext>().UseNpgsql(MigrationHarness.NpgsqlConnection).Options);
+        // Amended is written from OnModelCreating; a private service provider guarantees it runs for this
+        // instance instead of EF reusing a model another test cached (see MutableApiTests).
+        using var context = new AmendingContext(new DbContextOptionsBuilder<AmendingContext>()
+                                               .UseNpgsql(MigrationHarness.NpgsqlConnection)
+                                               .EnableServiceProviderCaching(false)
+                                               .Options);
         var grant = context.Model.FindEntityType(typeof(Grant))!;
 
         Assert.AreEqual(2, context.Amended);
