@@ -26,6 +26,10 @@ covers all three packages.
   (`x => x.Email.Value`), which resolves to the converted column when the member's type is the
   converter's provider type.
 
+- **New:** `AddComplexIndexFilter(predicate, where)` and `AddComplexIndex(definition)` on
+  `IMutableEntityType` — install a filter on every selected declaration (AND-ed onto an existing
+  one, idempotent) or add a declaration with the fluent API's identity rules, from `OnModelCreating`.
+
 ## 5.1.0
 
 - **Fixed:** `HasDifferences` now reports changes to complex indexes (and, through the satellites'

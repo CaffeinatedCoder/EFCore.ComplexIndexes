@@ -152,7 +152,9 @@ indexes — resolve `{Property.Path}` placeholders to columns or JSON extraction
 
 Declared constraints can be read back — `GetExclusionConstraints()` on an entity type or the
 model, `FindExclusionConstraint(name)` — with elements, method, filter, deferrability and name, from
-the mutable model in `OnModelCreating` as well as the finalized one.
+the mutable model in `OnModelCreating` as well as the finalized one; and amended there:
+`AddExclusionConstraintFilter(predicate, where)` ANDs a predicate onto every selected constraint's
+filter, idempotently.
 
 ### `btree_gist`
 

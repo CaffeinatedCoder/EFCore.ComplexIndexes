@@ -26,6 +26,9 @@ covers all three packages.
 - **New:** `x => x.Email.Value` on a converter-mapped value object resolves to the converted column
   in typed expression indexes and exclusion elements too.
 
+- **New:** `AddExclusionConstraintFilter(predicate, where)` on `IMutableEntityType` — ANDs a
+  predicate onto every selected exclusion constraint's filter, idempotently.
+
 ## 5.1.0
 
 - **Changed:** `UseNpgsqlComplexIndexes()` / `AddNpgsqlComplexIndexes()` also register the PostgreSQL

@@ -292,6 +292,15 @@ property paths, `Name` null for a default-named one — because resolution needs
 and, for JSON members and templates, the satellite; `FindComplexIndex` therefore matches explicit
 names only.
 
+The mutable side (`ComplexIndexMutableExtensions`, `NpgsqlExclusionMutableExtensions`) works on
+`IMutableEntityType`: `AddComplexIndex` is `ComplexIndexStorage.AddOrReplace` retyped, so it
+carries the same identity and name rules; `AddComplexIndexFilter` / `AddExclusionConstraintFilter`
+AND a predicate onto selected declarations through `ComplexIndexStorage.Conjoin`, whose
+idempotence rule is deliberately narrow — the predicate is "already there" only when it is the
+whole filter or the exact conjunct this method appends. They amend what is declared *at the time
+of the call*: from `OnModelCreating` after the configurations, never from a model-finalizing
+convention, since a convention-source annotation write cannot overwrite the explicit blob.
+
 ### Two integration seams: design-time vs. runtime
 
 There are two distinct hook points, and it matters which one a feature uses:

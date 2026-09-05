@@ -203,6 +203,25 @@ inherited declarations to the type that declares them. The differ reads the mode
 same code, so the read model and the migration cannot disagree. PostgreSQL exclusion constraints
 have the same surface — see [reading constraints back](docs/postgresql-constraints.md#reading-constraints-back).
 
+### Amending declarations
+
+The same convention can be *installed* rather than checked. On the mutable model,
+`AddComplexIndexFilter` ANDs a predicate onto the filter of every selected declaration —
+property-level and entity-level alike — and `AddComplexIndex` adds an entity-level declaration
+with the fluent API's identity rules:
+
+```csharp
+// At the end of OnModelCreating, after the configurations have been applied:
+foreach (var entityType in modelBuilder.Model.GetEntityTypes().Where(IsWithdrawable))
+    entityType.AddComplexIndexFilter("{RevokedAt} IS NULL", ix => ix.IsUnique);
+```
+
+An unfiltered index gets the predicate; a filtered one gets `(existing) AND (predicate)`; one that
+already carries it is left alone, so the call is safe to repeat. It amends what is declared *at the
+time of the call*, which is why it belongs after the configurations — and why the read model is
+still worth a check for what a later declaration might add. Exclusion constraints have
+`AddExclusionConstraintFilter` — see [amending constraints](docs/postgresql-constraints.md#amending-constraints).
+
 ---
 
 ## Documentation

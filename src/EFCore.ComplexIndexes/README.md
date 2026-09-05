@@ -99,6 +99,11 @@ var unfiltered = modelBuilder.Model.GetEntityTypes()
     .Where(ix => ix.IsUnique && ix.Filter is null);
 ```
 
+Or install the convention: on the mutable model, `AddComplexIndexFilter(predicate, where)` ANDs a
+predicate onto every selected declaration's filter, idempotently, and `AddComplexIndex(definition)`
+adds one with the fluent API's identity rules. Both amend what is declared at the time of the call,
+so run them after the configurations.
+
 ## Documentation
 
 Full documentation, including every provider-specific feature:

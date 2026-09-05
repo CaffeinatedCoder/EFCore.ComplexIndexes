@@ -235,3 +235,17 @@ their operators, `Method` (`gist` unless set), `Filter`, deferrability and the e
 null for a default-named constraint, which `FindExclusionConstraint` therefore does not match.
 `GetDeclaredExclusionConstraints()` leaves inherited declarations to the declaring type. The differ
 builds its constraint DDL from the same reader.
+
+### Amending constraints
+
+On the mutable model, `AddExclusionConstraintFilter` ANDs a predicate onto the filter of every
+selected constraint, the way [`AddComplexIndexFilter`](../README.md#amending-declarations) does
+for indexes — an unfiltered constraint gets the predicate, a filtered one `(existing) AND
+(predicate)`, one that already carries it is left alone:
+
+```csharp
+foreach (var entityType in modelBuilder.Model.GetEntityTypes().Where(IsWithdrawable))
+    entityType.AddExclusionConstraintFilter("{RevokedAt} IS NULL");
+```
+
+It amends what is declared at the time of the call, so it belongs after the configurations.
