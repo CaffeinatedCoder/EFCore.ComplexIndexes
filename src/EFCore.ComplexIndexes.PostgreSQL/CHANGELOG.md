@@ -23,6 +23,9 @@ covers all three packages.
   collates only the first column). Stored under Npgsql's model key and mapped to `Relational:Collation`
   on the operation, where Npgsql's generator reads it; a column's own collation is never copied onto
   the index.
+- **Fixed:** SQL Server index options (`IsClustered`, `HasFillFactor`, …) on a complex index diffed by
+  this satellite are rejected at `migrations add` — property-level and entity-level alike — instead of
+  reaching Npgsql's generator, which ignored them.
 
 ## 5.0.3
 

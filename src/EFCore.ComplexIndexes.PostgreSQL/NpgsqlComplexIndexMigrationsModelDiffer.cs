@@ -63,10 +63,15 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
 
     /// <summary>
     /// Forwards exactly the Npgsql index-option annotations Npgsql's SQL generator renders: the
-    /// whitelisted keys plus every <c>Npgsql:StorageParameter:*</c> key, which is per-parameter.
+    /// whitelisted keys plus every <c>Npgsql:StorageParameter:*</c> key, which is per-parameter. Every
+    /// <c>SqlServer:*</c> key is forwarded too, only so that <see cref="ValidateCreateIndexOperation"/>
+    /// rejects it — a property-level <c>.IsClustered()</c> on a model diffed by this satellite would
+    /// otherwise be dropped by the whitelist without a word.
     /// </summary>
     protected override bool IsForwardedIndexAnnotation(string annotationName)
-        => SupportedNpgsqlAnnotations.Contains(annotationName) || NpgsqlAnnotations.IsStorageParameter(annotationName);
+        => SupportedNpgsqlAnnotations.Contains(annotationName)
+        || NpgsqlAnnotations.IsStorageParameter(annotationName)
+        || annotationName.StartsWith("SqlServer:", StringComparison.Ordinal);
 
     /// <summary>PostgreSQL renames indexes standalone (<c>ALTER INDEX … RENAME TO</c>).</summary>
     protected override bool CanRenameIndexes => true;
@@ -85,12 +90,20 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
     /// Rejects <c>Npgsql:*</c> index options this package does not render — typically an entity-level
     /// declaration carrying an option the satellite has no support for, since entity-level provider
     /// annotations reach the operation unfiltered (the property-level path is already whitelisted by
-    /// <see cref="IsForwardedIndexAnnotation"/>).
+    /// <see cref="IsForwardedIndexAnnotation"/>) — and every <c>SqlServer:*</c> option, which belongs
+    /// to the other satellite.
     /// </summary>
     protected override void ValidateCreateIndexOperation(CreateIndexOperation operation)
     {
         foreach (var annotation in operation.GetAnnotations())
         {
+            // The other satellite's options: Npgsql's generator would ignore them, so a clustered or
+            // fill-factor declaration would apply as a plain index without a word.
+            if (annotation.Name.StartsWith("SqlServer:", StringComparison.Ordinal))
+                throw new InvalidOperationException(
+                    $"Complex index '{operation.Name}' carries the SQL Server annotation '{annotation.Name}', but the " +
+                    "model is diffed with the PostgreSQL satellite. Use the EFCore.ComplexIndexes.PostgreSQL options instead.");
+
             if (!annotation.Name.StartsWith("Npgsql:", StringComparison.Ordinal)
              || SupportedNpgsqlAnnotations.Contains(annotation.Name)
              || NpgsqlAnnotations.IsStorageParameter(annotation.Name))

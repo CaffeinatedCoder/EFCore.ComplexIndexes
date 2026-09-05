@@ -386,7 +386,12 @@ policing those turns any provider index option the satellite doesn't happen to k
 hard failure of the consumer's whole `migrations add` — for indexes that never touched this package.
 The check has to exist because entity-level provider annotations reach the operation *unfiltered*
 (only the property-level path goes through `IsForwardedIndexAnnotation`), so `.UseGin()` on a SQL
-Server model is caught, while a native `HasIndex(...).HasMethod("gin")` is left alone.
+Server model is caught, while a native `HasIndex(...).HasMethod("gin")` is left alone. The
+property-level path used to be the loophole: the whitelist dropped the other satellite's options
+without a word, so a property-level `.UseGin()` diffed by SQL Server applied as a plain B-tree.
+Since 5.1.0 each satellite's `IsForwardedIndexAnnotation` also returns true for the *other*
+provider's prefix (`Npgsql:` / `SqlServer:`) — forwarded solely so the same
+`ValidateCreateIndexOperation` rejects it, which keeps one message for both declaration styles.
 
 ### Key extension points
 

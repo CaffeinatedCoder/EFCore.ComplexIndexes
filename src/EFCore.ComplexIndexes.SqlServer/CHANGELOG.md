@@ -10,6 +10,9 @@ covers all three packages.
   registration of the differ, so `EnsureCreated()` and `GenerateCreateScript()` include the complex
   indexes and `Migrate()`'s pending-model-changes check sees one that was never scaffolded. Migrations
   still need no wiring.
+- **Fixed:** a PostgreSQL option (`UseGin`, `HasOperators`, …) on a *property-level* complex index is
+  rejected at `migrations add` like an entity-level one, instead of being dropped by the forwarding
+  whitelist — the index scaffolded as a plain B-tree without a word.
 
 ## 5.0.3
 
