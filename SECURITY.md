@@ -50,8 +50,8 @@ remedy for those is to upgrade.
 
 | Version | Supported |
 |---|---|
-| 5.2.x | ✅ |
-| < 5.2 | ❌ |
+| 5.3.x | ✅ |
+| < 5.3 | ❌ |
 
 ### For how long
 

@@ -85,7 +85,15 @@ public class MutableApiTests
     [TestMethod(DisplayName = "The predicate is ANDed onto selected declarations, property-level and entity-level, once")]
     public void Filters_are_amended_idempotently()
     {
-        using var context = new AmendingContext(new DbContextOptionsBuilder<AmendingContext>().UseNpgsql(MigrationHarness.NpgsqlConnection).Options);
+        // Amended is instance state written from OnModelCreating, so this instance's OnModelCreating
+        // has to run. Contexts with equal options share an internal service provider and its model
+        // cache, and EF builds the runtime model from an already-cached design-time model without
+        // calling OnModelCreating again — which the sibling test, building this context's
+        // design-time model through the harness, does in parallel. A private provider starts empty.
+        using var context = new AmendingContext(new DbContextOptionsBuilder<AmendingContext>()
+                                               .UseNpgsql(MigrationHarness.NpgsqlConnection)
+                                               .EnableServiceProviderCaching(false)
+                                               .Options);
         var grant = context.Model.FindEntityType(typeof(Grant))!;
 
         // Two unique indexes and two constraints on the first pass; nothing on the second.

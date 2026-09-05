@@ -6,9 +6,16 @@ covering only what changed for that package:
 [PostgreSQL](src/EFCore.ComplexIndexes.PostgreSQL/CHANGELOG.md),
 [SQL Server](src/EFCore.ComplexIndexes.SqlServer/CHANGELOG.md).
 
+## 5.3.0
+
+One fix, found the first time a 5.2.0 converter-member path met the model snapshot
+it had just been scaffolded into.
+
+- **Fixed:** a property path through a value converter (`x => x.Email.Value`) now resolves against a model snapshot as well as against the configured model. A snapshot persists a converted property as its provider type — `string`, on a property-bag type — and drops the converter, so the member check that guards `x.CreatedAt.Year` had nothing to check against and the path failed to resolve. The first `dotnet ef migrations add` succeeded, because the snapshot did not hold the path yet; everything that diffed the resulting snapshot then threw `Could not resolve property path 'Email.Value'` — the next `migrations add`, `has-pending-model-changes`, and `Migrate()`, whose pending-model-changes check runs the differ this package registers before applying anything. On a property-bag type the persisted scalar is now accepted for a path the configured model already validated; against a configured model the provider-type check is unchanged. Covers expression templates, column parts, composite parts, filter placeholders and PostgreSQL exclusion elements, at the top level and inside a complex type.
+
 ## 5.2.0
 
-The features AuditOffice's review of its own workarounds asked for, in the order they pay off:
+The features a consumer's review of its own workarounds asked for, in the order they pay off:
 a validation for a failure that reports nothing, a read model so an application can check its
 own obligations, filters that resolve property paths the way index parts already do, an amend
 API, and typed filter predicates.

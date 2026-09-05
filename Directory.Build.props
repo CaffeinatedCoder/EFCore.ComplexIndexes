@@ -1,6 +1,6 @@
 <Project>
     <PropertyGroup>
-        <Version>5.2.0</Version>
+        <Version>5.3.0</Version>
         <Authors>CaffeinatedCoder</Authors>
         <PackageLicenseExpression>MIT</PackageLicenseExpression>
         <GenerateDocumentationFile>true</GenerateDocumentationFile>
@@ -63,7 +63,7 @@
     -->
     <PropertyGroup>
         <EnablePackageValidation>true</EnablePackageValidation>
-        <PackageValidationBaselineVersion>5.1.0</PackageValidationBaselineVersion>
+        <PackageValidationBaselineVersion>5.2.0</PackageValidationBaselineVersion>
     </PropertyGroup>
 
     <!--
