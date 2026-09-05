@@ -377,6 +377,15 @@ value object — `Email.Value` resolves to the `Email` column only when the prop
 and the member's type equals the converter's provider type; without that check `CreatedAt.Year`
 would silently index the whole column.
 
+Typed filters (`NpgsqlTypedFilterExtensions`, PostgreSQL only) run
+`NpgsqlLinqIndexTranslator.TranslatePredicate` at the declaration and store the resulting
+placeholder template as the filter string — nothing downstream knows the filter was typed. The
+predicate subset is boolean structure over the expression translator's operands, with two
+deliberate refusals: enums, because the stored form depends on a value conversion the translator
+cannot see (`Status == Status.Active` would compare `text` against `0` and fail at apply), and
+literals without a portable SQL spelling (`DateTime`, `Guid`), which `IFormattable` used to render
+as bare text. Both throw at the declaration.
+
 `NULLS FIRST/LAST` (`DbOrder.NullsFirst/NullsLast`, `ExpressionIndexBuilder.NullsFirst()/NullsLast()`)
 rides on the parts as `NullSort`. EF's native `CreateIndexOperation` has no slot for it, so any
 index containing a nulls-ordered part is routed through the `IndexParts` annotation and the custom

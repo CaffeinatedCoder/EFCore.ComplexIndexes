@@ -200,6 +200,17 @@ public sealed class ExclusionConstraintBuilder<TEntity> where TEntity : class
         return this;
     }
 
+    /// <summary>
+    /// Applies a typed predicate (<c>x => x.RevokedAt == null</c>), translated like a typed index
+    /// filter — see <see cref="NpgsqlTypedFilterExtensions"/> for the supported subset.
+    /// </summary>
+    public ExclusionConstraintBuilder<TEntity> HasFilter(Expression<Func<TEntity, bool>> predicate)
+    {
+        ArgumentNullException.ThrowIfNull(predicate);
+        _filter = NpgsqlLinqIndexTranslator.TranslatePredicate(predicate);
+        return this;
+    }
+
     /// <summary>Sets a custom name for the constraint.</summary>
     public ExclusionConstraintBuilder<TEntity> HasName(string name)
     {

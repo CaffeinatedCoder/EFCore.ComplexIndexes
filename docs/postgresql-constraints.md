@@ -182,7 +182,9 @@ Selectors resolve complex-property members to their mapped columns, exactly like
 and the filter takes the same `{Property.Path}` placeholders a complex index filter does —
 `filter: "{RevokedAt} IS NULL"` renders `WHERE ("revoked_at" IS NULL)` whatever `HasColumnName`
 decided, JSON members become extractions, and a path that names no property fails at
-`migrations add`.
+`migrations add`. Or write it typed — the scheduling overload takes a predicate in place of the
+string, and the builder has `HasFilter(x => x.RevokedAt == null)` — with the subset described under
+[typed filters](postgresql-indexes.md#typed-filters).
 Scalar equality elements under `gist` need the `btree_gist` extension — the differ injects
 `CREATE EXTENSION IF NOT EXISTS btree_gist` automatically, shared with temporal constraints and
 governed by the same `UseBtreeGist()` / `SuppressTemporalExtensionAutoInjection()` switches.
@@ -247,5 +249,8 @@ for indexes — an unfiltered constraint gets the predicate, a filtered one `(ex
 foreach (var entityType in modelBuilder.Model.GetEntityTypes().Where(IsWithdrawable))
     entityType.AddExclusionConstraintFilter("{RevokedAt} IS NULL");
 ```
+
+Both amend calls have a typed form, `AddComplexIndexFilter<TEntity>(x => x.RevokedAt == null)` and
+`AddExclusionConstraintFilter<TEntity>(…)`, with the entity type given explicitly.
 
 It amends what is declared at the time of the call, so it belongs after the configurations.

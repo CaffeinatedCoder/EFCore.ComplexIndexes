@@ -29,6 +29,14 @@ covers all three packages.
 - **New:** `AddExclusionConstraintFilter(predicate, where)` on `IMutableEntityType` — ANDs a
   predicate onto every selected exclusion constraint's filter, idempotently.
 
+- **New:** typed filter predicates — `x => x.RevokedAt == null` in place of every `filter:` string,
+  `HasFilter(x => …)` on the builders, `AddComplexIndexFilter<TEntity>` / `AddExclusionConstraintFilter<TEntity>`.
+  Translated at the declaration into a placeholder filter: null checks, comparisons, `&&`/`||`/`!`,
+  boolean properties, the string functions of typed expression indexes. Enums and values without a
+  portable SQL spelling are refused at the declaration.
+- **Changed:** the typed expression translator no longer renders a `DateTime`, `Guid` or enum
+  constant as bare text; it throws at the declaration.
+
 ## 5.1.0
 
 - **Changed:** `UseNpgsqlComplexIndexes()` / `AddNpgsqlComplexIndexes()` also register the PostgreSQL

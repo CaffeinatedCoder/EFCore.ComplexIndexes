@@ -148,6 +148,37 @@ and the resolved text is what the migration carries. Only a brace pair holding a
 path outside a single-quoted literal is a placeholder, so array and JSON literals such as
 `'{urgent}'` and `'{"a": 1}'` are left alone.
 
+## Typed filters
+
+> No runtime wiring required — the predicate is translated at declaration into a filter template
+> and resolved into the migration like any placeholder filter.
+
+Every entry point that takes a `filter:` string also takes a predicate, and the builders take
+`HasFilter(x => …)`:
+
+```csharp
+builder.HasComplexIndex(x => x.Email, x => x.RevokedAt == null, isUnique: true);
+// CREATE UNIQUE INDEX ... WHERE "revoked_at" IS NULL
+
+builder.HasComplexCompositeIndex(x => new { x.GranteeId, x.Kind },
+    x => x.RevokedAt != null && x.Kind == "federated");
+// WHERE ("revoked_at" IS NOT NULL AND "kind" = 'federated')
+
+builder.HasExpressionIndex(x => x.Email.ToLower(), x => !x.IsDeleted);
+
+builder.ComplexProperty(x => x.Address, c => c.Property(a => a.City)
+    .HasComplexIndex(ix => ix.HasFilter<Person>(p => p.DeletedAt == null)));
+```
+
+The builders are not generic, so `HasFilter<TEntity>` takes the entity type explicitly. The subset
+is small and fails at the declaration: `==`/`!=` (against `null`: `IS NULL`/`IS NOT NULL`), `<`,
+`<=`, `>`, `>=`, `&&`, `||`, `!`, boolean properties, captured booleans, and on the operands the
+string operations and constants a typed expression index accepts. Two things are refused on
+purpose. An enum comparison: how an enum is stored depends on the property's value conversion,
+which a filter cannot see, so `Status == Status.Active` would compare a text column against `0`
+and fail when the migration is applied — write the stored value in the string overload. And a
+value with no portable SQL spelling, a `DateTime` or `Guid`, which used to come out as bare text.
+
 ## JSON member indexes
 
 > Requires [`UseNpgsqlComplexIndexes()`](../README.md#runtime-wiring--the-two-features-that-need-it) — JSON member indexes are expression indexes under the hood.
