@@ -208,7 +208,7 @@ them with no base to resolve against, so **every link in them must be an absolut
 are condensed on purpose and will overlap `docs/` — that duplication is the price of a package page
 that stands alone, and `DocumentationLinkTests` guards only the part that fails silently.
 
-`ROADMAP.md` at the root is the plan for 5.4.0 and the 6.0 family: the delete guard, the generic
+`ROADMAP.md` at the root is the plan for 5.5.0 and the 6.0 family: the delete guard, the generic
 descriptor differ, the rename under the `CodoMetis.` prefix, the plugin host and EF Core 11. It sits at the
 root on purpose: `DocumentationLinkTests` checks its links, but `DocumentationApiTests` scans only
 `docs/`, so the roadmap may name methods that do not exist yet.

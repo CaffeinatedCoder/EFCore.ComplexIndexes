@@ -1,10 +1,13 @@
-# Roadmap: 5.4.0, then the 6.0 family
+# Roadmap: 5.5.0, then the 6.0 family
 
 Written 2026-09-19 against 5.3.0. A plan, not a promise: every item is marked **Decided**,
 **Proposed** or **Open**, and the line references are as of 5.3.0 and will rot. The plan answers
 four questions in order: what to ship next on EF Core 10, what to rename the packages to, how to
 split them so the next five features do not each add a copy of the differ, and how EF Core 11
 fits in. Sources are collected at the end.
+
+Updated 2026-09-22 with 5.4.1. 5.4.0 and 5.4.1 are fix releases: the 4.0 name registry went out
+in 5.4.0, and everything else planned for 5.4.0 — 4.1 to 4.3 — moves to 5.5.0 unchanged.
 
 ## 1. Where things stand
 
@@ -55,8 +58,8 @@ trigger does not, and is a non-goal.
 
 | # | Decision | Choice | Status |
 |---|---|---|---|
-| D0 | Name-uniqueness validation for temporal constraints | Ship first, before 4.1, as its own fix | Decided |
-| D1 | Where the delete guard ships first | 5.4.0, PostgreSQL package, design-time `SqlOperation`s | Proposed |
+| D0 | Name-uniqueness validation for temporal constraints | Ship first, before 4.1, as its own fix | Shipped in 5.4.0 |
+| D1 | Where the delete guard ships first | 5.5.0, PostgreSQL package, design-time `SqlOperation`s | Proposed |
 | D2 | What precedes it | One generic descriptor differ replacing the four copies | Proposed |
 | D3 | Rename | Yes, at 6.0.0, whole family, new namespaces | Proposed |
 | D4 | The name | Working name `CodoMetis.EFCore.Syntagma`; shortlist in 5.1 (SchemaKit, Beyond, Perissos, Sterigma, Eutaxia) | Open, Ricardo's call |
@@ -72,7 +75,8 @@ trigger does not, and is a non-goal.
 
 ## 3. Release lines and versioning
 
-**5.x (old ids, EF Core 10, `net10.0`).** Receives 5.4.0 with the items in section 4, then fixes.
+**5.x (old ids, EF Core 10, `net10.0`).** Received 4.0 in 5.4.0; receives 5.5.0 with the rest of
+section 4, then fixes.
 After 6.0.0 ships it receives security and data-safety fixes only, until the consumer base has
 moved or EF Core 10 leaves support. The dependency ceiling `[10.0.0, 11.0.0)` stays.
 
@@ -96,9 +100,9 @@ tag against `Directory.Build.props` on the tagged commit and discovers packages 
 output, so both branches release unchanged. Branch protection and the required `Test
 (ubuntu-latest)` check have to be configured on `support/5.x` by hand.
 
-## 4. Phase 1: 5.4.0 on EF Core 10
+## 4. Phase 1: 5.5.0 on EF Core 10
 
-### 4.0 Fix first: constraint names are not validated for the temporal kinds (D0)
+### 4.0 Fix first: constraint names are not validated for the temporal kinds (D0, shipped in 5.4.0)
 
 Indexes are checked by `ValidateUniqueIndexNames` and against native `HasIndex` names, exclusion
 constraints by `ValidateUniqueExclusionNames`. Temporal unique constraints and temporal foreign keys
@@ -108,8 +112,8 @@ exclusion constraint on the same table, scaffold cleanly and fail at apply time 
 a `UNIQUE … WITHOUT OVERLAPS` constraint is backed by an index of the same name, and index names
 share the schema's relation namespace, so a temporal constraint named like any index in the schema
 fails with 42P07. This is the signature failure this repository exists to catch, and it is
-independent of everything else in the plan, so it ships first, as 5.3.1 or the first commit of
-5.4.0.
+independent of everything else in the plan, so it shipped first, in 5.4.0, as the Npgsql differ's
+`ValidateNamesAcrossKinds`.
 
 The fix: one name registry per target model, filled by all four kinds plus the native indexes and
 native constraints of the same table or schema, with the rule per kind: foreign keys are unique per
@@ -119,6 +123,11 @@ that already contains a collision stays diffable and the model can be fixed. Mes
 declarations and their kinds. Tests: each collision pair throws; a same-named pair on different
 tables passes for the per-table kinds; the snapshot side is left alone; `verify-the-guard` by
 reverting. Once 4.1 lands the registry becomes the generic differ's `Validate` hook.
+
+5.4.1 fixed the core's side of the same problem: its index-name checks were per table on every
+provider, while SQLite keeps index names unique across the database. The scope is now a provider
+virtual, `IndexNameScope` (database by default, schema on PostgreSQL, table on SQL Server), and the
+generic differ's name validation has to honour it for every kind it takes over.
 
 ### 4.1 One descriptor differ instead of four
 
@@ -176,7 +185,7 @@ pairs.
 Riding along: `NpgsqlTemporalAnnotations.WithoutOverlaps`, `ForeignKeyDependentPeriod` and
 `ForeignKeyPrincipalPeriod` are dead since 5.0.2 (the differ renders `SqlOperation`s and never
 writes them). They are public constants, so removing them is a CP0002 break; mark them
-`[Obsolete]` in 5.4.0 and remove them in 6.0.0.
+`[Obsolete]` in 5.5.0 and remove them in 6.0.0.
 
 ### 4.2 Delete constraints on PostgreSQL
 
@@ -246,7 +255,7 @@ CREATE TRIGGER "RC_Invoices_Finalized"
   `TRUNCATE` bypasses row triggers; a `BEFORE TRUNCATE` statement trigger is section 6.
 
 **Storage and identity.** `CustomRowConstraint:Constraints`, a JSON list on the entity type,
-serialised like `ExclusionConstraintDefinition`. `RowConstraintDefinition`: `Event` (delete only in 5.4, the field exists
+serialised like `ExclusionConstraintDefinition`. `RowConstraintDefinition`: `Event` (delete only in 5.5, the field exists
 so update and truncate are additive), `Predicate` (template or null), `Name`, `Message`. Identity
 for the store is event plus predicate; a redeclaration replaces, two guards with different
 predicates coexist and both need names, an explicit name reused on the entity is rejected.
@@ -284,7 +293,7 @@ migration; this is a second PostgreSQL-only discriminator next to the exclusion 
 reading "no", entries in the root and PostgreSQL changelogs, a CLAUDE.md architecture paragraph, and
 a `migration-safety-review` checklist item for row constraints.
 
-### 4.3 Small items riding along in 5.4.0
+### 4.3 Small items riding along in 5.5.0
 
 - The `[Obsolete]` markings from 4.1.
 - `RuntimeWiringSentinel` is `"__requires_UseNpgsqlComplexIndexes__"` and lives in core. Leave the
@@ -336,7 +345,7 @@ typed filters, and more."
 Two identifiers outlive any product name because they land in consumers' snapshots and
 migrations: annotation keys and the shared trigger functions. Both are branded with the owner
 prefix, never the product: annotations under `CodoMetis:` from 6.0 (5.5), and functions such as
-`codometis_row_constraint()` from 5.4.0. That settles the permanence question in 4.2 regardless
+`codometis_row_constraint()` from 5.5.0. That settles the permanence question in 4.2 regardless
 of D4.
 
 The declaration API keeps its names (`HasComplexIndex`, `HasExpressionIndex`,
@@ -717,9 +726,9 @@ the templates in 7.5 are in.
 - **D4 is Ricardo's call.** The document uses `Syntagma` as a working name; every candidate in
   5.1 reads the same, and the rename is mechanical.
 - **The shared function's name is permanent** once a consumer's migration carries it (4.2); it is
-  owner-branded, so D4 does not gate 5.4.0.
-- **Name-uniqueness for temporal kinds** (4.0) is a behaviour change on a model that already fails
-  at apply time. Changelog it as a fix.
+  owner-branded, so D4 does not gate 5.5.0.
+- **Name-uniqueness for temporal kinds** (4.0) was a behaviour change on a model that already
+  failed at apply time, and shipped in 5.4.0 as a fix.
 - **Snapshot v2** produces one empty migration per consumer (5.5). A consumer with a CI gate on
   `has-pending-model-changes` sees it fail once after upgrading; the migration guide has to say so
   up front.
@@ -736,9 +745,9 @@ the templates in 7.5 are in.
 
 | Step | Line | Content | Gate |
 |---|---|---|---|
-| 0 | 5.3.1 or 5.4.0 | Constraint-name registry across all kinds and native names (4.0) | `verify-the-guard` on each collision pair |
-| 1 | 5.4.0 | Characterisation test for four-kind ordering; generic descriptor differ; `[Obsolete]` constants | Suite green after each kind moves |
-| 2 | 5.4.0 | Delete constraint on PostgreSQL, docs, smoke-test discriminator | Integration test, `verify-the-guard` on every validation |
+| 0 | 5.4.0, 5.4.1 (shipped) | Constraint-name registry across all kinds and native names (4.0); core index names in the provider's namespace | `verify-the-guard` on each collision pair |
+| 1 | 5.5.0 | Characterisation test for four-kind ordering; generic descriptor differ; `[Obsolete]` constants | Suite green after each kind moves |
+| 2 | 5.5.0 | Delete constraint on PostgreSQL, docs, smoke-test discriminator | Integration test, `verify-the-guard` on every validation |
 | 3 | pre-6.0 | D4 settled; trusted-publishing scope checked for the new ids; repository renamed | nuget.org confirmations |
 | 4 | 6.0.0 | Rename and split; plugin host; dialect; translator move; snapshot v2; old-package guard; convention tests; migration guide | Smoke test on both providers from a cold cache; snapshot fixture from 5.x |
 | 5 | post-6.0 | Deprecate the old ids with the alternate; `support/5.x` branch protection | |
