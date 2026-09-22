@@ -7,7 +7,9 @@ split them so the next five features do not each add a copy of the differ, and h
 fits in. Sources are collected at the end.
 
 Updated 2026-09-22 with 5.4.1. 5.4.0 and 5.4.1 are fix releases: the 4.0 name registry went out
-in 5.4.0, and everything else planned for 5.4.0 — 4.1 to 4.3 — moves to 5.5.0 unchanged.
+in 5.4.0, and everything else planned for 5.4.0 — 4.1 to 4.3 — moves to 5.5.0. The same update
+corrects two claims: the sixth `MigrationsModelDiffer` constructor parameter belongs to EF Core 12,
+not 11, and the temporal annotation constants 4.1 meant to retire are neither public nor dead.
 
 ## 1. Where things stand
 
@@ -28,9 +30,9 @@ years.
 (five parameters), `IMigrationsModelDiffer`, `IMigrationsSqlGenerator`, `CreateIndexOperation`,
 `ITrigger` and `DesignTimeServicesReferenceAttribute` have no diff against 10.0. Two things to
 watch: the protected `GetDefaultValue(Type)` was removed (not overridden here), and a sixth
-constructor parameter, `IDiagnosticsLogger<DbLoggerCategory.Migrations>`, exists on `main` but
-not in any published preview. When it lands, the `base(...)` call in `CustomMigrationsModelDiffer`
-stops compiling on EF Core 11.
+constructor parameter, `IDiagnosticsLogger<DbLoggerCategory.Migrations>`, exists on `main`. That is
+EF Core 12 (12.0.0 alpha); `release/11.0` keeps five parameters (checked 2026-09-22), so the
+`base(...)` call in `CustomMigrationsModelDiffer` compiles unchanged on EF Core 11 and breaks on 12.
 
 **The name covers half of what ships.** Core and the SQL Server package are indexes only. In the
 PostgreSQL package, 2124 source lines are index code and 779 are constraint code, while the
@@ -91,8 +93,8 @@ it.
 **Why one stream and not two (D7).** Two streams mean a cherry-pick per fix and a backport
 decision per feature for two years, for one maintainer. Multi-targeting costs a second test run
 and a second SDK on the runner. The differences between the two builds are known and small:
-the constructor parameter above, `IEntityType.FindIndex` widening to `IReadOnlyPropertyBase`
-(source-compatible), and the native-index handover in section 8. They live behind
+`IEntityType.FindIndex` widening to `IReadOnlyPropertyBase` (source-compatible) and the
+native-index handover in section 8. They live behind
 `NET11_0_OR_GREATER`.
 
 **Branching.** `main` carries 6.x; `support/5.x` carries the old line. `release.yml` verifies the
@@ -182,10 +184,12 @@ refactor itself; one characterisation test that declares all four kinds on one m
 the full operation order is worth adding before starting, since `OperationOrderingTests` covers
 pairs.
 
-Riding along: `NpgsqlTemporalAnnotations.WithoutOverlaps`, `ForeignKeyDependentPeriod` and
-`ForeignKeyPrincipalPeriod` are dead since 5.0.2 (the differ renders `SqlOperation`s and never
-writes them). They are public constants, so removing them is a CP0002 break; mark them
-`[Obsolete]` in 5.5.0 and remove them in 6.0.0.
+Not riding along, though an earlier draft planned it: `NpgsqlTemporalAnnotations.WithoutOverlaps`,
+`ForeignKeyDependentPeriod` and `ForeignKeyPrincipalPeriod` stay. The differ has not written them
+since 5.0.2, but `NpgsqlComplexIndexSqlGenerator` still reads them to render migrations scaffolded
+before 5.0.2, and the class is internal, so there is no CP0002 break to schedule and nothing to mark
+`[Obsolete]`. Removing them would give a fresh database built from those migrations a plain
+`UNIQUE` or foreign key without the period, and it would apply cleanly.
 
 ### 4.2 Delete constraints on PostgreSQL
 
@@ -295,7 +299,6 @@ a `migration-safety-review` checklist item for row constraints.
 
 ### 4.3 Small items riding along in 5.5.0
 
-- The `[Obsolete]` markings from 4.1.
 - `RuntimeWiringSentinel` is `"__requires_UseNpgsqlComplexIndexes__"` and lives in core. Leave the
   value (it is in consumers' migrations) and move the choice of value behind a provider virtual in
   6.0 (section 5.4).
@@ -512,9 +515,9 @@ second consumer per satellite in the smoke test once `net11.0` exists.
 3. Replace `UseNpgsqlComplexIndexes()` / `UseSqlServerComplexIndexes()` / `UseComplexIndexes()`
    with the provider-builder form in 5.6.
 4. Run `dotnet ef migrations add`; expect one migration containing only the snapshot rewrite (5.5).
-5. Removed: the three obsolete temporal constants; the pre-5.0.2 temporal operation overrides in
-   the generator and the legacy `PropertyPaths` snapshot form are **kept**, because consumers
-   replay old migrations on fresh databases forever.
+5. Nothing an old migration needs is removed: the pre-5.0.2 temporal operation overrides in the
+   generator, the three annotation keys they read, and the legacy `PropertyPaths` snapshot form are
+   **kept**, because consumers replay old migrations on fresh databases forever.
 
 ## 6. Phase 3: the 6.x feature backlog, ordered by reuse
 
@@ -714,8 +717,9 @@ the templates in 7.5 are in.
   `HasIndex` over the same complex-type path scaffolds nothing instead of drop-and-create, and the
   native-collision check learns the difference between "same index, moved" and "two indexes, one
   name". Same for `WITHOUT OVERLAPS` and `PERIOD` against Npgsql 11.
-- **Constructor.** `#if NET11_0_OR_GREATER` around the differ constructor for the sixth parameter,
-  the day it ships.
+- **Constructor.** Nothing to do for EF Core 11: `release/11.0` keeps the five-parameter
+  constructor, and a `net10.0;net11.0` spike build (2026-09-22) needed no source change. The sixth parameter
+  is EF Core 12's, and belongs to whichever 6.x adds that target.
 - **Snapshot generator.** `CSharpSnapshotGenerator` was refactored in rc.1 (parameters object,
   centralised annotation handling, complex-collection branch). Not subclassed here, but the
   round-trip fixtures must be regenerated on the `net11.0` run.
@@ -746,7 +750,7 @@ the templates in 7.5 are in.
 | Step | Line | Content | Gate |
 |---|---|---|---|
 | 0 | 5.4.0, 5.4.1 (shipped) | Constraint-name registry across all kinds and native names (4.0); core index names in the provider's namespace | `verify-the-guard` on each collision pair |
-| 1 | 5.5.0 | Characterisation test for four-kind ordering; generic descriptor differ; `[Obsolete]` constants | Suite green after each kind moves |
+| 1 | 5.5.0 | Characterisation test for four-kind ordering; generic descriptor differ | Suite green after each kind moves |
 | 2 | 5.5.0 | Delete constraint on PostgreSQL, docs, smoke-test discriminator | Integration test, `verify-the-guard` on every validation |
 | 3 | pre-6.0 | D4 settled; trusted-publishing scope checked for the new ids; repository renamed | nuget.org confirmations |
 | 4 | 6.0.0 | Rename and split; plugin host; dialect; translator move; snapshot v2; old-package guard; convention tests; migration guide | Smoke test on both providers from a cold cache; snapshot fixture from 5.x |
