@@ -197,14 +197,17 @@ public class NpgsqlJsonMemberIndexTests
         Assert.AreEqual("\"name\" ->> 'ShortName'", parts[1].Value);
     }
 
-    [TestMethod(DisplayName = "Nested complex members render intermediate -> segments")]
+    // Npgsql's queries read a nested member with #>>, and PostgreSQL only uses an expression index
+    // whose expression matches the query's: -> 'Address' ->> 'City' enforced uniqueness but was
+    // never used for a lookup.
+    [TestMethod(DisplayName = "Nested complex members render a #>> path, as Npgsql's queries do")]
     public void Nested_json_member_resolves()
     {
         var operations = GetDifferences(source: null, target: BuildRelationalModel<NestedJsonIndexContext>());
 
         var createIndex = Assert.ContainsSingle(operations.OfType<CreateIndexOperation>());
         var part        = Assert.ContainsSingle(PartsOf(createIndex));
-        Assert.AreEqual("\"profile\" -> 'Address' ->> 'City'", part.Value);
+        Assert.AreEqual("\"profile\" #>> '{Address,City}'", part.Value);
     }
 
     [TestMethod(DisplayName = "Unchanged JSON-member index produces no operations")]

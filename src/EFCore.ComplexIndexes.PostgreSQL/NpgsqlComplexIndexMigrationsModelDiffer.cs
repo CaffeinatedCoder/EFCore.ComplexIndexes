@@ -143,14 +143,32 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
     /// <summary>
     /// Resolves an index part whose path has no table column: a member of a complex property mapped
     /// to JSON via <c>ToJson()</c>, or the JSON-mapped complex property (or complex collection)
-    /// itself. A member becomes a PostgreSQL text extraction, e.g.
-    /// <c>"name" -&gt; 'Inner' -&gt;&gt; 'Leaf'</c>, honoring <c>HasJsonPropertyName</c>; for typed
-    /// semantics use <c>HasExpressionIndex</c> with an explicit cast. A path ending at the JSON-mapped
-    /// complex property resolves to its container column — a plain column index, typically
-    /// <c>USING gin</c>, that the stock generator renders with no runtime wiring. A complex property
-    /// nested inside the document resolves to a <c>-&gt;</c> extraction yielding <c>jsonb</c>, which
-    /// GIN indexes too. Expression parts require the <c>UseNpgsqlComplexIndexes()</c> runtime wiring.
+    /// itself.
     /// </summary>
+    /// <remarks>
+    /// A member is rendered exactly as Npgsql's query translation renders it, because PostgreSQL only
+    /// uses an expression index for a query whose expression matches it:
+    /// <c>"doc" -&gt;&gt; 'A'</c> for one step and <c>"doc" #&gt;&gt; '{A,B}'</c> for more, cast to
+    /// the member's store type unless that is a string (<c>CAST("doc" -&gt;&gt; 'Rank' AS integer)</c>),
+    /// <c>decode(…, 'base64')</c> for <c>bytea</c>, and <c>jsonb</c> for a primitive collection.
+    /// <c>HasJsonPropertyName</c> is honored. A date or time member stays text: the cast EF Core's
+    /// queries apply to it is not IMMUTABLE and cannot appear in an index, so the part records the
+    /// fallback and the differ rejects a non-unique index that leads with it.
+    /// <para>
+    /// A path ending at the JSON-mapped complex property resolves to its container column — a plain
+    /// column index, typically <c>USING gin</c>, that the stock generator renders with no runtime
+    /// wiring. A complex property nested inside the document resolves to a <c>jsonb</c> extraction,
+    /// which GIN indexes too. Expression parts require the <c>UseNpgsqlComplexIndexes()</c> runtime
+    /// wiring.
+    /// </para>
+    /// <para>
+    /// A model without <see cref="ComplexIndexAnnotations.RenderingVersion"/> — a snapshot written
+    /// before 5.4.0 — is rendered the original way, <c>"doc" -&gt; 'A' -&gt;&gt; 'B'</c> as text with no
+    /// cast, which matched the query translation only for a top-level string. Resolving the snapshot
+    /// by its own rules is what turns the change into one drop-and-create per affected index; resolved
+    /// alike, the two sides would never differ and existing databases would keep the unused index.
+    /// </para>
+    /// </remarks>
     protected override ResolvedIndexPart? ResolveUnmappedPart(
         IEntityType           entityType,
         IndexPartDefinition   part,
@@ -159,6 +177,8 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
     {
         if (part.PropertyPath is null)
             return null;
+
+        var queryAligned = (part.RenderingVersion ?? ComplexIndexStorage.GetRenderingVersion(entityType.Model)) >= 2;
 
         var       segments        = part.PropertyPath.Split('.');
         ITypeBase current         = entityType;
@@ -183,27 +203,93 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
 
         var leaf = current.FindProperty(segments[^1]);
         if (leaf is null)
-            return ResolveComplexLeaf(current, segments[^1], containerColumn, jsonPath, part);
+            return ResolveComplexLeaf(current, segments[^1], containerColumn, jsonPath, part, queryAligned);
 
         if (containerColumn is null)
             return null;
 
         jsonPath.Add(leaf.GetJsonPropertyName() ?? leaf.Name);
 
-        return new ResolvedIndexPart(true, BuildJsonExtraction(containerColumn, jsonPath, asText: true), part.Descending, part.NullSort);
+        // Default index names come from the container and the path, never from the rendered SQL.
+        var nameToken = containerColumn + string.Concat(jsonPath);
+
+        if (!queryAligned)
+            return new ResolvedIndexPart(true, BuildLegacyJsonExtraction(containerColumn, jsonPath, asText: true), part.Descending, part.NullSort)
+                   {
+                       NameToken = nameToken
+                   };
+
+        var (sql, fallbackStoreType) = RenderJsonScalar(leaf, containerColumn, jsonPath);
+
+        return new ResolvedIndexPart(true, sql, part.Descending, part.NullSort)
+               {
+                   NameToken    = nameToken,
+                   TextFallback = fallbackStoreType is null ? null : (part.PropertyPath, fallbackStoreType)
+               };
+    }
+
+    // Types whose text input function is STABLE rather than IMMUTABLE — the conversion depends on
+    // DateStyle, TimeZone or lc_monetary — so a cast to them from text cannot appear in an index.
+    private static readonly HashSet<string> StableTextInputTypes = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "date", "time", "time without time zone", "time with time zone", "timetz",
+        "timestamp", "timestamp without time zone", "timestamp with time zone", "timestamptz",
+        "interval", "money"
+    };
+
+    // Mirrors NpgsqlQuerySqlGenerator.VisitJsonScalar, identical in Npgsql 10 and 11: no cast for a
+    // string mapping, decode() for bytea, jsonb for a primitive collection, and a CAST to the store
+    // type for everything else — except where that cast is not IMMUTABLE, which falls back to text
+    // and reports the store type the queries use instead.
+    private (string Sql, string? FallbackStoreType) RenderJsonScalar(IProperty leaf, string containerColumn, List<string> jsonPath)
+    {
+        if (leaf.IsPrimitiveCollection)
+            return (BuildJsonPath(containerColumn, jsonPath, returnsText: false), null);
+
+        var text    = BuildJsonPath(containerColumn, jsonPath, returnsText: true);
+        var mapping = leaf.FindRelationalTypeMapping() ?? _typeMappingSource.FindMapping(leaf);
+
+        return mapping switch
+        {
+            null or StringTypeMapping                                     => (text, null),
+            _ when mapping.StoreTypeNameBase == "bytea"                    => ($"decode({text}, 'base64')", null),
+            _ when StableTextInputTypes.Contains(mapping.StoreTypeNameBase) => (text, mapping.StoreType),
+            _                                                             => ($"CAST({text} AS {mapping.StoreType})", null)
+        };
+    }
+
+    // Mirrors NpgsqlQuerySqlGenerator.GenerateJsonPath: -> / ->> for a single step; #> / #>> for
+    // more, with a '{A,B}' literal when every segment is ASCII letters and digits and an
+    // ARRAY['A','B']::text[] otherwise. PostgreSQL matches an index to a query by expression, so the
+    // choice has to be the same one.
+    private static string BuildJsonPath(string containerColumn, List<string> jsonPath, bool returnsText)
+    {
+        var column = Quote(containerColumn);
+
+        if (jsonPath.Count == 1)
+            return $"{column} {(returnsText ? "->>" : "->")} {Literal(jsonPath[0])}";
+
+        var path = jsonPath.All(segment => segment.All(char.IsAsciiLetterOrDigit))
+                       ? $"'{{{string.Join(",", jsonPath)}}}'"
+                       : $"ARRAY[{string.Join(",", jsonPath.Select(Literal))}]::text[]";
+
+        return $"{column} {(returnsText ? "#>>" : "#>")} {path}";
+
+        static string Literal(string value) => $"'{value.Replace("'", "''")}'";
     }
 
     // The path ends at a complex property rather than a scalar: the whole document, or a
     // sub-document. At the top of a ToJson() mapping — and a complex collection is always JSON —
     // that is the container column itself, so the index is a plain column index the stock generator
-    // renders. Nested inside a document it is a `->` extraction, which yields jsonb rather than text.
+    // renders. Nested inside a document it is an extraction yielding jsonb rather than text.
     // A table-split complex property has no single column to stand for it, so that stays unresolved.
     private static ResolvedIndexPart? ResolveComplexLeaf(
         ITypeBase           current,
         string              name,
         string?             containerColumn,
         List<string>        jsonPath,
-        IndexPartDefinition part
+        IndexPartDefinition part,
+        bool                queryAligned
     )
     {
         var complexProperty = current.FindComplexProperty(name);
@@ -220,11 +306,16 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
 
         jsonPath.Add(complexProperty.GetJsonPropertyName() ?? complexProperty.Name);
 
-        return new ResolvedIndexPart(true, BuildJsonExtraction(containerColumn, jsonPath, asText: false), part.Descending, part.NullSort);
+        var sql = queryAligned
+                      ? BuildJsonPath(containerColumn, jsonPath, returnsText: false)
+                      : BuildLegacyJsonExtraction(containerColumn, jsonPath, asText: false);
+
+        return new ResolvedIndexPart(true, sql, part.Descending, part.NullSort) { NameToken = containerColumn + string.Concat(jsonPath) };
     }
 
-    // "col" -> 'A' -> 'B' (jsonb) or, with asText, "col" -> 'A' ->> 'B' (text) for the last step.
-    private static string BuildJsonExtraction(string containerColumn, List<string> jsonPath, bool asText)
+    // Rendering version 1, kept for snapshots written before 5.4.0: "col" -> 'A' -> 'B' (jsonb) or,
+    // with asText, "col" -> 'A' ->> 'B' (text) for the last step.
+    private static string BuildLegacyJsonExtraction(string containerColumn, List<string> jsonPath, bool asText)
     {
         var sql = new System.Text.StringBuilder(Quote(containerColumn));
         for (var i = 0; i < jsonPath.Count; i++)
@@ -655,7 +746,9 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
                     name,
                     parts,
                     def.Method,
-                    ResolveFilter(entityType, def.Filter, storeObject),
+                    // Pinned to the original JSON rendering: the constraint enforces the same rows
+                    // either way, so the 5.4.0 rendering change would only drop and re-add it.
+                    ResolveFilter(entityType, def.Filter, storeObject, renderingVersion: 1),
                     def.Deferrable,
                     def.InitiallyDeferred));
             }

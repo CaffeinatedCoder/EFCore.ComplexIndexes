@@ -78,6 +78,7 @@ public class CustomMigrationsModelDiffer(
         ValidateUniqueIndexNames(targetIndexes);
         ValidateNoNativeIndexNameCollision(target, targetIndexes);
         ValidateIndexNameLengths(target, targetIndexes);
+        ValidateQueryUsableLeadingParts(targetIndexes);
 
         if (sourceIndexes.Count == 0 && targetIndexes.Count == 0)
             return operations;
@@ -333,6 +334,10 @@ public class CustomMigrationsModelDiffer(
         var template = part.Template!;
         var sql      = new StringBuilder(template.Length);
 
+        // The default-name token is built alongside the SQL, from each placeholder's own token, so
+        // that it depends on what the template names rather than on how a member is rendered.
+        var token    = new StringBuilder(template.Length);
+
         for (var i = 0; i < template.Length; i++)
         {
             var ch = template[i];
@@ -350,7 +355,10 @@ public class CustomMigrationsModelDiffer(
                 if (end < 0)
                     throw new InvalidOperationException($"Malformed index expression template '{template}' on entity '{entityType.Name}'.");
 
-                sql.Append(ResolvePlaceholder(entityType, template[(i + 1)..end], storeObject, "an index expression"));
+                var (placeholderSql, placeholderToken) =
+                    ResolvePlaceholder(entityType, template[(i + 1)..end], storeObject, "an index expression", renderingVersion: null);
+                sql.Append(placeholderSql);
+                token.Append(placeholderToken);
                 i = end;
                 continue;
             }
@@ -368,9 +376,10 @@ public class CustomMigrationsModelDiffer(
             }
 
             sql.Append(ch);
+            token.Append(ch);
         }
 
-        return new ResolvedIndexPart(true, sql.ToString(), part.Descending, part.NullSort);
+        return new ResolvedIndexPart(true, sql.ToString(), part.Descending, part.NullSort) { NameToken = token.ToString() };
     }
 
     /// <summary>
@@ -394,6 +403,17 @@ public class CustomMigrationsModelDiffer(
     /// <param name="storeObject">The table whose column names are used.</param>
     /// <returns>The filter with every placeholder replaced, or <paramref name="filter"/> unchanged when it has none.</returns>
     protected string? ResolveFilter(IEntityType entityType, string? filter, StoreObjectIdentifier storeObject)
+        => ResolveFilter(entityType, filter, storeObject, renderingVersion: null);
+
+    /// <inheritdoc cref="ResolveFilter(IEntityType, string?, StoreObjectIdentifier)"/>
+    /// <param name="entityType">The entity type the placeholders are resolved against.</param>
+    /// <param name="filter">The filter as declared, or null.</param>
+    /// <param name="storeObject">The table whose column names are used.</param>
+    /// <param name="renderingVersion">
+    /// Renders JSON members under this <see cref="ComplexIndexAnnotations.RenderingVersion"/> instead of
+    /// the model's; exclusion constraint filters pass 1 so that their DDL never changes.
+    /// </param>
+    internal string? ResolveFilter(IEntityType entityType, string? filter, StoreObjectIdentifier storeObject, int? renderingVersion)
     {
         if (filter is null || !filter.Contains('{'))
             return filter;
@@ -414,7 +434,7 @@ public class CustomMigrationsModelDiffer(
                 var end = filter.IndexOf('}', i + 1);
                 if (end > i + 1 && IsPropertyPath(filter.AsSpan(i + 1, end - i - 1)))
                 {
-                    sql.Append(ResolvePlaceholder(entityType, filter[(i + 1)..end], storeObject, "a filter"));
+                    sql.Append(ResolvePlaceholder(entityType, filter[(i + 1)..end], storeObject, "a filter", renderingVersion).Sql);
                     i = end;
                     continue;
                 }
@@ -450,15 +470,24 @@ public class CustomMigrationsModelDiffer(
         return !segmentStart;
     }
 
-    private string ResolvePlaceholder(IEntityType entityType, string path, StoreObjectIdentifier storeObject, string usage)
+    // Returns the SQL for the placeholder and the token it contributes to a default index name.
+    private (string Sql, string Token) ResolvePlaceholder(
+        IEntityType           entityType,
+        string                path,
+        StoreObjectIdentifier storeObject,
+        string                usage,
+        int?                  renderingVersion
+    )
     {
         var column = ResolveColumnName(entityType, path, storeObject);
         if (column is not null)
-            return QuoteIdentifier(column);
+            return (QuoteIdentifier(column), column);
 
-        var unmapped = ResolveUnmappedPart(entityType, new IndexPartDefinition { PropertyPath = path }, storeObject);
+        var part     = new IndexPartDefinition { PropertyPath = path, RenderingVersion = renderingVersion };
+        var unmapped = ResolveUnmappedPart(entityType, part, storeObject);
         if (unmapped is not null)
-            return unmapped.IsExpression ? $"({unmapped.Value})" : QuoteIdentifier(unmapped.Value);
+            return (unmapped.IsExpression ? $"({unmapped.Value})" : QuoteIdentifier(unmapped.Value),
+                    unmapped.NameToken ?? unmapped.Value);
 
         throw new InvalidOperationException(
             $"Could not resolve property path '{path}' referenced by {usage} on entity '{entityType.Name}'.");
@@ -553,6 +582,31 @@ public class CustomMigrationsModelDiffer(
               + $"the native index on ({properties}) declared with HasIndex. Index names must be unique per table — "
               + "the migration would scaffold two CREATE INDEX statements under one name and fail when applied. "
               + "Give one of them a different name.");
+        }
+    }
+
+    /// <summary>
+    /// Fails when a non-unique index leads with a JSON member that had to fall back to text.
+    /// </summary>
+    /// <remarks>
+    /// The provider's queries compare such a member through a cast PostgreSQL cannot index (text to
+    /// <c>timestamptz</c>, <c>date</c>, … is not IMMUTABLE), so no query ever uses an index that
+    /// starts with it: it scaffolds, applies, costs every write and speeds up nothing. A unique index
+    /// is still allowed, since enforcing uniqueness on the stored text is its purpose; a member in a
+    /// later position leaves the index usable through the parts before it.
+    /// </remarks>
+    private static void ValidateQueryUsableLeadingParts(HashSet<IndexDescriptor> descriptors)
+    {
+        foreach (var descriptor in descriptors)
+        {
+            if (descriptor.IsUnique || descriptor.Parts[0].TextFallback is not { } fallback)
+                continue;
+
+            throw new InvalidOperationException(
+                $"The complex index '{descriptor.IndexName}' on table '{descriptor.TableName}' starts with the JSON member "
+              + $"'{fallback.Path}', which EF Core's queries compare as {fallback.StoreType}. PostgreSQL cannot index that conversion from "
+              + "the stored text (it is not IMMUTABLE), so no query would ever use this index. Declare it unique if it "
+              + "exists to enforce uniqueness, put another part first, or map the member to a regular column.");
         }
     }
 
@@ -753,13 +807,14 @@ public class CustomMigrationsModelDiffer(
     }
 
     // Builds a default index-name token for a part: column names pass through; expressions are
-    // reduced to their alphanumeric characters (e.g. lower("Email") -> "lowerEmail").
+    // reduced to their alphanumeric characters (e.g. lower("Email") -> "lowerEmail"), starting from
+    // the part's name token where it has one, so a rendering change never renames the index.
     private static string BuildPartToken(ResolvedIndexPart part)
     {
         if (!part.IsExpression)
             return part.Value;
 
-        var token = new string([.. part.Value.Where(char.IsLetterOrDigit)]);
+        var token = new string([.. (part.NameToken ?? part.Value).Where(char.IsLetterOrDigit)]);
         return token.Length > 0 ? token : "expr";
     }
 

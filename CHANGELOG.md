@@ -6,6 +6,14 @@ covering only what changed for that package:
 [PostgreSQL](src/EFCore.ComplexIndexes.PostgreSQL/CHANGELOG.md),
 [SQL Server](src/EFCore.ComplexIndexes.SqlServer/CHANGELOG.md).
 
+## 5.4.0
+
+Fixes to what 5.x already ships, found while testing the packages against EF Core 11: indexes on
+JSON members that no query could use.
+
+- **Fixed:** indexes on members of a `ToJson()` complex property are written the way Npgsql's queries read the member, so PostgreSQL can use them. It uses an expression index only for a query whose expression matches, and until now every member was extracted as `"doc" -> 'A' ->> 'B'` text with no cast, which matched only a top-level string. A nested member (`#>> '{Address,City}'` in the query) or a typed one (`CAST("doc" ->> 'Rank' AS integer)`) got an index that applied cleanly, enforced uniqueness, and was never used by a single query. Members now render as Npgsql renders them — `->>` or `#>>`, cast to the member's store type unless it is a string, `decode(…, 'base64')` for `byte[]`, `jsonb` for a primitive collection — in index parts, typed expression indexes and index filters. That also makes a filter such as `x => x.Profile.Rank > 5` valid SQL: it compared text with an integer and failed at apply time. Default index names do not change. **Upgrading:** the first `migrations add` drops and re-creates each affected index under its existing name; indexes on top-level string members are untouched. Until that migration exists, `has-pending-model-changes` reports changes and `Migrate()` raises EF Core's pending-model-changes error. The re-create blocks writes while it builds, so on a large table declare the index with `IsCreatedConcurrently()` first. Exclusion constraint filters keep their rendering. The snapshot gains one `CustomIndex:RenderingVersion` annotation, which records the rules a model was declared under and is what lets the change reach databases built by earlier versions.
+- **Changed:** a non-unique index that starts with a date or time JSON member (`DateTime`, `DateTimeOffset`, `DateOnly`, `TimeOnly`) is rejected at `migrations add`. EF Core's queries cast such a member to `timestamptz`, `date` or `time`, and PostgreSQL cannot index those casts (the conversion from text is not IMMUTABLE), so no query could ever use the index. A unique one is still allowed and enforces uniqueness on the stored text; a member in a later position leaves the index usable through the parts before it.
+
 ## 5.3.0
 
 One fix, found the first time a 5.2.0 converter-member path met the model snapshot

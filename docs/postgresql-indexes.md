@@ -199,9 +199,33 @@ builder.HasComplexIndex(x => x.Name.ShortName, isUnique: true, indexName: "ux_em
 // ALTER: CREATE UNIQUE INDEX "ux_employer_short_name" ON employers (("name" ->> 'ShortName'));
 ```
 
-Nested complex types become `->` segments (`("profile" -> 'Address' ->> 'City')`), and
-`HasJsonPropertyName` is honored. Members are extracted as **text**; for typed comparisons or
-ordering semantics use `HasExpressionIndex` with an explicit cast.
+Each member is rendered **exactly the way Npgsql's queries read it**, because PostgreSQL uses an
+expression index only for a query whose expression matches it. That decides the path operator and
+the cast:
+
+| Member | Index expression | Serves |
+|---|---|---|
+| `string`, enum stored as string | `"name" ->> 'ShortName'` | `x.Name.ShortName == …` |
+| nested member | `"profile" #>> '{Address,City}'` | `x.Profile.Address.City == …` |
+| `int`, `long`, `short`, `decimal`, `double`, `bool`, `Guid`, enum | `CAST("profile" ->> 'Rank' AS integer)` (the member's store type) | `x.Profile.Rank == …`, `> …`, `ORDER BY` |
+| `byte[]` | `decode("profile" ->> 'Blob', 'base64')` | `x.Profile.Blob == …` |
+| primitive collection | `"profile" -> 'Tags'` (`jsonb`) | a GIN over it |
+| `DateTime`, `DateTimeOffset`, `DateOnly`, `TimeOnly` | `"profile" ->> 'At'` (text) | uniqueness only |
+
+`HasJsonPropertyName` is honored throughout. Date and time members are the exception: Npgsql's
+queries cast them to `timestamp with time zone`, `date` or `time`, and PostgreSQL cannot index those
+casts (the conversion from text is not `IMMUTABLE`), so no index can match the query. The member
+stays text, a **unique** index over it still enforces uniqueness, and a **non-unique** index that
+starts with it is rejected at `migrations add`, since no query would ever use it. Put another part
+first, or map the member to a regular column.
+
+> **Upgrading from 5.3 or earlier:** before 5.4.0 every member was extracted as text with `->`
+> segments, which only matched the query for a top-level string. Such indexes enforced uniqueness
+> but no query used them. The first `migrations add` after upgrading drops and re-creates each
+> affected index under its existing name; indexes on top-level string members are untouched.
+> Until that migration exists, `has-pending-model-changes` reports changes and `Migrate()` raises
+> EF Core's pending-model-changes error. The re-create is a plain `CREATE INDEX` that blocks writes
+> while it builds; on a large table, declare the index with `IsCreatedConcurrently()` first.
 
 ### Indexing the whole document
 

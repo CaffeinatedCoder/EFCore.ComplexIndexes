@@ -382,6 +382,108 @@ public class PostgresIntegrationTests
         Sql("""INSERT INTO ig_employers ("Id", name) VALUES (3, '{"ShortName":"Globex","LegalName":"Globex GmbH"}')""");
     }
 
+    // ── JSON-member indexes are used by EF Core's own queries ──
+
+    private enum Plan { Basic, Pro }
+
+    private class Location
+    {
+        public string City { get; set; } = "";
+        public int    Zip  { get; set; }
+    }
+
+    private class Settings
+    {
+        public int      Rank     { get; set; }
+        public decimal  Price    { get; set; }
+        public bool     Active   { get; set; }
+        public Plan     Plan     { get; set; }
+        public DateTime At       { get; set; }
+        public Location Location { get; set; } = new();
+    }
+
+    private class Tenant
+    {
+        public int      Id       { get; set; }
+        public Settings Settings { get; set; } = new();
+    }
+
+    private class TenantContext(DbContextOptions<TenantContext> options) : DbContext(options)
+    {
+        public DbSet<Tenant> Tenants => Set<Tenant>();
+
+        protected override void OnModelCreating(ModelBuilder modelBuilder) =>
+            modelBuilder.Entity<Tenant>(b =>
+            {
+                b.ToTable("ig_tenants");
+                b.HasKey(x => x.Id);
+                b.ComplexProperty(x => x.Settings, s => { s.ToJson("settings"); s.ComplexProperty(x => x.Location); });
+                b.HasComplexIndex(x => x.Settings.Location.City, isUnique: true, indexName: "ux_ig_tenants_city");
+                b.HasComplexIndex(x => x.Settings.Location.Zip, indexName: "ix_ig_tenants_zip");
+                b.HasComplexIndex(x => x.Settings.Rank, indexName: "ix_ig_tenants_rank");
+                b.HasComplexIndex(x => x.Settings.Price, indexName: "ix_ig_tenants_price");
+                b.HasComplexIndex(x => x.Settings.Active, indexName: "ix_ig_tenants_active");
+                b.HasComplexIndex(x => x.Settings.Plan, indexName: "ix_ig_tenants_plan");
+                b.HasComplexIndex(x => x.Settings.At, isUnique: true, indexName: "ux_ig_tenants_at");
+            });
+    }
+
+    // What the fix is for: until 5.4.0 only a top-level string member was rendered the way Npgsql's
+    // queries read it, so every index here applied and enforced, and not one was used by a query.
+    // Sequential scans are disabled so that "not used" can only mean "cannot be used".
+    [TestMethod(DisplayName = "EF Core's queries over JSON members use the indexes the differ created")]
+    public void Json_member_indexes_serve_ef_queries()
+    {
+        Migrate<TenantContext>();
+
+        using var context = new TenantContext(new DbContextOptionsBuilder<TenantContext>().UseNpgsql(ConnectionString).Options);
+        var start = new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+        context.Tenants.AddRange(Enumerable.Range(0, 200).Select(i => new Tenant
+        {
+            Settings = new Settings
+            {
+                Rank = i, Price = i + 0.5m, Active = i % 2 == 0, Plan = (Plan)(i % 2), At = start.AddMinutes(i),
+                Location = new Location { City = $"city-{i}", Zip = 10000 + i }
+            }
+        }));
+        context.SaveChanges();
+
+        var queries = new (string Index, IQueryable<Tenant> Query)[]
+        {
+            ("ux_ig_tenants_city",   context.Tenants.Where(t => t.Settings.Location.City == "city-5")),
+            ("ix_ig_tenants_zip",    context.Tenants.Where(t => t.Settings.Location.Zip == 10005)),
+            ("ix_ig_tenants_rank",   context.Tenants.Where(t => t.Settings.Rank == 5)),
+            ("ix_ig_tenants_price",  context.Tenants.Where(t => t.Settings.Price == 5.5m)),
+            ("ix_ig_tenants_active", context.Tenants.Where(t => t.Settings.Active)),
+            ("ix_ig_tenants_plan",   context.Tenants.Where(t => t.Settings.Plan == Plan.Pro))
+        };
+
+        using var connection = new NpgsqlConnection(ConnectionString);
+        connection.Open();
+        using (var off = new NpgsqlCommand("SET enable_seqscan = off", connection))
+            off.ExecuteNonQuery();
+
+        foreach (var (index, query) in queries)
+        {
+            using var explain = new NpgsqlCommand("EXPLAIN (COSTS OFF) " + query.ToQueryString(), connection);
+            using var reader  = explain.ExecuteReader();
+            var plan = new List<string>();
+            while (reader.Read())
+                plan.Add(reader.GetString(0));
+
+            StringAssert.Contains(string.Join("\n", plan), index, $"{index} is not used:\n{string.Join("\n", plan)}");
+        }
+
+        // Uniqueness still holds, for a nested member and for a date member kept as text — the latter
+        // compared on the text EF itself wrote.
+        string storedAt;
+        using (var read = new NpgsqlCommand("SELECT settings ->> 'At' FROM ig_tenants WHERE settings ->> 'Rank' = '5'", connection))
+            storedAt = (string)read.ExecuteScalar()!;
+
+        AssertRejected("""INSERT INTO ig_tenants (settings) VALUES ('{"Rank":1,"Price":1,"Active":true,"Plan":0,"At":"2030-01-01T00:00:00Z","Location":{"City":"city-5","Zip":1}}')""");
+        AssertRejected($$$"""INSERT INTO ig_tenants (settings) VALUES ('{"Rank":1,"Price":1,"Active":true,"Plan":0,"At":"{{{storedAt}}}","Location":{"City":"elsewhere","Zip":1}}')""");
+    }
+
     // ── The regression: native HasIndex ⇄ HasComplexIndex round-trips cleanly ──
 
     private class EmailAddress

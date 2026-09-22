@@ -32,6 +32,7 @@ public static class ComplexIndexExtensions
         {
             builder.HasAnnotation(ComplexIndexAnnotations.IsIndexed, true);
             builder.HasAnnotation(ComplexIndexAnnotations.IsUnique,  isUnique);
+            ComplexIndexStorage.MarkRenderingVersion(builder.Metadata.DeclaringType.Model);
 
             if (filter is not null)
                 builder.HasAnnotation(ComplexIndexAnnotations.Filter, filter);
@@ -55,6 +56,7 @@ public static class ComplexIndexExtensions
             configure(indexBuilder);
 
             builder.HasAnnotation(ComplexIndexAnnotations.IsIndexed, true);
+            ComplexIndexStorage.MarkRenderingVersion(builder.Metadata.DeclaringType.Model);
 
             foreach (var (key, value) in indexBuilder.Annotations)
                 builder.HasAnnotation(key, value);

@@ -42,6 +42,13 @@ public sealed class IndexPartDefinition : IEquatable<IndexPartDefinition>
     [JsonIgnore] public bool IsTemplate => Template is not null;
 
     /// <summary>
+    /// Overrides the model's <see cref="ComplexIndexAnnotations.RenderingVersion"/> for this one
+    /// resolution. Never stored; the differ sets it on the parts it builds for placeholders in a
+    /// context whose rendering must not change — exclusion constraint filters.
+    /// </summary>
+    [JsonIgnore] internal int? RenderingVersion { get; init; }
+
+    /// <summary>
     /// Returns a copy of this part with the given sort options applied; null arguments keep the
     /// current value.
     /// </summary>

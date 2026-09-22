@@ -32,4 +32,17 @@ public static class ComplexIndexAnnotations
     /// generators read this to render expression indexes.
     /// </summary>
     public const string IndexParts = "CustomIndex:IndexParts";
+
+    /// <summary>
+    /// Set on the model by every index declaration, recording which rules the differ renders the
+    /// model's index parts with. A snapshot written before the key existed carries none and is
+    /// rendered by the original rules, so a change of rules reaches existing databases as one
+    /// drop-and-create per affected index instead of never: parts are resolved at diff time on both
+    /// sides, and without this key both sides would resolve alike.
+    /// </summary>
+    /// <remarks>
+    /// Version 2 (5.4.0) renders JSON members the way the provider's query translation does, so that
+    /// the database can use the index for EF Core's own queries.
+    /// </remarks>
+    public const string RenderingVersion = "CustomIndex:RenderingVersion";
 }
