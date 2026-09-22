@@ -283,6 +283,19 @@ revoked rows" collapsed to one constraint. Name collisions matter more here than
 every ADD is preceded by `DROP CONSTRAINT IF EXISTS`, so a duplicate name does not fail at apply
 time — the second constraint silently replaces the first.
 
+The per-kind checks above each compare a kind with itself on one table, which is not how
+PostgreSQL scopes names, so since 5.4.0 the Npgsql differ's `ValidateNamesAcrossKinds` runs last
+over everything the target model introduces — complex indexes, exclusion, temporal and temporal
+foreign key constraints — plus EF's own indexes, keys, foreign keys and check constraints. Two
+namespaces: constraint names per **table** (42710; against an exclusion constraint, a silent
+replacement instead, confirmed on PostgreSQL 18: the temporal `UNIQUE` vanished and the migration
+applied clean), and index names per **schema**, where every primary key, unique, exclusion and
+temporal constraint also owns an index (42P07). A collision is reported only when one party is
+this package's; two of EF's own objects are EF's business. It collects into a list, not a set: the
+two same-named declarations it exists to find produce identical entries, and a set merged them.
+Core's `ValidateUniqueIndexNames` stays per table on purpose — SQL Server scopes index names per
+table.
+
 ### The read model is the differ's reader
 
 `ComplexIndexModelExtensions.GetDeclaredComplexIndexes` (core) and
@@ -360,13 +373,32 @@ differ let satellites resolve what the core cannot:
 
 - `IsForwardedIndexAnnotation` — the annotation whitelist (see below).
 - `ResolveUnmappedPart` — a path with no table column; the Npgsql differ builds a JSON extraction
-  (`"col" -> 'A' ->> 'B'`) when the path traverses a `ToJson()` complex property, honoring
-  `HasJsonPropertyName`. Members extract as text — no automatic casts (text→timestamptz casts are
-  not IMMUTABLE and would blow up `CREATE INDEX`). A path that *ends* at the JSON-mapped complex
+  when the path traverses a `ToJson()` complex property, honoring `HasJsonPropertyName`, rendered
+  **exactly as Npgsql's query translation renders the member** (`NpgsqlQuerySqlGenerator.VisitJsonScalar`
+  and `GenerateJsonPath`, identical in Npgsql 10 and 11): `->>` for one step, `#>> '{A,B}'` for
+  more (`ARRAY[…]::text[]` when a segment is not ASCII-alphanumeric), and a `CAST` to the member's
+  store type unless it is a string mapping, `decode(…, 'base64')` for `bytea`, `jsonb` for a
+  primitive collection or a `json`/`jsonb` scalar (checked in that order, as Npgsql does). PostgreSQL uses an expression index only for a query whose expression
+  matches it, so this is not cosmetic: until 5.4.0 every member was `"col" -> 'A' ->> 'B'` text,
+  and indexes on nested or typed members applied, enforced, and served no query
+  (`NpgsqlJsonMemberRenderingTests` asserts each rendering against EF's own `ToQueryString()`).
+  Date and time members stay text — their casts are not IMMUTABLE and cannot appear in an index —
+  and the part records a `TextFallback`; `ValidateQueryUsableLeadingParts` rejects a non-unique
+  index that starts with one (target model only). A path that *ends* at the JSON-mapped complex
   property — or at a complex collection, which is always JSON — resolves to the container column
   as a plain **column** part (so a whole-document GIN needs no runtime wiring); a complex property
-  nested inside the document resolves to a `->` extraction yielding `jsonb`. A table-split complex
-  property stays unresolved: there is no single column to stand for it.
+  nested inside the document resolves to a `jsonb` extraction. A table-split complex property
+  stays unresolved: there is no single column to stand for it.
+
+  **Rendering changes need `ComplexIndexAnnotations.RenderingVersion`.** Parts are resolved at diff
+  time on *both* sides, so changing how a member renders produces no migration at all — both sides
+  resolve alike and existing databases keep the old index forever. Every declaration writes the
+  version onto the model; a snapshot without it (scaffolded before 5.4.0) is resolved by the old
+  rules, which is what turns the change into one drop-and-create per affected index. Default index
+  names come from `ResolvedIndexPart.NameToken` (container plus path), never from the rendered SQL,
+  so a rendering change never renames an index; and `ResolvedIndexPart` equality ignores both
+  internal members, or identical SQL would still rebuild. Exclusion constraint filters pass
+  `renderingVersion: 1` and keep the old rendering: rebuilding a constraint buys no enforcement.
 - `ResolveTemplatePart` — substitutes template placeholders with quoted columns or parenthesized
   JSON extractions. Since 5.2.0 the core implements it, quoting through the `QuoteIdentifier`
   virtual (ANSI by default; the SQL Server satellite brackets), so satellites override neither.

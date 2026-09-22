@@ -58,7 +58,27 @@ internal static class ComplexIndexStorage
     }
 
     public static void Write(IMutableEntityType entityType, IReadOnlyList<CompositeIndexDefinition> definitions)
-        => entityType.SetAnnotation(ComplexIndexAnnotations.CompositeIndexes, CompositeIndexSerializer.Serialize(definitions));
+    {
+        entityType.SetAnnotation(ComplexIndexAnnotations.CompositeIndexes, CompositeIndexSerializer.Serialize(definitions));
+        MarkRenderingVersion(entityType.Model);
+    }
+
+    /// <summary>The rendering rules this version writes; see <see cref="ComplexIndexAnnotations.RenderingVersion"/>.</summary>
+    public const int CurrentRenderingVersion = 2;
+
+    /// <summary>
+    /// Records on the model that its declarations were made under <see cref="CurrentRenderingVersion"/>.
+    /// Every declaration path calls this, so the key is present exactly when the model declares an index.
+    /// </summary>
+    public static void MarkRenderingVersion(IMutableModel model)
+        => model.SetAnnotation(ComplexIndexAnnotations.RenderingVersion, CurrentRenderingVersion);
+
+    /// <summary>
+    /// The rendering rules a model's declarations were made under. A model without the key — a
+    /// snapshot written before 5.4.0 — predates it and is version 1.
+    /// </summary>
+    public static int GetRenderingVersion(IReadOnlyModel model)
+        => model.FindAnnotation(ComplexIndexAnnotations.RenderingVersion)?.Value is int version ? version : 1;
 
     /// <summary>
     /// The filter that results from adding <paramref name="predicate"/> to <paramref name="existing"/>

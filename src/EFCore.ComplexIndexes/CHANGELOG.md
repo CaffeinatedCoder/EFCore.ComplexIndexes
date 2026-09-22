@@ -4,6 +4,18 @@ Changes to the core package, newest first. The
 [root changelog](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/CHANGELOG.md)
 covers all three packages.
 
+## 5.4.0
+
+- **New:** `ComplexIndexAnnotations.RenderingVersion`, written onto the model by every index
+  declaration. It records which rules the differ renders the model's parts with. Parts are resolved
+  at diff time on both sides, so without it a rendering change would never produce a migration; a
+  snapshot scaffolded before 5.4.0 carries none and is rendered by the original rules, and the
+  change reaches an existing database as one drop-and-create per affected index. The next
+  `migrations add` adds one `HasAnnotation` line to the snapshot, which on its own changes no DDL.
+- **Changed:** default names of expression parts are built from the property path rather than the
+  rendered SQL, so a change in how a part renders never renames an index. Every name 5.3.0
+  produced stays the same.
+
 ## 5.3.0
 
 - **Fixed:** a converter-member path (`x => x.Email.Value`) resolves against a model snapshot. The

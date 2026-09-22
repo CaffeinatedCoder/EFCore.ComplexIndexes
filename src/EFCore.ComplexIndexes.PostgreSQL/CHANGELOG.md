@@ -4,6 +4,27 @@ Changes to the PostgreSQL satellite, newest first. The
 [root changelog](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/CHANGELOG.md)
 covers all three packages.
 
+## 5.4.0
+
+- **Fixed:** indexes on `ToJson()` members are written the way Npgsql's queries read the member —
+  `->>` or `#>> '{A,B}'`, cast to the member's store type unless it is a string, `decode(…,
+  'base64')` for `byte[]`, `jsonb` for a primitive collection or a `json`/`jsonb` member — so
+  PostgreSQL can use them. Before,
+  every member was `"doc" -> 'A' ->> 'B'` text, which matched a query only for a top-level string:
+  indexes on nested or typed members applied, enforced uniqueness, and served no query. Applies to
+  index parts, typed expression indexes and index filters; exclusion constraint filters keep their
+  rendering. Upgrading rebuilds each affected index once, under its existing name, at the first
+  `migrations add`.
+- **Changed:** a non-unique index that starts with a `DateTime`, `DateTimeOffset`, `DateOnly` or
+  `TimeOnly` JSON member is rejected at `migrations add`: the queries cast the member to a type
+  PostgreSQL cannot index from text, so the index could never be used. Unique ones are allowed.
+- **Fixed:** names are checked across kinds at `migrations add`: constraint names per table
+  (temporal, temporal foreign key and exclusion constraints against each other and against EF's
+  keys, foreign keys and check constraints) and index names per schema (complex indexes and the
+  index behind every unique, exclusion and temporal constraint, against EF's indexes and keys).
+  Such a clash failed at apply time with 42710 or 42P07 — or, against an exclusion constraint,
+  whose ADD is preceded by `DROP CONSTRAINT IF EXISTS`, silently dropped the other constraint.
+
 ## 5.2.0
 
 - **Changed:** an index, exclusion constraint, temporal constraint or temporal foreign key whose

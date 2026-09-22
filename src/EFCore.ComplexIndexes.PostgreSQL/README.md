@@ -11,7 +11,7 @@ Adds, on top of the core's complex-property, composite, unique, and filtered ind
   (`WITH (fillfactor=70)`)
 - **`NULLS FIRST` / `NULLS LAST`** per-column null ordering
 - **Expression (functional) indexes** — raw SQL *or* typed LINQ, on any entity, complex or not
-- **JSON indexes** — index members of `ToJson()` complex properties as `->>` extractions, or the
+- **JSON indexes** — index members of `ToJson()` complex properties as the extractions Npgsql's queries use, or the
   whole document (or a complex collection) with a GIN over the `jsonb` column
 - **Temporal `UNIQUE … WITHOUT OVERLAPS` constraints and temporal foreign keys** (PostgreSQL 18)
 - **Exclusion (`EXCLUDE`) constraints** — filtered overlap protection, on every supported version
@@ -119,7 +119,12 @@ builder.HasComplexIndex(x => x.Name.ShortName, isUnique: true, indexName: "ux_em
 // CREATE UNIQUE INDEX "ux_employer_short_name" ON employers (("name" ->> 'ShortName'));
 ```
 
-Nested complex types become `->` segments and `HasJsonPropertyName` is honored.
+Each member is rendered the way Npgsql's queries read it, so the index serves them: nested members
+as `#>> '{Address,City}'`, typed members cast to their store type
+(`CAST("profile" ->> 'Rank' AS integer)`), and `HasJsonPropertyName` is honored. Date and time
+members stay text, because PostgreSQL cannot index their cast: a unique index over one still
+enforces uniqueness, and a non-unique index starting with one is rejected at `migrations add`.
+Upgrading from 5.3 or earlier rebuilds the affected indexes once, under their existing names.
 
 ### Temporal constraints — PostgreSQL 18
 

@@ -143,14 +143,32 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
     /// <summary>
     /// Resolves an index part whose path has no table column: a member of a complex property mapped
     /// to JSON via <c>ToJson()</c>, or the JSON-mapped complex property (or complex collection)
-    /// itself. A member becomes a PostgreSQL text extraction, e.g.
-    /// <c>"name" -&gt; 'Inner' -&gt;&gt; 'Leaf'</c>, honoring <c>HasJsonPropertyName</c>; for typed
-    /// semantics use <c>HasExpressionIndex</c> with an explicit cast. A path ending at the JSON-mapped
-    /// complex property resolves to its container column — a plain column index, typically
-    /// <c>USING gin</c>, that the stock generator renders with no runtime wiring. A complex property
-    /// nested inside the document resolves to a <c>-&gt;</c> extraction yielding <c>jsonb</c>, which
-    /// GIN indexes too. Expression parts require the <c>UseNpgsqlComplexIndexes()</c> runtime wiring.
+    /// itself.
     /// </summary>
+    /// <remarks>
+    /// A member is rendered exactly as Npgsql's query translation renders it, because PostgreSQL only
+    /// uses an expression index for a query whose expression matches it:
+    /// <c>"doc" -&gt;&gt; 'A'</c> for one step and <c>"doc" #&gt;&gt; '{A,B}'</c> for more, cast to
+    /// the member's store type unless that is a string (<c>CAST("doc" -&gt;&gt; 'Rank' AS integer)</c>),
+    /// <c>decode(…, 'base64')</c> for <c>bytea</c>, and <c>jsonb</c> for a primitive collection.
+    /// <c>HasJsonPropertyName</c> is honored. A date or time member stays text: the cast EF Core's
+    /// queries apply to it is not IMMUTABLE and cannot appear in an index, so the part records the
+    /// fallback and the differ rejects a non-unique index that leads with it.
+    /// <para>
+    /// A path ending at the JSON-mapped complex property resolves to its container column — a plain
+    /// column index, typically <c>USING gin</c>, that the stock generator renders with no runtime
+    /// wiring. A complex property nested inside the document resolves to a <c>jsonb</c> extraction,
+    /// which GIN indexes too. Expression parts require the <c>UseNpgsqlComplexIndexes()</c> runtime
+    /// wiring.
+    /// </para>
+    /// <para>
+    /// A model without <see cref="ComplexIndexAnnotations.RenderingVersion"/> — a snapshot written
+    /// before 5.4.0 — is rendered the original way, <c>"doc" -&gt; 'A' -&gt;&gt; 'B'</c> as text with no
+    /// cast, which matched the query translation only for a top-level string. Resolving the snapshot
+    /// by its own rules is what turns the change into one drop-and-create per affected index; resolved
+    /// alike, the two sides would never differ and existing databases would keep the unused index.
+    /// </para>
+    /// </remarks>
     protected override ResolvedIndexPart? ResolveUnmappedPart(
         IEntityType           entityType,
         IndexPartDefinition   part,
@@ -159,6 +177,8 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
     {
         if (part.PropertyPath is null)
             return null;
+
+        var queryAligned = (part.RenderingVersion ?? ComplexIndexStorage.GetRenderingVersion(entityType.Model)) >= 2;
 
         var       segments        = part.PropertyPath.Split('.');
         ITypeBase current         = entityType;
@@ -183,27 +203,95 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
 
         var leaf = current.FindProperty(segments[^1]);
         if (leaf is null)
-            return ResolveComplexLeaf(current, segments[^1], containerColumn, jsonPath, part);
+            return ResolveComplexLeaf(current, segments[^1], containerColumn, jsonPath, part, queryAligned);
 
         if (containerColumn is null)
             return null;
 
         jsonPath.Add(leaf.GetJsonPropertyName() ?? leaf.Name);
 
-        return new ResolvedIndexPart(true, BuildJsonExtraction(containerColumn, jsonPath, asText: true), part.Descending, part.NullSort);
+        // Default index names come from the container and the path, never from the rendered SQL.
+        var nameToken = containerColumn + string.Concat(jsonPath);
+
+        if (!queryAligned)
+            return new ResolvedIndexPart(true, BuildLegacyJsonExtraction(containerColumn, jsonPath, asText: true), part.Descending, part.NullSort)
+                   {
+                       NameToken = nameToken
+                   };
+
+        var (sql, fallbackStoreType) = RenderJsonScalar(leaf, containerColumn, jsonPath);
+
+        return new ResolvedIndexPart(true, sql, part.Descending, part.NullSort)
+               {
+                   NameToken    = nameToken,
+                   TextFallback = fallbackStoreType is null ? null : (part.PropertyPath, fallbackStoreType)
+               };
+    }
+
+    // Types whose text input function is STABLE rather than IMMUTABLE — the conversion depends on
+    // DateStyle, TimeZone or lc_monetary — so a cast to them from text cannot appear in an index.
+    private static readonly HashSet<string> StableTextInputTypes = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "date", "time", "time without time zone", "time with time zone", "timetz",
+        "timestamp", "timestamp without time zone", "timestamp with time zone", "timestamptz",
+        "interval", "money"
+    };
+
+    // Mirrors NpgsqlQuerySqlGenerator.VisitJsonScalar, identical in Npgsql 10 and 11, case for case
+    // and in its order: jsonb for a JSON-mapped value (a primitive collection, or a json/jsonb
+    // scalar such as a JsonDocument), no cast for a string mapping, decode() for bytea, and a CAST to
+    // the store type for everything else — except where that cast is not IMMUTABLE, which falls
+    // back to text and reports the store type the queries use instead.
+    private (string Sql, string? FallbackStoreType) RenderJsonScalar(IProperty leaf, string containerColumn, List<string> jsonPath)
+    {
+        var mapping = leaf.FindRelationalTypeMapping() ?? _typeMappingSource.FindMapping(leaf);
+
+        if (leaf.IsPrimitiveCollection || mapping?.StoreTypeNameBase is "jsonb" or "json")
+            return (BuildJsonPath(containerColumn, jsonPath, returnsText: false), null);
+
+        var text = BuildJsonPath(containerColumn, jsonPath, returnsText: true);
+
+        return mapping switch
+        {
+            null or StringTypeMapping                                     => (text, null),
+            _ when mapping.StoreTypeNameBase == "bytea"                    => ($"decode({text}, 'base64')", null),
+            _ when StableTextInputTypes.Contains(mapping.StoreTypeNameBase) => (text, mapping.StoreType),
+            _                                                             => ($"CAST({text} AS {mapping.StoreType})", null)
+        };
+    }
+
+    // Mirrors NpgsqlQuerySqlGenerator.GenerateJsonPath: -> / ->> for a single step; #> / #>> for
+    // more, with a '{A,B}' literal when every segment is ASCII letters and digits and an
+    // ARRAY['A','B']::text[] otherwise. PostgreSQL matches an index to a query by expression, so the
+    // choice has to be the same one.
+    private static string BuildJsonPath(string containerColumn, List<string> jsonPath, bool returnsText)
+    {
+        var column = Quote(containerColumn);
+
+        if (jsonPath.Count == 1)
+            return $"{column} {(returnsText ? "->>" : "->")} {Literal(jsonPath[0])}";
+
+        var path = jsonPath.All(segment => segment.All(char.IsAsciiLetterOrDigit))
+                       ? $"'{{{string.Join(",", jsonPath)}}}'"
+                       : $"ARRAY[{string.Join(",", jsonPath.Select(Literal))}]::text[]";
+
+        return $"{column} {(returnsText ? "#>>" : "#>")} {path}";
+
+        static string Literal(string value) => $"'{value.Replace("'", "''")}'";
     }
 
     // The path ends at a complex property rather than a scalar: the whole document, or a
     // sub-document. At the top of a ToJson() mapping — and a complex collection is always JSON —
     // that is the container column itself, so the index is a plain column index the stock generator
-    // renders. Nested inside a document it is a `->` extraction, which yields jsonb rather than text.
+    // renders. Nested inside a document it is an extraction yielding jsonb rather than text.
     // A table-split complex property has no single column to stand for it, so that stays unresolved.
     private static ResolvedIndexPart? ResolveComplexLeaf(
         ITypeBase           current,
         string              name,
         string?             containerColumn,
         List<string>        jsonPath,
-        IndexPartDefinition part
+        IndexPartDefinition part,
+        bool                queryAligned
     )
     {
         var complexProperty = current.FindComplexProperty(name);
@@ -220,11 +308,16 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
 
         jsonPath.Add(complexProperty.GetJsonPropertyName() ?? complexProperty.Name);
 
-        return new ResolvedIndexPart(true, BuildJsonExtraction(containerColumn, jsonPath, asText: false), part.Descending, part.NullSort);
+        var sql = queryAligned
+                      ? BuildJsonPath(containerColumn, jsonPath, returnsText: false)
+                      : BuildLegacyJsonExtraction(containerColumn, jsonPath, asText: false);
+
+        return new ResolvedIndexPart(true, sql, part.Descending, part.NullSort) { NameToken = containerColumn + string.Concat(jsonPath) };
     }
 
-    // "col" -> 'A' -> 'B' (jsonb) or, with asText, "col" -> 'A' ->> 'B' (text) for the last step.
-    private static string BuildJsonExtraction(string containerColumn, List<string> jsonPath, bool asText)
+    // Rendering version 1, kept for snapshots written before 5.4.0: "col" -> 'A' -> 'B' (jsonb) or,
+    // with asText, "col" -> 'A' ->> 'B' (text) for the last step.
+    private static string BuildLegacyJsonExtraction(string containerColumn, List<string> jsonPath, bool asText)
     {
         var sql = new System.Text.StringBuilder(Quote(containerColumn));
         for (var i = 0; i < jsonPath.Count; i++)
@@ -264,8 +357,111 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
             operations = withExtension;
         }
 
+        // Last, so the per-kind checks before it keep their own messages.
+        ValidateNamesAcrossKinds(target);
+
         return operations;
     }
+
+    /// <summary>
+    /// Fails when a name this package introduces is already taken in the PostgreSQL namespace it
+    /// lands in — by another declaration of any kind, or by one of EF Core's own.
+    /// </summary>
+    /// <remarks>
+    /// PostgreSQL has two namespaces here. A constraint name is unique among the constraints of its
+    /// table: a clash fails the migration with 42710, or — every exclusion constraint being added
+    /// after <c>DROP CONSTRAINT IF EXISTS</c> — silently replaces the other constraint. And an index
+    /// name, including the index behind every primary key, unique, exclusion and temporal
+    /// constraint, is unique among all relations of its schema, not its table: a clash fails with
+    /// 42P07. Each kind used to be checked against its own kind on the same table at most, so a
+    /// temporal constraint named like an exclusion constraint, or like an index anywhere in the
+    /// schema, scaffolded cleanly. Collisions between two of EF Core's own objects are not this
+    /// package's to police. Target model only: a snapshot that already holds a collision must stay
+    /// diffable, or the model could never be fixed.
+    /// </remarks>
+    private void ValidateNamesAcrossKinds(IRelationalModel? target)
+    {
+        if (target is null)
+            return;
+
+        // A list, not a set: two declarations with one name on one table produce identical entries,
+        // and a set would merge exactly the pair this check exists to find. Every source below is
+        // already free of duplicates.
+        var defaultSchema = target.Model.GetDefaultSchema() ?? "public";
+        var names         = new List<NamedObject>();
+
+        void Add(string name, string table, string? schema, string kind, bool ours, bool constraint, bool indexBacked)
+            => names.Add(new NamedObject(name, table, schema ?? defaultSchema, kind, ours, constraint, indexBacked));
+
+        foreach (var index in ExtractAllIndexDescriptors(target))
+            Add(index.IndexName, index.TableName, index.Schema, "complex index", ours: true, constraint: false, indexBacked: true);
+
+        var temporal = BuildDescriptors(target, _typeMappingSource);
+        foreach (var constraint in temporal)
+            Add(constraint.Name, constraint.Table, constraint.Schema, "temporal constraint", ours: true, constraint: true, indexBacked: true);
+
+        foreach (var foreignKey in BuildForeignKeyDescriptors(target, _typeMappingSource, temporal))
+            Add(foreignKey.Name, foreignKey.DependentTable, foreignKey.DependentSchema, "temporal foreign key", ours: true, constraint: true, indexBacked: false);
+
+        foreach (var exclusion in BuildExclusionDescriptors(target))
+            Add(exclusion.Name, exclusion.Table, exclusion.Schema, "exclusion constraint", ours: true, constraint: true, indexBacked: true);
+
+        foreach (var table in target.Tables)
+        {
+            foreach (var index in table.Indexes)
+                Add(index.Name, table.Name, table.Schema, "index", ours: false, constraint: false, indexBacked: true);
+
+            foreach (var key in table.UniqueConstraints)
+                Add(key.Name, table.Name, table.Schema, key.GetIsPrimaryKey() ? "primary key" : "unique constraint", ours: false, constraint: true, indexBacked: true);
+
+            foreach (var foreignKey in table.ForeignKeyConstraints)
+                Add(foreignKey.Name, table.Name, table.Schema, "foreign key", ours: false, constraint: true, indexBacked: false);
+
+            // A check constraint without a name gets one from PostgreSQL, which never collides.
+            foreach (var check in table.CheckConstraints.Where(c => c.Name is not null))
+                Add(check.Name!, table.Name, table.Schema, "check constraint", ours: false, constraint: true, indexBacked: false);
+        }
+
+        ThrowOnFirstCollision(
+            names.Where(n => n.IsConstraint).GroupBy(n => (n.Schema, n.Table, n.Name)),
+            other => "PostgreSQL keeps constraint names unique per table, so the migration would fail when applied (42710)"
+                   + (other.Any(o => o.Kind == "exclusion constraint")
+                          ? " — or, since every exclusion constraint is added after DROP CONSTRAINT IF EXISTS, silently replace the other constraint."
+                          : "."));
+
+        ThrowOnFirstCollision(
+            names.Where(n => n.IsIndexBacked).GroupBy(n => (n.Schema, "", n.Name)),
+            other => "PostgreSQL keeps index names — including the index behind every primary key, unique, exclusion and "
+                   + $"temporal constraint — unique per schema ('{other[0].Schema}'), so the migration would fail when applied (42P07).");
+
+        static void ThrowOnFirstCollision(
+            IEnumerable<IGrouping<(string Schema, string Table, string Name), NamedObject>> groups,
+            Func<IReadOnlyList<NamedObject>, string>                                        rule)
+        {
+            foreach (var group in groups)
+            {
+                var members = group.ToList();
+                var ours    = members.FirstOrDefault(m => m.Ours);
+                if (ours is null || members.Count < 2)
+                    continue;
+
+                var other = members.First(m => !ReferenceEquals(m, ours));
+
+                throw new InvalidOperationException(
+                    $"The {ours.Kind} '{ours.Name}' on table '{ours.Table}' has the same name as the {other.Kind} on table "
+                  + $"'{other.Table}'. {rule([ours, other])} Give one of them a different name.");
+            }
+        }
+    }
+
+    private sealed record NamedObject(
+        string Name,
+        string Table,
+        string Schema,
+        string Kind,
+        bool   Ours,
+        bool   IsConstraint,
+        bool   IsIndexBacked);
 
     // Diffs the temporal UNIQUE constraints and temporal FOREIGN KEY constraints declared on entity
     // types. Drops are emitted as EF's own Drop* operations (the stock generator renders those
@@ -655,7 +851,9 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
                     name,
                     parts,
                     def.Method,
-                    ResolveFilter(entityType, def.Filter, storeObject),
+                    // Pinned to the original JSON rendering: the constraint enforces the same rows
+                    // either way, so the 5.4.0 rendering change would only drop and re-add it.
+                    ResolveFilter(entityType, def.Filter, storeObject, renderingVersion: 1),
                     def.Deferrable,
                     def.InitiallyDeferred));
             }

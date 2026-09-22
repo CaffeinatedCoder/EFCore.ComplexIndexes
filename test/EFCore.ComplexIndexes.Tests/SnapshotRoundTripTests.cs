@@ -46,7 +46,7 @@ public class SnapshotRoundTripTests
     /// the model from the compiled <see cref="ModelSnapshot"/> — the exact source-model path of
     /// `dotnet ef migrations add`.
     /// </summary>
-    private static IRelationalModel BuildModelViaSnapshot<TContext>() where TContext : DbContext
+    private static IRelationalModel BuildModelViaSnapshot<TContext>(Func<string, string>? editSnapshot = null) where TContext : DbContext
     {
         using var context = CreateContext<TContext>();
 
@@ -63,7 +63,7 @@ public class SnapshotRoundTripTests
             modelSnapshotName: "RoundTripSnapshot",
             model: context.GetService<IDesignTimeModel>().Model);
 
-        var snapshot = CompileSnapshot(code);
+        var snapshot = CompileSnapshot(editSnapshot?.Invoke(code) ?? code);
 
         var model = designProvider.GetRequiredService<IModelRuntimeInitializer>()
                                   .Initialize(snapshot.Model, designTime: true, validationLogger: null);
@@ -189,6 +189,48 @@ public class SnapshotRoundTripTests
         Assert.IsFalse(
             differ.HasDifferences(source, BuildLiveModel<RoundTripConverterContext>()),
             "Migrate() uses this runtime pending-model-changes check before applying migrations.");
+    }
+
+    [TestMethod(DisplayName = "JSON-member indexes of every type survive the snapshot round trip without churn")]
+    public void Json_member_roundtrip_is_noop()
+    {
+        var operations = GetDifferences(
+            source: BuildModelViaSnapshot<RoundTripJsonContext>(),
+            target: BuildLiveModel<RoundTripJsonContext>());
+
+        Assert.IsEmpty(operations, string.Join("\n", operations.Select(o => o.GetType().Name + " " + (o as CreateIndexOperation)?.Name)));
+    }
+
+    // The rollout's premise, checked on a real snapshot: the rendering version is written into it, and
+    // a snapshot without it — every snapshot scaffolded before 5.4.0 — rebuilds exactly the indexes
+    // whose rendering changed. If the key never reached the snapshot, the first test above would pass
+    // for the wrong reason and every later `migrations add` would rebuild these indexes again.
+    [TestMethod(DisplayName = "A snapshot scaffolded before 5.4.0 rebuilds exactly the affected JSON-member indexes")]
+    public void Pre_54_snapshot_rebuilds_affected_json_indexes()
+    {
+        var sawKey = false;
+        var source = BuildModelViaSnapshot<RoundTripJsonContext>(code =>
+        {
+            sawKey = code.Contains($"\"{ComplexIndexAnnotations.RenderingVersion}\", 2");
+            return System.Text.RegularExpressions.Regex.Replace(
+                code, $@"\s*\.HasAnnotation\(""{ComplexIndexAnnotations.RenderingVersion}"", 2\)", "");
+        });
+
+        Assert.IsTrue(sawKey, "The rendering version must be written into the snapshot.");
+
+        var operations = GetDifferences(source, BuildLiveModel<RoundTripJsonContext>());
+
+        var affected = NpgsqlJsonMemberRenderingTests.Members.Select(m => m.Name)
+                                                     .Concat(NpgsqlJsonMemberRenderingTests.TextFallbackMembers.Select(m => m.Name))
+                                                     .Where(n => !NpgsqlJsonMemberRenderingTests.UnaffectedByRollout.Contains(n))
+                                                     .Append("ix_filtered_city")
+                                                     .Append("ix_filtered_rank")
+                                                     .Order()
+                                                     .ToList();
+
+        Assert.AreEqual(string.Join(", ", affected), string.Join(", ", operations.OfType<DropIndexOperation>().Select(o => o.Name).Order()));
+        Assert.AreEqual(string.Join(", ", affected), string.Join(", ", operations.OfType<CreateIndexOperation>().Select(o => o.Name).Order()));
+        Assert.IsFalse(operations.OfType<SqlOperation>().Any(), "Exclusion constraints keep their rendering.");
     }
 
     [TestMethod(DisplayName = "A filter change against the snapshot model is still detected")]
@@ -388,6 +430,17 @@ internal class RoundTripConverterContext(DbContextOptions<RoundTripConverterCont
             b.HasComplexIndex(x => x.Email.Value, filter: "{Profile.Handle.Value} <> ''", indexName: "ix_rt_accounts_email_with_handle");
             b.HasComplexCompositeIndex(x => new { x.Id, x.Profile.Handle.Value }, indexName: "ix_rt_accounts_id_handle");
             b.HasExclusionConstraint(x => x.Email.Value, x => x.Period, filter: "{Email.Value} <> ''", name: "ex_rt_accounts_email_period");
+        });
+}
+
+// Every JSON member type the differ renders, plus index and exclusion filters over JSON members.
+internal class RoundTripJsonContext(DbContextOptions<RoundTripJsonContext> options) : DbContext(options)
+{
+    protected override void OnModelCreating(ModelBuilder modelBuilder)
+        => modelBuilder.Entity<NpgsqlJsonMemberRenderingTests.Account>(b =>
+        {
+            NpgsqlJsonMemberRenderingTests.DeclareMatrix(b);
+            NpgsqlJsonMemberRenderingTests.DeclareFilters(b);
         });
 }
 
