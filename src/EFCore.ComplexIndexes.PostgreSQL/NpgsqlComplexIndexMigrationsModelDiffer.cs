@@ -355,8 +355,111 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
             operations = withExtension;
         }
 
+        // Last, so the per-kind checks before it keep their own messages.
+        ValidateNamesAcrossKinds(target);
+
         return operations;
     }
+
+    /// <summary>
+    /// Fails when a name this package introduces is already taken in the PostgreSQL namespace it
+    /// lands in — by another declaration of any kind, or by one of EF Core's own.
+    /// </summary>
+    /// <remarks>
+    /// PostgreSQL has two namespaces here. A constraint name is unique among the constraints of its
+    /// table: a clash fails the migration with 42710, or — every exclusion constraint being added
+    /// after <c>DROP CONSTRAINT IF EXISTS</c> — silently replaces the other constraint. And an index
+    /// name, including the index behind every primary key, unique, exclusion and temporal
+    /// constraint, is unique among all relations of its schema, not its table: a clash fails with
+    /// 42P07. Each kind used to be checked against its own kind on the same table at most, so a
+    /// temporal constraint named like an exclusion constraint, or like an index anywhere in the
+    /// schema, scaffolded cleanly. Collisions between two of EF Core's own objects are not this
+    /// package's to police. Target model only: a snapshot that already holds a collision must stay
+    /// diffable, or the model could never be fixed.
+    /// </remarks>
+    private void ValidateNamesAcrossKinds(IRelationalModel? target)
+    {
+        if (target is null)
+            return;
+
+        // A list, not a set: two declarations with one name on one table produce identical entries,
+        // and a set would merge exactly the pair this check exists to find. Every source below is
+        // already free of duplicates.
+        var defaultSchema = target.Model.GetDefaultSchema() ?? "public";
+        var names         = new List<NamedObject>();
+
+        void Add(string name, string table, string? schema, string kind, bool ours, bool constraint, bool indexBacked)
+            => names.Add(new NamedObject(name, table, schema ?? defaultSchema, kind, ours, constraint, indexBacked));
+
+        foreach (var index in ExtractAllIndexDescriptors(target))
+            Add(index.IndexName, index.TableName, index.Schema, "complex index", ours: true, constraint: false, indexBacked: true);
+
+        var temporal = BuildDescriptors(target, _typeMappingSource);
+        foreach (var constraint in temporal)
+            Add(constraint.Name, constraint.Table, constraint.Schema, "temporal constraint", ours: true, constraint: true, indexBacked: true);
+
+        foreach (var foreignKey in BuildForeignKeyDescriptors(target, _typeMappingSource, temporal))
+            Add(foreignKey.Name, foreignKey.DependentTable, foreignKey.DependentSchema, "temporal foreign key", ours: true, constraint: true, indexBacked: false);
+
+        foreach (var exclusion in BuildExclusionDescriptors(target))
+            Add(exclusion.Name, exclusion.Table, exclusion.Schema, "exclusion constraint", ours: true, constraint: true, indexBacked: true);
+
+        foreach (var table in target.Tables)
+        {
+            foreach (var index in table.Indexes)
+                Add(index.Name, table.Name, table.Schema, "index", ours: false, constraint: false, indexBacked: true);
+
+            foreach (var key in table.UniqueConstraints)
+                Add(key.Name, table.Name, table.Schema, key.GetIsPrimaryKey() ? "primary key" : "unique constraint", ours: false, constraint: true, indexBacked: true);
+
+            foreach (var foreignKey in table.ForeignKeyConstraints)
+                Add(foreignKey.Name, table.Name, table.Schema, "foreign key", ours: false, constraint: true, indexBacked: false);
+
+            // A check constraint without a name gets one from PostgreSQL, which never collides.
+            foreach (var check in table.CheckConstraints.Where(c => c.Name is not null))
+                Add(check.Name!, table.Name, table.Schema, "check constraint", ours: false, constraint: true, indexBacked: false);
+        }
+
+        ThrowOnFirstCollision(
+            names.Where(n => n.IsConstraint).GroupBy(n => (n.Schema, n.Table, n.Name)),
+            other => "PostgreSQL keeps constraint names unique per table, so the migration would fail when applied (42710)"
+                   + (other.Any(o => o.Kind == "exclusion constraint")
+                          ? " — or, since every exclusion constraint is added after DROP CONSTRAINT IF EXISTS, silently replace the other constraint."
+                          : "."));
+
+        ThrowOnFirstCollision(
+            names.Where(n => n.IsIndexBacked).GroupBy(n => (n.Schema, "", n.Name)),
+            other => "PostgreSQL keeps index names — including the index behind every primary key, unique, exclusion and "
+                   + $"temporal constraint — unique per schema ('{other[0].Schema}'), so the migration would fail when applied (42P07).");
+
+        static void ThrowOnFirstCollision(
+            IEnumerable<IGrouping<(string Schema, string Table, string Name), NamedObject>> groups,
+            Func<IReadOnlyList<NamedObject>, string>                                        rule)
+        {
+            foreach (var group in groups)
+            {
+                var members = group.ToList();
+                var ours    = members.FirstOrDefault(m => m.Ours);
+                if (ours is null || members.Count < 2)
+                    continue;
+
+                var other = members.First(m => !ReferenceEquals(m, ours));
+
+                throw new InvalidOperationException(
+                    $"The {ours.Kind} '{ours.Name}' on table '{ours.Table}' has the same name as the {other.Kind} on table "
+                  + $"'{other.Table}'. {rule([ours, other])} Give one of them a different name.");
+            }
+        }
+    }
+
+    private sealed record NamedObject(
+        string Name,
+        string Table,
+        string Schema,
+        string Kind,
+        bool   Ours,
+        bool   IsConstraint,
+        bool   IsIndexBacked);
 
     // Diffs the temporal UNIQUE constraints and temporal FOREIGN KEY constraints declared on entity
     // types. Drops are emitted as EF's own Drop* operations (the stock generator renders those

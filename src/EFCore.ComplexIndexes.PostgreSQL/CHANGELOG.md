@@ -17,6 +17,12 @@ covers all three packages.
 - **Changed:** a non-unique index that starts with a `DateTime`, `DateTimeOffset`, `DateOnly` or
   `TimeOnly` JSON member is rejected at `migrations add`: the queries cast the member to a type
   PostgreSQL cannot index from text, so the index could never be used. Unique ones are allowed.
+- **Fixed:** names are checked across kinds at `migrations add`: constraint names per table
+  (temporal, temporal foreign key and exclusion constraints against each other and against EF's
+  keys, foreign keys and check constraints) and index names per schema (complex indexes and the
+  index behind every unique, exclusion and temporal constraint, against EF's indexes and keys).
+  Such a clash failed at apply time with 42710 or 42P07 — or, against an exclusion constraint,
+  whose ADD is preceded by `DROP CONSTRAINT IF EXISTS`, silently dropped the other constraint.
 
 ## 5.2.0
 

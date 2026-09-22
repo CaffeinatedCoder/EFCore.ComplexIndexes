@@ -666,7 +666,7 @@ public class CustomMigrationsModelDiffer(
 
     // Declarations come from the same reader an application uses (ComplexIndexModelExtensions),
     // so the read model and the migration cannot disagree about what was declared.
-    private HashSet<IndexDescriptor> ExtractAllIndexDescriptors(IRelationalModel? relationalModel)
+    internal HashSet<IndexDescriptor> ExtractAllIndexDescriptors(IRelationalModel? relationalModel)
     {
         var result = new HashSet<IndexDescriptor>();
         if (relationalModel is null) return result;
