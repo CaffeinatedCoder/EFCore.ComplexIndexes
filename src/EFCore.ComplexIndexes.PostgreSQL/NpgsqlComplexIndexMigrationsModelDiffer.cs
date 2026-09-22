@@ -237,17 +237,19 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
         "interval", "money"
     };
 
-    // Mirrors NpgsqlQuerySqlGenerator.VisitJsonScalar, identical in Npgsql 10 and 11: no cast for a
-    // string mapping, decode() for bytea, jsonb for a primitive collection, and a CAST to the store
-    // type for everything else — except where that cast is not IMMUTABLE, which falls back to text
-    // and reports the store type the queries use instead.
+    // Mirrors NpgsqlQuerySqlGenerator.VisitJsonScalar, identical in Npgsql 10 and 11, case for case
+    // and in its order: jsonb for a JSON-mapped value (a primitive collection, or a json/jsonb
+    // scalar such as a JsonDocument), no cast for a string mapping, decode() for bytea, and a CAST to
+    // the store type for everything else — except where that cast is not IMMUTABLE, which falls
+    // back to text and reports the store type the queries use instead.
     private (string Sql, string? FallbackStoreType) RenderJsonScalar(IProperty leaf, string containerColumn, List<string> jsonPath)
     {
-        if (leaf.IsPrimitiveCollection)
+        var mapping = leaf.FindRelationalTypeMapping() ?? _typeMappingSource.FindMapping(leaf);
+
+        if (leaf.IsPrimitiveCollection || mapping?.StoreTypeNameBase is "jsonb" or "json")
             return (BuildJsonPath(containerColumn, jsonPath, returnsText: false), null);
 
-        var text    = BuildJsonPath(containerColumn, jsonPath, returnsText: true);
-        var mapping = leaf.FindRelationalTypeMapping() ?? _typeMappingSource.FindMapping(leaf);
+        var text = BuildJsonPath(containerColumn, jsonPath, returnsText: true);
 
         return mapping switch
         {

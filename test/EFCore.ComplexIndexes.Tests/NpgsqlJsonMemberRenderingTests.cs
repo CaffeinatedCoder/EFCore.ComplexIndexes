@@ -189,6 +189,31 @@ public class NpgsqlJsonMemberRenderingTests
         }
     }
 
+    public class Envelope
+    {
+        public System.Text.Json.JsonDocument? Raw { get; set; }
+    }
+
+    public class Message
+    {
+        public int      Id       { get; set; }
+        public Envelope Envelope { get; set; } = new();
+    }
+
+    // A json/jsonb scalar inside the document: Npgsql reads it as a jsonb fragment (->), never as
+    // text cast back to jsonb, which would also fail on any document holding a JSON string there.
+    public class JsonScalarContext(DbContextOptions<JsonScalarContext> options) : DbContext(options)
+    {
+        protected override void OnModelCreating(ModelBuilder modelBuilder) =>
+            modelBuilder.Entity<Message>(b =>
+            {
+                b.ToTable("messages");
+                b.HasKey(x => x.Id);
+                b.ComplexProperty(x => x.Envelope, e => e.ToJson("envelope"));
+                b.HasComplexIndex(x => x.Envelope.Raw, indexName: "ix_raw");
+            });
+    }
+
     public class NonUniqueDateContext(DbContextOptions<NonUniqueDateContext> options) : DbContext(options)
     {
         protected override void OnModelCreating(ModelBuilder modelBuilder) =>
@@ -295,6 +320,12 @@ public class NpgsqlJsonMemberRenderingTests
         foreach (var (name, query) in cases)
             Assert.AreEqual(QueriedExpression(query), Normalize(parts[name]), name);
     }
+
+    [TestMethod(DisplayName = "A jsonb scalar member renders as a jsonb fragment, as Npgsql reads it")]
+    public void Json_scalar_member_renders_as_jsonb()
+        => Assert.AreEqual(
+               "\"envelope\" -> 'Raw'",
+               PartSqlByName(MigrationHarness.NpgsqlDiff(null, MigrationHarness.NpgsqlModel<JsonScalarContext>()))["ix_raw"]);
 
     [TestMethod(DisplayName = "A property-level declaration inside the document renders the same way")]
     public void Property_level_member_renders_typed()

@@ -378,7 +378,7 @@ differ let satellites resolve what the core cannot:
   and `GenerateJsonPath`, identical in Npgsql 10 and 11): `->>` for one step, `#>> '{A,B}'` for
   more (`ARRAY[…]::text[]` when a segment is not ASCII-alphanumeric), and a `CAST` to the member's
   store type unless it is a string mapping, `decode(…, 'base64')` for `bytea`, `jsonb` for a
-  primitive collection. PostgreSQL uses an expression index only for a query whose expression
+  primitive collection or a `json`/`jsonb` scalar (checked in that order, as Npgsql does). PostgreSQL uses an expression index only for a query whose expression
   matches it, so this is not cosmetic: until 5.4.0 every member was `"col" -> 'A' ->> 'B'` text,
   and indexes on nested or typed members applied, enforced, and served no query
   (`NpgsqlJsonMemberRenderingTests` asserts each rendering against EF's own `ToQueryString()`).

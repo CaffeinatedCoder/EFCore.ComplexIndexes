@@ -209,7 +209,7 @@ the cast:
 | nested member | `"profile" #>> '{Address,City}'` | `x.Profile.Address.City == …` |
 | `int`, `long`, `short`, `decimal`, `double`, `bool`, `Guid`, enum | `CAST("profile" ->> 'Rank' AS integer)` (the member's store type) | `x.Profile.Rank == …`, `> …`, `ORDER BY` |
 | `byte[]` | `decode("profile" ->> 'Blob', 'base64')` | `x.Profile.Blob == …` |
-| primitive collection | `"profile" -> 'Tags'` (`jsonb`) | a GIN over it |
+| primitive collection, `JsonDocument` or other `jsonb` member | `"profile" -> 'Tags'` (`jsonb`) | a GIN over it |
 | `DateTime`, `DateTimeOffset`, `DateOnly`, `TimeOnly` | `"profile" ->> 'At'` (text) | uniqueness only |
 
 `HasJsonPropertyName` is honored throughout. Date and time members are the exception: Npgsql's

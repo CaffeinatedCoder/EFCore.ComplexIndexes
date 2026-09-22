@@ -8,7 +8,8 @@ covers all three packages.
 
 - **Fixed:** indexes on `ToJson()` members are written the way Npgsql's queries read the member —
   `->>` or `#>> '{A,B}'`, cast to the member's store type unless it is a string, `decode(…,
-  'base64')` for `byte[]`, `jsonb` for a primitive collection — so PostgreSQL can use them. Before,
+  'base64')` for `byte[]`, `jsonb` for a primitive collection or a `json`/`jsonb` member — so
+  PostgreSQL can use them. Before,
   every member was `"doc" -> 'A' ->> 'B'` text, which matched a query only for a top-level string:
   indexes on nested or typed members applied, enforced uniqueness, and served no query. Applies to
   index parts, typed expression indexes and index filters; exclusion constraint filters keep their
