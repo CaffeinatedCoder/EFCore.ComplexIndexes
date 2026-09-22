@@ -139,6 +139,23 @@ public class NpgsqlNameCollisionTests
         }
     }
 
+    private class ComplexIndexesInDefaultAndPublicSchemaContext(DbContextOptions<ComplexIndexesInDefaultAndPublicSchemaContext> o) : ModelContext(o)
+    {
+        protected override void Configure(ModelBuilder m)
+        {
+            m.Entity<Booking>(b =>
+            {
+                MapBooking(b);
+                b.HasComplexIndex(x => x.Code, indexName: "ix_by_code");
+            });
+            m.Entity<Stay>(b =>
+            {
+                MapStay(b, "public");
+                b.HasComplexIndex(x => x.Code, indexName: "ix_by_code");
+            });
+        }
+    }
+
     private class TemporalForeignKeyLikeNativeForeignKeyContext(DbContextOptions<TemporalForeignKeyLikeNativeForeignKeyContext> o) : ModelContext(o)
     {
         protected override void Configure(ModelBuilder m)
@@ -284,12 +301,22 @@ public class NpgsqlNameCollisionTests
     public void Temporal_constraint_like_complex_index_collides()
         => StringAssert.Contains(Rejected<TemporalLikeComplexIndexContext>().Message, "(42P07)");
 
+    // Reported by the core's own check, under the PostgreSQL satellite's IndexNameScope.Schema.
     [TestMethod(DisplayName = "Two complex indexes with one name on different tables of one schema are rejected")]
     public void Complex_indexes_across_tables_collide()
     {
         var message = Rejected<ComplexIndexesAcrossTablesContext>().Message;
-        StringAssert.Contains(message, "complex index 'ix_by_code'");
+        StringAssert.Contains(message, "both resolve to the name 'ix_by_code'");
         StringAssert.Contains(message, "unique per schema");
+    }
+
+    // The core compares schemas as configured; only this check knows an unset one means 'public'.
+    [TestMethod(DisplayName = "A complex index in the default schema collides with one in an explicit 'public' schema")]
+    public void Complex_indexes_in_default_and_explicit_public_schema_collide()
+    {
+        var message = Rejected<ComplexIndexesInDefaultAndPublicSchemaContext>().Message;
+        StringAssert.Contains(message, "complex index 'ix_by_code'");
+        StringAssert.Contains(message, "unique per schema ('public')");
     }
 
     [TestMethod(DisplayName = "A temporal foreign key named like a native foreign key on its table is rejected")]

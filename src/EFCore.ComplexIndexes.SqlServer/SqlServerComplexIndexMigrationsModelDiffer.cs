@@ -53,6 +53,12 @@ public class SqlServerComplexIndexMigrationsModelDiffer(
     /// <summary>SQL Server renames indexes standalone (<c>sp_rename</c>).</summary>
     protected override bool CanRenameIndexes => true;
 
+    /// <summary>
+    /// SQL Server keeps index names unique per table, so two tables may each carry an index of the
+    /// same name.
+    /// </summary>
+    protected override IndexNameScope IndexNameScope => IndexNameScope.Table;
+
     /// <summary>SQL Server delimits identifiers with brackets.</summary>
     protected override string QuoteIdentifier(string identifier)
         => "[" + identifier.Replace("]", "]]") + "]";

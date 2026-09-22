@@ -20,8 +20,8 @@ namespace EFCore.ComplexIndexes;
 /// <remarks>
 /// Registered through <see cref="CustomDesignTimeServices"/>, which the packaged <c>.targets</c> file
 /// wires up automatically — consumers do not construct this type. Providers extend it by overriding
-/// <c>IsForwardedIndexAnnotation</c>, <c>ValidateCreateIndexOperation</c>, <c>ResolveUnmappedPart</c>
-/// and <c>ResolveTemplatePart</c>.
+/// <c>IsForwardedIndexAnnotation</c>, <c>IndexNameScope</c>, <c>ValidateCreateIndexOperation</c>,
+/// <c>ResolveUnmappedPart</c> and <c>ResolveTemplatePart</c>.
 /// </remarks>
 /// <param name="typeMappingSource">EF Core relational type mapping source.</param>
 /// <param name="migrationsAnnotationProvider">EF Core migrations annotation provider.</param>
@@ -253,6 +253,22 @@ public class CustomMigrationsModelDiffer(
     /// annotation-declared indexes don't exist). The PostgreSQL and SQL Server satellites enable it.
     /// </summary>
     protected virtual bool CanRenameIndexes => false;
+
+    /// <summary>
+    /// Where the provider requires index names to be unique, which decides what a complex index
+    /// name is checked against at <c>migrations add</c>. The core default is
+    /// <see cref="EFCore.ComplexIndexes.IndexNameScope.Database"/>, SQLite's rule: SQLite rejects a
+    /// second <c>CREATE INDEX</c> under a name used on any other table, and ignores the schemas a
+    /// model configures. The SQL Server satellite narrows it to
+    /// <see cref="EFCore.ComplexIndexes.IndexNameScope.Table"/>, the PostgreSQL one to
+    /// <see cref="EFCore.ComplexIndexes.IndexNameScope.Schema"/>.
+    /// </summary>
+    /// <remarks>
+    /// The core also serves providers without a satellite, and the default is the widest scope on
+    /// purpose: on a provider that scopes names more narrowly it costs a rename the database would
+    /// not have needed, where a narrower default approves a migration that fails when applied.
+    /// </remarks>
+    protected virtual IndexNameScope IndexNameScope => IndexNameScope.Database;
 
     /// <summary>
     /// Decides whether a property-level annotation is carried onto the emitted
@@ -504,29 +520,37 @@ public class CustomMigrationsModelDiffer(
         => "\"" + identifier.Replace("\"", "\"\"") + "\"";
 
     /// <summary>
-    /// Fails when two distinct declarations resolve to the same index name on the same table.
+    /// Fails when two distinct declarations resolve to the same index name within the provider's
+    /// <see cref="IndexNameScope"/>.
     /// </summary>
     /// <remarks>
     /// Such a pair emits two <c>CREATE INDEX</c> statements under one name — a migration that
-    /// scaffolds happily and then fails at apply time (PostgreSQL 42P07). This is the first point
-    /// where the collision is visible: the two stores (per-property annotations and the entity-level
+    /// scaffolds happily and then fails at apply time (PostgreSQL 42P07; SQLite "index … already
+    /// exists", even when the two sit on different tables). This is the first point where the
+    /// collision is visible: the two stores (per-property annotations and the entity-level
     /// definition list) cannot see each other, and default names are only known once property paths
     /// have been resolved to real columns. Identical declarations are already collapsed by the
     /// descriptor set, so only genuinely different indexes reach this check.
     /// </remarks>
-    private static void ValidateUniqueIndexNames(HashSet<IndexDescriptor> descriptors)
+    private void ValidateUniqueIndexNames(HashSet<IndexDescriptor> descriptors)
     {
         var collision = descriptors
-                       .GroupBy(d => (d.TableName, d.Schema, d.IndexName))
+                       .GroupBy(d => NameKey(d.TableName, d.Schema, d.IndexName))
                        .FirstOrDefault(g => g.Count() > 1);
 
         if (collision is null)
             return;
 
+        var members  = collision.ToList();
+        var oneTable = members.All(d => d.TableName == members[0].TableName);
+
         throw new InvalidOperationException(
-            $"Two complex indexes on table '{collision.Key.TableName}' both resolve to the name "
-          + $"'{collision.Key.IndexName}': {string.Join(" and ", collision.Select(Describe))}. "
-          + "Index names must be unique per table — give each declaration an explicit, distinct name.");
+            (oneTable
+                 ? $"Two complex indexes on table '{members[0].TableName}' both resolve to the name '{members[0].IndexName}': "
+                 + string.Join(" and ", members.Select(Describe))
+                 : $"Two complex indexes both resolve to the name '{members[0].IndexName}': "
+                 + string.Join(" and ", members.Select(d => $"{Describe(d)} on table '{d.TableName}'")))
+          + $". {UniquenessRule(oneTable)} — give each declaration an explicit, distinct name.");
 
         static string Describe(IndexDescriptor descriptor)
         {
@@ -537,21 +561,23 @@ public class CustomMigrationsModelDiffer(
     }
 
     /// <summary>
-    /// Fails when a complex index resolves to the name of a native <c>HasIndex</c> on the same table.
+    /// Fails when a complex index resolves to the name of a native <c>HasIndex</c> within the
+    /// provider's <see cref="IndexNameScope"/>.
     /// </summary>
     /// <remarks>
     /// The base differ emits the native index and this differ emits the complex one, neither seeing
     /// the other, so the migration scaffolded two <c>CREATE INDEX</c> statements under one name and
     /// failed at apply time (PostgreSQL 42P07). Only the target model's native indexes are consulted:
     /// an index <em>moving</em> between a native declaration and a complex one under the same name
-    /// is a legitimate drop-and-create, not a collision, and must keep diffing.
+    /// is a legitimate drop-and-create, not a collision, and must keep diffing. Two native indexes
+    /// sharing a name are EF Core's to report, not this package's.
     /// </remarks>
-    private static void ValidateNoNativeIndexNameCollision(IRelationalModel? target, HashSet<IndexDescriptor> descriptors)
+    private void ValidateNoNativeIndexNameCollision(IRelationalModel? target, HashSet<IndexDescriptor> descriptors)
     {
         if (target is null || descriptors.Count == 0)
             return;
 
-        var native = new Dictionary<(string Table, string? Schema, string Name), string>();
+        var native = new Dictionary<(string? Schema, string? Table, string Name), (string Table, string Properties)>();
 
         foreach (var entityType in target.Model.GetEntityTypes())
         {
@@ -568,22 +594,41 @@ public class CustomMigrationsModelDiffer(
                 var name = index.GetDatabaseName(storeObject);
                 if (name is null) continue;
 
-                native.TryAdd((tableName, schema, name), string.Join(", ", index.Properties.Select(p => p.Name)));
+                native.TryAdd(NameKey(tableName, schema, name), (tableName, string.Join(", ", index.Properties.Select(p => p.Name))));
             }
         }
 
         foreach (var descriptor in descriptors)
         {
-            if (!native.TryGetValue((descriptor.TableName, descriptor.Schema, descriptor.IndexName), out var properties))
+            if (!native.TryGetValue(NameKey(descriptor.TableName, descriptor.Schema, descriptor.IndexName), out var other))
                 continue;
+
+            var where = other.Table == descriptor.TableName ? "" : $" on table '{other.Table}'";
 
             throw new InvalidOperationException(
                 $"The complex index '{descriptor.IndexName}' on table '{descriptor.TableName}' has the same name as "
-              + $"the native index on ({properties}) declared with HasIndex. Index names must be unique per table — "
+              + $"the native index on ({other.Properties}) declared with HasIndex{where}. {UniquenessRule(where == "")} — "
               + "the migration would scaffold two CREATE INDEX statements under one name and fail when applied. "
               + "Give one of them a different name.");
         }
     }
+
+    // Two index names clash exactly when their keys are equal: the parts outside the provider's
+    // scope are blanked out.
+    private (string? Schema, string? Table, string Name) NameKey(string table, string? schema, string name)
+        => IndexNameScope switch
+           {
+               IndexNameScope.Table  => (schema, table, name),
+               IndexNameScope.Schema => (schema, null, name),
+               _                     => (null, null, name)
+           };
+
+    private string UniquenessRule(bool sameTable) => (sameTable, IndexNameScope) switch
+    {
+        (true, _)                     => "Index names must be unique per table",
+        (_, IndexNameScope.Schema)    => "Index names must be unique per schema here, not just per table",
+        _                             => "Index names must be unique across the database here, not just per table or schema"
+    };
 
     /// <summary>
     /// Fails when a non-unique index leads with a JSON member that had to fall back to text.
