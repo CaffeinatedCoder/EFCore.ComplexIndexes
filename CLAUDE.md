@@ -208,7 +208,7 @@ them with no base to resolve against, so **every link in them must be an absolut
 are condensed on purpose and will overlap `docs/` — that duplication is the price of a package page
 that stands alone, and `DocumentationLinkTests` guards only the part that fails silently.
 
-`ROADMAP.md` at the root is the plan for 5.4.0 and the 6.0 family: the delete guard, the generic
+`ROADMAP.md` at the root is the plan for 5.5.0 and the 6.0 family: the delete guard, the generic
 descriptor differ, the rename under the `CodoMetis.` prefix, the plugin host and EF Core 11. It sits at the
 root on purpose: `DocumentationLinkTests` checks its links, but `DocumentationApiTests` scans only
 `docs/`, so the roadmap may name methods that do not exist yet.
@@ -267,7 +267,7 @@ stored as property annotations) and entity-level `HasComplexIndex(x => x.Complex
 
 Names are validated at **two** levels, because neither alone is sufficient. `AddOrReplace` rejects
 an explicit name already used on the same entity (fast feedback at the declaration), and the
-differ's `ValidateUniqueIndexNames` rejects duplicate resolved names per table — the only place
+differ's `ValidateUniqueIndexNames` rejects duplicate resolved names within the provider's scope (below) — the only place
 that sees across the two stores (property-level annotations vs the entity-level list) and knows the
 *default* names, which depend on resolved column names. It validates the **target model only**: a
 snapshot that already contains a collision must stay diffable, or the model could never be fixed.
@@ -293,8 +293,23 @@ applied clean), and index names per **schema**, where every primary key, unique,
 temporal constraint also owns an index (42P07). A collision is reported only when one party is
 this package's; two of EF's own objects are EF's business. It collects into a list, not a set: the
 two same-named declarations it exists to find produce identical entries, and a set merged them.
-Core's `ValidateUniqueIndexNames` stays per table on purpose — SQL Server scopes index names per
-table.
+
+Where an index name must be unique is a provider fact, declared through
+`CustomMigrationsModelDiffer.IndexNameScope` and applied by both core checks
+(`ValidateUniqueIndexNames`, `ValidateNoNativeIndexNameCollision`): `IndexNameScope.Database` by
+default, `IndexNameScope.Schema` in the PostgreSQL satellite, `IndexNameScope.Table` in the SQL
+Server one. The default is SQLite's rule, and it has to be *database*, not schema: SQLite's provider
+keeps a configured schema in the model but leaves it out of the DDL, so `north.a` and `south.b`
+share one namespace (probed 2026-09-22). Until 5.4.1 both checks were per table everywhere, and the
+SQLite test "the same name on a different table is not a collision" approved a model that
+`sqlite3` rejects with "index … already exists". The widest scope is also the right default for
+providers without a satellite: too wide costs a rename the database did not need (MySQL scopes per
+table), too narrow a failed apply. On PostgreSQL a clash between two plain indexes is therefore
+reported by the core, before `ValidateNamesAcrossKinds` runs; the cross-kind check keeps complex
+indexes in its list for the pairs only it sees — keys, constraint-backed indexes, and a table in the
+unset default schema against one naming `public`, which the core compares as configured. Each
+collision throws once, from whichever check sees it first; do not "deduplicate" by filtering index
+pairs out of the cross-kind check, since it is the only net for the `public` case.
 
 ### The read model is the differ's reader
 
@@ -493,7 +508,7 @@ still skipped silently — an index on those is nothing this package could creat
 
 ### Key extension points
 
-- **Adding a new provider**: Subclass `CustomMigrationsModelDiffer` (override `IsForwardedIndexAnnotation`, optionally `ValidateCreateIndexOperation`/`ResolveUnmappedPart`/`QuoteIdentifier`), implement `IDesignTimeServices` to replace the differ, and ship a `.targets` file that injects the attribute (with `ForProvider` set). The PostgreSQL project is the full-featured reference; the SQL Server project is the minimal one (whitelist + validation, no custom SQL generator).
+- **Adding a new provider**: Subclass `CustomMigrationsModelDiffer` (override `IsForwardedIndexAnnotation` and `IndexNameScope` unless the provider keeps index names unique across the database, optionally `ValidateCreateIndexOperation`/`ResolveUnmappedPart`/`QuoteIdentifier`), implement `IDesignTimeServices` to replace the differ, and ship a `.targets` file that injects the attribute (with `ForProvider` set). The PostgreSQL project is the full-featured reference; the SQL Server project is the minimal one (whitelist + validation, no custom SQL generator).
 - **New index options**: Add constants to `ComplexIndexAnnotations.cs` (or `NpgsqlAnnotations.cs`), expose them via `ComplexIndexBuilder`, and read them in the differ when constructing `CreateIndexOperation`.
 
 ### Expression path extraction

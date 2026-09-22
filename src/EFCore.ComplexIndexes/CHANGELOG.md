@@ -4,6 +4,18 @@ Changes to the core package, newest first. The
 [root changelog](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/CHANGELOG.md)
 covers all three packages.
 
+## 5.4.1
+
+- **Fixed:** complex index names are checked where the provider keeps them unique, not always
+  per table. The core's scope is the whole database — SQLite's rule: it rejects a second
+  `CREATE INDEX` under a name used on any other table and ignores configured schemas — so two tables
+  sharing an index name no longer scaffold cleanly and fail when applied. On a provider without a
+  satellite that scopes names per table (MySQL), the check asks for a rename the database would not
+  have needed.
+- **New:** the `IndexNameScope` enum and the protected `CustomMigrationsModelDiffer.IndexNameScope`
+  property, through which a provider's differ declares where its index names must be unique
+  (`Table`, `Schema` or `Database`, the default).
+
 ## 5.4.0
 
 - **New:** `ComplexIndexAnnotations.RenderingVersion`, written onto the model by every index

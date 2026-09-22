@@ -77,6 +77,14 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
     protected override bool CanRenameIndexes => true;
 
     /// <summary>
+    /// PostgreSQL keeps index names unique among the relations of a schema, so the core's own checks
+    /// already reject two complex indexes, or a complex and a native index, sharing a name anywhere
+    /// in one schema. Everything else PostgreSQL shares that namespace with is left to
+    /// <c>ValidateNamesAcrossKinds</c>.
+    /// </summary>
+    protected override IndexNameScope IndexNameScope => IndexNameScope.Schema;
+
+    /// <summary>
     /// PostgreSQL's identifier limit (<c>NAMEDATALEN - 1</c>, 63) is a byte count: a name made of
     /// non-ASCII characters hits it well before its 63rd character.
     /// </summary>
@@ -378,6 +386,13 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
     /// schema, scaffolded cleanly. Collisions between two of EF Core's own objects are not this
     /// package's to police. Target model only: a snapshot that already holds a collision must stay
     /// diffable, or the model could never be fixed.
+    /// <para>
+    /// A complex index clashing with another complex index or a native one never gets this far: the
+    /// core rejects it first under <see cref="IndexNameScope"/>, with a message naming both
+    /// declarations. Complex indexes stay in the list for the pairs only this check sees — against a
+    /// key or a constraint's index, and a table left in the default schema against one that names
+    /// <c>public</c> explicitly — so each collision is reported once, by whichever check sees it first.
+    /// </para>
     /// </remarks>
     private void ValidateNamesAcrossKinds(IRelationalModel? target)
     {

@@ -6,6 +6,13 @@ covering only what changed for that package:
 [PostgreSQL](src/EFCore.ComplexIndexes.PostgreSQL/CHANGELOG.md),
 [SQL Server](src/EFCore.ComplexIndexes.SqlServer/CHANGELOG.md).
 
+## 5.4.1
+
+One fix, to the index-name check: it compared names per table on every provider, so on SQLite a name
+reused on another table scaffolded cleanly and failed when the migration was applied.
+
+- **Fixed:** on SQLite, a complex index name is checked across the whole database at `migrations add`, not per table. SQLite rejects a second `CREATE INDEX` under a name already used on any other table, and ignores the schemas a model configures, so two tables sharing an index name — two complex indexes, or a complex index and a native `HasIndex` — scaffolded cleanly and failed when applied ("index … already exists"). The scope is now the provider's: per database in the core, which also serves providers without a satellite; per schema on PostgreSQL; per table on SQL Server, where reusing a name across tables stays allowed. **Upgrading:** a SQLite model that reuses a complex index name across tables now fails at `migrations add`, naming both tables; rename one. On a provider without a satellite that scopes names per table, such as MySQL, that rename is one the database would not have needed, and with the differ registered at runtime (`UseComplexIndexes()`) `Migrate()` raises the same error until it is made. A snapshot holding such a name stays diffable.
+
 ## 5.4.0
 
 Fixes to what 5.x already ships, found while testing the packages against EF Core 11 and planning

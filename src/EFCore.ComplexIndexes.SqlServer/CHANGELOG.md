@@ -4,6 +4,12 @@ Changes to the SQL Server satellite, newest first. The
 [root changelog](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/CHANGELOG.md)
 covers all three packages.
 
+## 5.4.1
+
+- **Changed:** the differ declares SQL Server's index-name scope, per table, now that the core
+  checks names across the whole database by default. Two tables may still carry indexes of the same
+  name, complex or native; a name reused on one table is rejected as before.
+
 ## 5.2.0
 
 - **New:** filters resolve `{Property.Path}` placeholders to the mapped column, bracket-quoted, at

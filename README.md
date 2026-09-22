@@ -146,10 +146,12 @@ Selectors also see through a value converter: for a value object mapped as one c
 provided the member's type is the converter's provider type. `x => x.CreatedAt.Year` does not
 resolve, and says so.
 
-Index names must be unique per table, and the package enforces it rather than letting the database
-reject the migration: reusing a name throws at the declaration, and two declarations that resolve to
-the same name — including a property-level and an entity-level index over one column, which share a
-default name — throw during `dotnet ef migrations add`. So does a name longer than the provider's
+Index names must be unique wherever the provider requires — across the whole database on SQLite,
+per schema on PostgreSQL, per table on SQL Server — and the package enforces it rather than letting
+the database reject the migration: reusing a name throws at the declaration, and two declarations
+that resolve to the same name — including a property-level and an entity-level index over one
+column, which share a default name, or a complex and a native index on two SQLite tables — throw
+during `dotnet ef migrations add`. So does a name longer than the provider's
 identifier limit: PostgreSQL would otherwise truncate it to 63 bytes with a NOTICE and apply the
 migration cleanly, leaving the index under a name that no declaration and no constraint-violation
 error ever reports. Default names are checked too, since this package never truncates them.
