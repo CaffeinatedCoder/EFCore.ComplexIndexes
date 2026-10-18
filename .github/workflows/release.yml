@@ -327,9 +327,23 @@ jobs:
             printf 'The CycloneDX SBOM for each package is attached below.\n'
           } > release-notes.md
 
+          # "Latest" is decided here rather than left to the API's default, which marks every new
+          # release Latest. Two lines are supported from 11.0.0 on (CONTRIBUTING.md, "Branches and
+          # releases"), so this is the normal case, not an accident: a 10.x tag pushed once 11.0.0
+          # exists is older than Latest and must not take it, or the repository's front page would
+          # point every visitor at the LTS line. A preview (`11.0.0-preview.N`) is a prerelease and
+          # never Latest. With no tag, `gh release view` shows the current Latest release, which is
+          # never a prerelease; none yet means this one is.
           flags=()
           if [[ "$VERSION" == *-* ]]; then
-            flags+=(--prerelease)
+            echo "Publishing $tag as a prerelease, not Latest."
+            flags+=(--prerelease --latest=false)
+          else
+            latest="$(gh release view --json tagName --jq .tagName 2>/dev/null || true)"
+            if [[ -n "$latest" && "$(printf '%s\n' "${latest#v}" "$VERSION" | sort -V | tail -n1)" != "$VERSION" ]]; then
+              echo "Release $latest is newer; publishing $tag without marking it Latest."
+              flags+=(--latest=false)
+            fi
           fi
 
           gh release create "$tag" --verify-tag --title "$tag" --notes-file release-notes.md "${flags[@]}"

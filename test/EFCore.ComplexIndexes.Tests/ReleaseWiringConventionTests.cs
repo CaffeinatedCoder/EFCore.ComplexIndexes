@@ -141,6 +141,74 @@ public class ReleaseWiringConventionTests
     }
 
     /// <summary>
+    /// The GitHub release keeps an older line and every preview off Latest.
+    /// </summary>
+    /// <remarks>
+    /// GitHub marks each new release Latest unless told otherwise, and Latest is what the repository
+    /// page and <c>gh release view</c> show. With two supported lines, a 10.x patch tagged after
+    /// 11.0.0 is the ordinary case; left to the default it would make the LTS line the front page's
+    /// answer. A preview marked only <c>--prerelease</c> relies on the API refusing to make a
+    /// prerelease Latest, so it says <c>--latest=false</c> as well. Only script lines are read: the
+    /// comment above the step explains both rules, and a test matching it would pass with the code
+    /// deleted. Each flag is looked for on its own branch, so moving <c>--latest=false</c> out of the
+    /// older-than-Latest guard — which would keep every stable release off Latest — fails too.
+    /// Ported from the sibling repository.
+    /// </remarks>
+    [TestMethod(DisplayName = "The GitHub release keeps an older line and previews off Latest")]
+    public void Github_release_keeps_an_older_line_and_previews_off_latest()
+    {
+        var step = Regex.Match(ReleaseWorkflowText, @"(?ms)^      - name: Create the release if it does not exist\n.*?(?=^      - name: |\z)").Value;
+
+        Assert.AreNotEqual(0, step.Length, "Could not find the 'Create the release if it does not exist' step in the release workflow.");
+
+        var script = step.Split('\n')
+                         .Select(line => line.Trim())
+                         .Where(line => line.Length > 0 && !line.StartsWith('#'))
+                         .ToList();
+
+        int IndexOf(Predicate<string> predicate, int from = 0) => script.FindIndex(Math.Max(from, 0), predicate);
+
+        var preview = IndexOf(line => line.StartsWith("if ", StringComparison.Ordinal) && line.Contains("\"$VERSION\" == *-*", StringComparison.Ordinal));
+
+        Assert.IsTrue(
+            preview >= 0,
+            "The release step no longer tells a prerelease version (x.y.z-suffix) apart, so a preview tag "
+          + "would be published as a full release.");
+
+        var stable = IndexOf(line => line == "else", preview);
+
+        Assert.IsTrue(stable > preview, "The release step's prerelease check has no `else` branch for a stable tag.");
+
+        var previewFlags = IndexOf(line => line.Contains("flags+=(--prerelease --latest=false)", StringComparison.Ordinal), preview);
+
+        Assert.IsTrue(
+            previewFlags > preview && previewFlags < stable,
+            "The release step does not publish a preview as a prerelease that is not Latest.");
+
+        var olderGuard = IndexOf(
+            line => line.StartsWith("if ", StringComparison.Ordinal)
+                 && line.Contains("sort -V", StringComparison.Ordinal)
+                 && line.Contains("!= \"$VERSION\"", StringComparison.Ordinal),
+            stable);
+        var olderFlags = olderGuard < 0 ? -1 : IndexOf(line => line == "flags+=(--latest=false)", olderGuard);
+        var guardEnd   = olderGuard < 0 ? -1 : IndexOf(line => line == "fi", olderGuard);
+
+        Assert.IsTrue(
+            olderGuard > stable && olderFlags > olderGuard && olderFlags < guardEnd,
+            "The release step no longer compares a stable version with the current Latest by `sort -V` "
+          + "and passes --latest=false only for an older one, so a 10.x tag pushed after 11.0.0 would "
+          + "take Latest (or no stable release ever would).");
+
+        Assert.IsTrue(
+            script.Any(line => line.StartsWith("latest=\"$(gh release view --json tagName", StringComparison.Ordinal)),
+            "The release step does not read the current Latest release with a tagless `gh release view`.");
+
+        Assert.IsTrue(
+            IndexOf(line => line.StartsWith("gh release create", StringComparison.Ordinal) && line.Contains("\"${flags[@]}\"", StringComparison.Ordinal), guardEnd) > guardEnd,
+            "The release step's `gh release create` does not pass the flags it computes.");
+    }
+
+    /// <summary>
     /// Both workflows run <c>dotnet cyclonedx</c> after <c>dotnet tool restore</c>, which silently
     /// does nothing without a manifest.
     /// </summary>
