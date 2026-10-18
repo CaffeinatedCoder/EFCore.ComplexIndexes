@@ -17,18 +17,18 @@ namespace EFCore.ComplexIndexes.Tests;
 [TestClass]
 public class ChangelogConsistencyTests
 {
-    // The one heading style: "## 5.0.2". Deliberately strict — see the remarks above.
-    private static readonly Regex VersionHeading =
-        new(@"^\#\# (\d+\.\d+\.\d+)\s*$", RegexOptions.Multiline | RegexOptions.Compiled);
+    // The one heading style: "## 5.0.2", or "## 11.0.0-preview.1" for a prerelease. Deliberately
+    // strict — see the remarks above.
+    private static readonly Regex VersionHeading = SemanticVersion.ChangelogHeading;
 
-    private static Version PackageVersion =>
-        Version.Parse(XDocument.Load(RepositoryLayout.BuildProps)
-                               .Descendants("Version")
-                               .Single()
-                               .Value);
+    private static SemanticVersion PackageVersion =>
+        SemanticVersion.Parse(XDocument.Load(RepositoryLayout.BuildProps)
+                                       .Descendants("Version")
+                                       .Single()
+                                       .Value);
 
-    private static List<Version> DocumentedVersions(string changelog) =>
-        [.. VersionHeading.Matches(File.ReadAllText(changelog)).Select(m => Version.Parse(m.Groups[1].Value))];
+    private static List<SemanticVersion> DocumentedVersions(string changelog) =>
+        SemanticVersion.InChangelog(changelog);
 
     [TestMethod(DisplayName = "Every shipping package carries its own changelog")]
     public void Every_package_has_a_changelog()

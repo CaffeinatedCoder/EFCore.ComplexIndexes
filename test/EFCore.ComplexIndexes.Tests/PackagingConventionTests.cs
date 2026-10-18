@@ -194,7 +194,7 @@ public class PackagingConventionTests
             "Directory.Build.props does not enable package validation, so a removed public member "
           + "packs cleanly and whether a release breaks anyone rests on reading the diff.");
 
-        var shipped  = Version.Parse(props.Descendants("Version").Single().Value);
+        var shipped  = SemanticVersion.Parse(props.Descendants("Version").Single().Value);
         var previous = ChangelogVersions().Where(version => version < shipped).DefaultIfEmpty().Max();
         var baseline = props.Descendants("PackageValidationBaselineVersion").SingleOrDefault()?.Value.Trim();
 
@@ -203,7 +203,7 @@ public class PackagingConventionTests
         var allowed = new[] { shipped, previous }.Where(version => version is not null).Distinct().ToList();
 
         Assert.IsTrue(
-            allowed.Contains(Version.Parse(baseline)),
+            allowed.Contains(SemanticVersion.Parse(baseline)),
             $"PackageValidationBaselineVersion is {baseline}, but Directory.Build.props ships {shipped} "
           + $"and the release before it is {previous?.ToString() ?? "none"}. The baseline must be one of "
           + "those two — move it to the release just superseded when bumping Version, or API added "
@@ -211,9 +211,8 @@ public class PackagingConventionTests
     }
 
     // The root CHANGELOG.md's "## x.y.z" headings — the same source ChangelogConsistencyTests reads.
-    private static IEnumerable<Version> ChangelogVersions() =>
-        Regex.Matches(File.ReadAllText(RepositoryLayout.RootChangelog), @"^## (\d+\.\d+\.\d+)\s*$", RegexOptions.Multiline)
-             .Select(match => Version.Parse(match.Groups[1].Value));
+    private static IEnumerable<SemanticVersion> ChangelogVersions() =>
+        SemanticVersion.InChangelog(RepositoryLayout.RootChangelog);
 
     private static string ReleaseWorkflow =>
         Path.Combine(RepositoryLayout.Root, ".github", "workflows", "release.yml");

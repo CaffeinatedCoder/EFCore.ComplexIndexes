@@ -27,11 +27,33 @@ public class SecurityPolicyConsistencyTests
     private static readonly Regex TargetsEfCore =
         new(@"targets \*\*EF Core (\d+)\*\*", RegexOptions.Compiled);
 
-    private static Version PackageVersion =>
-        Version.Parse(XDocument.Load(RepositoryLayout.BuildProps)
-                               .Descendants("Version")
-                               .Single()
-                               .Value);
+    private static SemanticVersion PackageVersion =>
+        SemanticVersion.Parse(XDocument.Load(RepositoryLayout.BuildProps)
+                                       .Descendants("Version")
+                                       .Single()
+                                       .Value);
+
+    /// <summary>
+    /// The line SECURITY.md describes. The policy is about <em>released</em> minors, so while a
+    /// prerelease is being built — the first preview of a new line — the table and the horizon
+    /// sentence still describe the newest version the changelog documents without a suffix, not
+    /// the preview. Once the version loses its suffix it is the released line and is checked as such.
+    /// </summary>
+    private static SemanticVersion ReleasedLine
+    {
+        get
+        {
+            var shipped = PackageVersion;
+
+            if (!shipped.IsPrerelease)
+                return shipped;
+
+            return SemanticVersion.InChangelog(RepositoryLayout.RootChangelog)
+                                  .Where(version => !version.IsPrerelease && version < shipped)
+                                  .DefaultIfEmpty(shipped)
+                                  .Max()!;
+        }
+    }
 
     /// <summary>
     /// The support horizon is phrased against the EF Core major this line targets, and that number
@@ -54,10 +76,15 @@ public class SecurityPolicyConsistencyTests
         var reference = XDocument.Load(core.ProjectFile)
                                  .Descendants("PackageReference")
                                  .Single(r => r.Attribute("Include")?.Value == "Microsoft.EntityFrameworkCore.Abstractions");
-        var floor     = Regex.Match(reference.Attribute("Version")!.Value, @"\d+").Value;
+        var floor     = int.Parse(Regex.Match(reference.Attribute("Version")!.Value, @"\d+").Value);
 
-        Assert.AreEqual(
-            floor, match.Groups[1].Value,
+        // Each line of this package tracks one EF Core major. While a prerelease of the next line is
+        // being built, the sentence still describes the released line, which targets the major before
+        // this one; a released version has to name its own floor.
+        var allowed = PackageVersion.IsPrerelease ? new[] { floor, floor - 1 } : [floor];
+
+        Assert.Contains(
+            int.Parse(match.Groups[1].Value), allowed,
             $"SECURITY.md says the current line targets EF Core {match.Groups[1].Value}, but the core "
           + $"project's EF Core floor is {floor}. Move the horizon statement with the floor.");
     }
@@ -66,7 +93,7 @@ public class SecurityPolicyConsistencyTests
     public void Supported_versions_table_names_the_shipped_minor()
     {
         var text     = File.ReadAllText(SecurityPolicy);
-        var shipped  = PackageVersion;
+        var shipped  = ReleasedLine;
         var expected = $"{shipped.Major}.{shipped.Minor}";
 
         var supported = SupportedRow.Matches(text);
