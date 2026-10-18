@@ -177,6 +177,10 @@ issue has a row there, and into a patch it fails outright.
   history; a cherry-pick brings its 10.x entry with it. A preview has its own
   `## 11.0.0-preview.N` section, which `release.yml` publishes as its notes, marked as a
   prerelease. The package changelogs under `src/` follow the root, as they do today.
+- **GitHub's Latest release** stays on the newest stable version of the newest line.
+  `release.yml` publishes a preview with `--prerelease --latest=false`, and a stable tag with
+  `--latest=false` when the current Latest is newer by `sort -V`, so a 10.x patch tagged after
+  11.0.0 leaves the repository page pointing at 11.x. `ReleaseWiringConventionTests` checks both.
 - **SECURITY.md's supported-versions table** names the latest release of each line on NuGet,
   never the version being prepared, and has no row for a preview.
   `SecurityPolicyConsistencyTests` compares this branch's row with
