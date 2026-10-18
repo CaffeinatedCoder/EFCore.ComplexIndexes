@@ -1,0 +1,28 @@
+name: Epic
+description: A release or a theme. Its sub-issues are the work. (Maintainers.)
+title: "Epic: "
+labels: [epic]
+body:
+  - type: textarea
+    id: goal
+    attributes:
+      label: Goal
+      description: What is true when this is done, in one or two sentences.
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: In scope and out of scope
+    validations:
+      required: true
+  - type: textarea
+    id: done
+    attributes:
+      label: Done when
+      description: Every sub-issue is closed, plus anything that isn't an issue (a tag, a published package, a doc).
+    validations:
+      required: true
+  - type: markdown
+    attributes:
+      value: Add the work as sub-issues once this exists. For a release, set the milestone on the epic and on every sub-issue.

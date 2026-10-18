@@ -55,8 +55,42 @@ exist because the alternative was remembering.
 operations through either the stock provider generator or this package's. Investigating a suspected
 bug should be three lines, not a re-derived setup.
 
+## Issues
+
+Use the **Bug** or **Enhancement** form. The bug form asks whether the failure is silent or loud,
+because that decides how the fix ships. A migration that scaffolded and applied cleanly while the
+database ended up different from the model, found before 10.0.0 ships, is fixed in 10.0.0, even
+if it's old. After that it ships as a minor on every supported line, under "Changed answers"
+([below](#a-fix-that-changes-an-answer)). A loud failure can wait for a minor either way.
+
+Releases and longer themes are tracked as `epic` issues, with the work as sub-issues. The pinned
+[Roadmap](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/issues/35) lists them all,
+along with what each label means. A maintainer sets the `package/*`, `area/*` and `severity/*`
+labels when triaging, and a pull request gets the same labels as the issue it closes.
+
+### Labels
+
+The legend, as the Roadmap issue states it (the same scheme as CodoMetis.ValueRanges and
+EntglDb/BLite):
+
+- **Type:** exactly one of `bug`, `enhancement`, `documentation`, `tests`, `chore`.
+- **`package/*`:** the shipped packages affected: `package/core`, `package/postgresql`, `package/sqlserver`.
+- **`area/*`:** the concern across packages: `indexes`, `expression-indexes`, `constraints`, `migrations`, `release`.
+- **`severity/*`:** bugs only. `critical`, `high`, `medium` or `low`.
+- **`silent`:** a bug that answers wrongly without throwing (a migration that creates a different index or constraint than the model declared is the typical case here).
+- **`breaking`:** anything that changes an existing answer or signature.
+- **`stacked`** (PRs): the base is another open PR. Merge them in order.
+- **Releases:** each release is an `epic` with a milestone. Its work is attached as sub-issues and carries the same milestone. A PR carries its issue's labels and says `Closes #n`.
+- **Lines:** from November 2026 there are two supported lines, one per EF Core major (issue #3): 10.x on EF Core 10 / .NET 10 (LTS, to 2028-11) and 11.x on EF Core 11 / .NET 11. A fix for both goes to `main` first and is cherry-picked with `-x`.
+
+`.github/workflows/pr-hygiene.yml` fails a PR with no type label, a bug with no severity, or no
+closing reference, and a `silent` PR into a minor without its row under `### Changed answers`.
+It runs again when labels or the description change, so fixing it needs no new commit.
+
 ## Pull requests
 
+- Open with `Closes #n` and follow the template: the problem as a consumer would have seen it,
+  the change, and what proves it. Give the PR the issue's labels and milestone.
 - One concern per PR, with the reasoning in the description rather than only the diff.
 - Full suite green, including integration if you have Docker.
 - User-visible changes get a changelog entry in the root [CHANGELOG.md](CHANGELOG.md) *and* in the
@@ -71,6 +105,101 @@ bug should be three lines, not a re-derived setup.
   into EF Core, Npgsql or the BCL adds the method to its `ExternalApi` allowlist.
 - Match the surrounding style. Comments explain *why*, especially where behaviour is load-bearing
   and non-obvious.
+
+## Branches and releases
+
+Up to two lines are supported at once, one per EF Core major: **10.x** on EF Core 10 / .NET 10
+(the LTS line, maintained while Microsoft supports .NET 10, until November 2028) and **11.x** on
+EF Core 11 / .NET 11. Each line has a branch, a `Version` in its own `Directory.Build.props`, and
+the same CI (`dotnet.yml` and `pr-hygiene.yml` run on `main`, `release/**` and `net11`), and a
+release is a `v*` tag on the branch it ships from. `release.yml` checks the tag against that
+`Version` and takes the release notes from the `## <version>` section of the root `CHANGELOG.md`,
+so a mistyped tag or an undocumented version stops before anything is published.
+
+### Until the `v10.0.0` tag
+
+- **`main`** is 10.0.0: the rename under the `CodoMetis.` prefix, new package ids, and the last
+  release made under the old rule, so it takes the silent fixes as a major.
+- **`release/5.x`**, cut from the last 5.x tag when `main` opens 10.0.0, holds 5.x patches and
+  ends at the `v10.0.0` tag. A change for both goes into `main` first; once it has merged,
+  cherry-pick it onto a branch from `release/5.x` (`git cherry-pick -x`, so the commit names the
+  original) and open a PR into `release/5.x` that links the `main` PR. Only loud fixes go to 5.x.
+  A silent fix waits for 10.0.0.
+- **`net11`** holds the .NET 11 retarget on top of `main` and ships `11.0.0-preview.N`, tagged
+  `v11.0.0-preview.N` on `net11`, one per .NET 11 release candidate. Nothing lands on `net11` that
+  `main` should have: every change goes into `main`, and `net11` merges `main` forward after each
+  one, so the 11 line never lacks a 10.0.0 fix.
+
+### At the `v10.0.0` tag
+
+Cut `release/10.x` from the tag, merge `net11` into `main`, and delete `net11`. `release/5.x`
+takes no changes from then on, and a fix reaches 5.x users only by upgrading.
+
+### After the `v10.0.0` tag
+
+- **`main`** is the 11 line: previews until EF Core 11 is released, then `v11.0.0` and its minors.
+- **`release/10.x`** is the LTS line. A change for both goes into `main` first and is cherry-picked
+  with `-x` into a PR against `release/10.x` that links the `main` PR. A change for 10.x only, such
+  as its version bump or a fix to code `main` no longer has (the 11 line delegates to EF Core 11
+  what it now does natively), goes straight into `release/10.x`.
+- **Additions** ship as 10.x minors until `v11.0.0`, and always reach `main` first, so the LTS
+  line never carries something the current line lacks. After `v11.0.0`, 10.x takes fixes only:
+  loud ones in a patch or a minor, silent ones in a minor.
+
+### A fix that changes an answer
+
+A silent fix is one where `migrations add` scaffolded, the migration applied, and the database
+ended up different from what the model declared; the fix changes what an existing model
+scaffolds. With two lines, a major means a new EF Core release and nothing else (11.0.0 is the
+first), so a silent fix has no major to wait for on the LTS line. After 10.0.0 it ships as a
+minor on every supported line, never a patch, and that minor says so:
+
+- **Its changelog entry opens with `### Changed answers`**, directly after the entry's
+  introduction and before any other change: one row per changed answer, each linking its issue
+  (`https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/issues/n`) and saying what the
+  first `migrations add` after upgrading produces, as the 5.4.0 entry's **Upgrading** notes do.
+  The entry's other changes follow under a heading of their own (`### Fixed`, `### New`,
+  `### Changed`), so the rows end where the next heading begins.
+
+10.0.0 is the last release under the old rule, and `main` keeps it until its tag: a silent fix is
+listed in the major, and no 5.x patch carries one. `ChangelogConsistencyTests` holds the form:
+`### Changed answers` appears only in a minor, sits before every other change of its entry, and
+each row links an issue. That test reads the file, not the label. The label half is
+`.github/scripts/pr-hygiene.sh`: a PR labelled `silent` into a minor fails until its closing
+issue has a row there, and into a patch it fails outright.
+
+### Releases on two lines
+
+- **Issues:** `Closes #n` closes an issue only when the PR merges into the default branch, `main`.
+  An issue fixed only on a release branch is closed by hand, with a comment linking the PR.
+- **Changelog:** a change goes under the version it ships in on each branch, never under the next
+  major too. `main`'s changelog keeps every release's section, of both lines, so it stays the full
+  history; a cherry-pick brings its 10.x entry with it. A preview has its own
+  `## 11.0.0-preview.N` section, which `release.yml` publishes as its notes, marked as a
+  prerelease. The package changelogs under `src/` follow the root, as they do today.
+- **SECURITY.md's supported-versions table** names the latest release of each line on NuGet,
+  never the version being prepared, and has no row for a preview.
+  `SecurityPolicyConsistencyTests` compares this branch's row with
+  `PackageValidationBaselineVersion`, so move the row when you move the baseline, which happens
+  when you open the next version right after a tag; the tagged commit still names the release
+  before it. The other line's row is compared with `CompanionLineRelease` in
+  `Directory.Build.props`, which is empty until 11.0.0 ships. From then on, a minor on one line
+  moves its row and `CompanionLineRelease` on the other branch in a PR of its own. The table gets
+  its second row in the PR that opens the first version after `v11.0.0`.
+- **The ApiCompat baseline** is the latest stable release before the version being prepared,
+  never a preview: the 11 line validates against 10.0.0 until 11.0.0 ships.
+
+## Changelog
+
+A version's section of the root `CHANGELOG.md` is the GitHub release's notes, word for word, so it
+is written for someone deciding what to change before they upgrade. The heading is `## x.y.z`
+(`## 11.0.0-preview.N` for a preview); `release.yml` matches it literally. A short introduction
+says what the release is about, then one bullet per change, leading with **Fixed:**, **New:** or
+**Changed:** and ending, where the first `migrations add` after upgrading does something, with an
+**Upgrading:** note. In a minor that changes an answer, `### Changed answers` comes between the
+introduction and the bullets, and the remaining bullets go under a heading of their own
+([above](#a-fix-that-changes-an-answer)). Links are absolute, because the release page cannot
+resolve a relative one.
 
 ## AI-assisted development
 

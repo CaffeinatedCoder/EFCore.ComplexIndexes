@@ -67,6 +67,18 @@
     </PropertyGroup>
 
     <!--
+        The latest release of the other supported line, once there is one (CONTRIBUTING.md, Branches
+        and releases). Two lines ship from two branches, and no branch can read the other's props,
+        so this is the one place a branch records what the other line last shipped. Empty until
+        11.0.0 ships; from then on a minor on one line moves this value on the other branch, and
+        SecurityPolicyConsistencyTests holds the supported-versions table to it. Not a package
+        property: nothing in the build reads it.
+    -->
+    <PropertyGroup>
+        <CompanionLineRelease></CompanionLineRelease>
+    </PropertyGroup>
+
+    <!--
         Debugging support for consumers.
 
         Symbols ship as a separate .snupkg, which `dotnet nuget push` uploads alongside the .nupkg
