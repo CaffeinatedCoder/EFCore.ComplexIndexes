@@ -1,0 +1,48 @@
+name: Enhancement
+description: A new index or constraint option, a new provider, or a change to the fluent API.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What you're trying to do
+      description: The task, not the API. What do you write today, and why doesn't it work?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you'd like
+      description: A sketch of the call you'd make in `OnModelCreating`, and the DDL it should produce.
+      render: csharp
+  - type: dropdown
+    id: package
+    attributes:
+      label: Package
+      multiple: true
+      options:
+        - EFCore.ComplexIndexes
+        - EFCore.ComplexIndexes.PostgreSQL
+        - EFCore.ComplexIndexes.SqlServer
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      multiple: true
+      options:
+        - Indexes (complex-property, composite, unique, filtered)
+        - Expression indexes (expression, typed LINQ, JSON member)
+        - Constraints (temporal, exclusion)
+        - Migrations (the differ, the snapshot, EnsureCreated, design-time wiring)
+        - Release (versioning, changelog, packaging)
+  - type: dropdown
+    id: answers
+    attributes:
+      label: Does it change a migration the package scaffolds today?
+      description: Anything that changes the DDL an existing model produces needs a major version, even if the new DDL is better.
+      options:
+        - No, it only adds
+        - Yes, an existing model would scaffold differently
+        - I'm not sure
+    validations:
+      required: true

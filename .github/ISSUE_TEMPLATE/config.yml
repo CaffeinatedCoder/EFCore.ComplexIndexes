@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security report
+    url: https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/security/advisories/new
+    about: Report a vulnerability privately, as SECURITY.md describes. Please don't open a public issue for it.

@@ -1,4 +1,6 @@
 using System.Reflection;
+using System.Text.RegularExpressions;
+using System.Xml.Linq;
 
 namespace EFCore.ComplexIndexes.Tests;
 
@@ -26,6 +28,43 @@ internal static class RepositoryLayout
     public static string DocsDirectory => Path.Combine(Root, "docs");
 
     public static string BuildProps => Path.Combine(Root, "Directory.Build.props");
+
+    /// <summary>The single source of truth for the version all packages ship at, from <c>Directory.Build.props</c>.</summary>
+    public static string ShippedVersion =>
+        SharedProperty("Version") ?? throw new InvalidOperationException("Directory.Build.props has no <Version>.");
+
+    /// <summary>
+    /// The latest release of this branch's line on nuget.org: <c>PackageValidationBaselineVersion</c>.
+    /// Between a version bump and its tag, <see cref="ShippedVersion"/> names the release being
+    /// prepared and the baseline names the one already out; <c>PackagingConventionTests</c> keeps the
+    /// baseline at that release or the shipped version. When the baseline is empty — a package id
+    /// with no release under it yet, as at the rename — the newest stable version the root changelog
+    /// documents below the shipped one stands in, which is the same release.
+    /// </summary>
+    public static string LatestRelease =>
+        SharedProperty("PackageValidationBaselineVersion")
+     ?? Regex.Matches(File.ReadAllText(RootChangelog), $@"^## ({ReleaseVersion.Pattern})\s*$", RegexOptions.Multiline)
+             .Select(match => ReleaseVersion.Parse(match.Groups[1].Value))
+             .Where(version => !version.IsPrerelease && version < ReleaseVersion.Parse(ShippedVersion))
+             .DefaultIfEmpty()
+             .Max()
+            ?.ToString()
+     ?? throw new InvalidOperationException(
+            "Directory.Build.props has no PackageValidationBaselineVersion and CHANGELOG.md documents no "
+          + "stable release below the shipped version, so the latest release of this line is unknown.");
+
+    /// <summary>
+    /// The latest release of the other supported line, from <c>CompanionLineRelease</c>, or
+    /// <see langword="null"/> while only one line has a release. No branch can read the other
+    /// branch's props, so this is the one place a branch records what the other line last shipped.
+    /// </summary>
+    public static string? CompanionLineRelease => SharedProperty("CompanionLineRelease");
+
+    private static string? SharedProperty(string name)
+    {
+        var value = XDocument.Load(BuildProps).Descendants(name).FirstOrDefault()?.Value.Trim();
+        return string.IsNullOrEmpty(value) ? null : value;
+    }
 
     /// <summary>Every packable project under <c>src/</c>, discovered rather than hard-coded.</summary>
     public static IReadOnlyList<ShippingProject> ShippingProjects { get; } =

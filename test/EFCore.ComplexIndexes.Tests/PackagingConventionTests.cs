@@ -194,16 +194,26 @@ public class PackagingConventionTests
             "Directory.Build.props does not enable package validation, so a removed public member "
           + "packs cleanly and whether a release breaks anyone rests on reading the diff.");
 
-        var shipped  = Version.Parse(props.Descendants("Version").Single().Value);
-        var previous = ChangelogVersions().Where(version => version < shipped).DefaultIfEmpty().Max();
+        var shipped  = ReleaseVersion.Parse(props.Descendants("Version").Single().Value);
+        var previous = ChangelogVersions().Where(version => !version.IsPrerelease && version < shipped).DefaultIfEmpty().Max();
         var baseline = props.Descendants("PackageValidationBaselineVersion").SingleOrDefault()?.Value.Trim();
 
         Assert.IsNotNull(baseline, "Directory.Build.props sets no PackageValidationBaselineVersion.");
 
+        var parsed = ReleaseVersion.Parse(baseline);
+
+        // A preview is never a baseline: the 11 line validates against the latest stable release
+        // (10.0.0) until 11.0.0 ships, and SecurityPolicyConsistencyTests reads the same property
+        // as the latest release of this line, which a preview is not.
+        Assert.IsFalse(
+            parsed.IsPrerelease,
+            $"PackageValidationBaselineVersion is the preview {parsed}. The baseline is the latest stable "
+          + "release before the version being prepared (CONTRIBUTING.md, Releases on two lines).");
+
         var allowed = new[] { shipped, previous }.Where(version => version is not null).Distinct().ToList();
 
         Assert.IsTrue(
-            allowed.Contains(Version.Parse(baseline)),
+            allowed.Contains(parsed),
             $"PackageValidationBaselineVersion is {baseline}, but Directory.Build.props ships {shipped} "
           + $"and the release before it is {previous?.ToString() ?? "none"}. The baseline must be one of "
           + "those two — move it to the release just superseded when bumping Version, or API added "
@@ -211,9 +221,9 @@ public class PackagingConventionTests
     }
 
     // The root CHANGELOG.md's "## x.y.z" headings — the same source ChangelogConsistencyTests reads.
-    private static IEnumerable<Version> ChangelogVersions() =>
-        Regex.Matches(File.ReadAllText(RepositoryLayout.RootChangelog), @"^## (\d+\.\d+\.\d+)\s*$", RegexOptions.Multiline)
-             .Select(match => Version.Parse(match.Groups[1].Value));
+    private static IEnumerable<ReleaseVersion> ChangelogVersions() =>
+        Regex.Matches(File.ReadAllText(RepositoryLayout.RootChangelog), $@"^## ({ReleaseVersion.Pattern})\s*$", RegexOptions.Multiline)
+             .Select(match => ReleaseVersion.Parse(match.Groups[1].Value));
 
     private static string ReleaseWorkflow =>
         Path.Combine(RepositoryLayout.Root, ".github", "workflows", "release.yml");
