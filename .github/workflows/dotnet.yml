@@ -56,7 +56,8 @@ jobs:
       - name: Setup .NET
         uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5.4.0
         with:
-          dotnet-version: 10.0.x
+          dotnet-version: 11.0.x
+          dotnet-quality: preview
 
       - name: Restore dependencies
         run: dotnet restore
@@ -94,7 +95,8 @@ jobs:
       - name: Setup .NET
         uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5.4.0
         with:
-          dotnet-version: 10.0.x
+          dotnet-version: 11.0.x
+          dotnet-quality: preview
 
       - name: Restore dependencies
         run: dotnet restore
@@ -136,7 +138,8 @@ jobs:
       - name: Setup .NET
         uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5.4.0
         with:
-          dotnet-version: 10.0.x
+          dotnet-version: 11.0.x
+          dotnet-quality: preview
 
       - name: Scaffold a migration from a throwaway consumer project
         run: ./test/consumer-smoke-test.sh
@@ -152,7 +155,8 @@ jobs:
       - name: Setup .NET
         uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5.4.0
         with:
-          dotnet-version: 10.0.x
+          dotnet-version: 11.0.x
+          dotnet-quality: preview
 
       # Packing is itself a check: a package that declares PackageReadmeFile without packing the
       # file fails here with NU5019, and satellites that lose their .targets ship silently broken.

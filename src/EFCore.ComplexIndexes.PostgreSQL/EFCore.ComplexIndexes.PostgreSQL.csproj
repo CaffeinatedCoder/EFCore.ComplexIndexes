@@ -1,7 +1,7 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
     <PropertyGroup>
-        <TargetFramework>net10.0</TargetFramework>
+        <TargetFramework>net11.0</TargetFramework>
         <ImplicitUsings>enable</ImplicitUsings>
         <Nullable>enable</Nullable>
         <PackageId>EFCore.ComplexIndexes.PostgreSQL</PackageId>
@@ -11,7 +11,7 @@
     </PropertyGroup>
 
     <ItemGroup>
-        <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.0">
+        <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="11.0.0-rc.1.26425.128">
             <PrivateAssets>all</PrivateAssets>
             <IncludeAssets>compile</IncludeAssets>
         </PackageReference>
@@ -21,7 +21,7 @@
         <ProjectReference Include="..\EFCore.ComplexIndexes\EFCore.ComplexIndexes.csproj" />
         <!-- Ceiling for the same reason as the core package: this differ extends Npgsql's own
              generator and diff internals, which carry no cross-major compatibility promise. -->
-        <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="[10.0.0, 11.0.0)" />
+        <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="[11.0.0-rc.1.1, 12.0.0)" />
     </ItemGroup>
 
     <ItemGroup>

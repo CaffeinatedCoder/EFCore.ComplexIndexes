@@ -6,6 +6,22 @@ covering only what changed for that package:
 [PostgreSQL](src/EFCore.ComplexIndexes.PostgreSQL/CHANGELOG.md),
 [SQL Server](src/EFCore.ComplexIndexes.SqlServer/CHANGELOG.md).
 
+## 11.0.0-preview.1
+
+The EF Core 11 line opens as a parallel major, as announced in issue #3: one line per EF Core major,
+10.x on EF Core 10 (LTS) and 11.x on EF Core 11, with fixes landing on the 10 line first. This
+preview is the retarget alone — no feature, no fix, no API change: the public surface is that of
+5.4.1.
+
+- **Changed:** the packages target `net11.0` and require EF Core 11. The dependency floors are
+  `Microsoft.EntityFrameworkCore.Abstractions` `[11.0.0-rc.1.26425.128, 12.0.0)`,
+  `Npgsql.EntityFrameworkCore.PostgreSQL` `[11.0.0-rc.1.1, 12.0.0)` and
+  `Microsoft.EntityFrameworkCore.SqlServer` `[11.0.0-rc.1.26425.128, 12.0.0)`. The Npgsql provider
+  pins `Microsoft.EntityFrameworkCore` to exactly 11.0.0-rc.1 while EF Core 11 is in prerelease,
+  so a project on this preview has to reference EF Core's own packages — `Design` above all — at
+  that same build, not at a later RC. The floors move to `11.0.0` at EF Core 11 GA. Applications
+  on EF Core 10 stay on 5.4.x, which keeps receiving fixes.
+
 ## 5.4.1
 
 One fix, to the index-name check: it compared names per table on every provider, so on SQLite a name
