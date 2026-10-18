@@ -1,5 +1,4 @@
 using System.Text.RegularExpressions;
-using System.Xml.Linq;
 
 namespace EFCore.ComplexIndexes.Tests;
 
@@ -17,18 +16,15 @@ namespace EFCore.ComplexIndexes.Tests;
 [TestClass]
 public class ChangelogConsistencyTests
 {
-    // The one heading style: "## 5.0.2", or "## 11.0.0-preview.1" for a prerelease. Deliberately
-    // strict — see the remarks above.
-    private static readonly Regex VersionHeading = SemanticVersion.ChangelogHeading;
+    // The one heading style: "## 5.0.2", or a preview's "## 11.0.0-preview.1". Deliberately strict —
+    // see the remarks above.
+    private static readonly Regex VersionHeading =
+        new($@"^\#\# ({ReleaseVersion.Pattern})\s*$", RegexOptions.Multiline | RegexOptions.Compiled);
 
-    private static SemanticVersion PackageVersion =>
-        SemanticVersion.Parse(XDocument.Load(RepositoryLayout.BuildProps)
-                                       .Descendants("Version")
-                                       .Single()
-                                       .Value);
+    private static ReleaseVersion PackageVersion => ReleaseVersion.Parse(RepositoryLayout.ShippedVersion);
 
-    private static List<SemanticVersion> DocumentedVersions(string changelog) =>
-        SemanticVersion.InChangelog(changelog);
+    private static List<ReleaseVersion> DocumentedVersions(string changelog) =>
+        [.. VersionHeading.Matches(File.ReadAllText(changelog)).Select(m => ReleaseVersion.Parse(m.Groups[1].Value))];
 
     [TestMethod(DisplayName = "Every shipping package carries its own changelog")]
     public void Every_package_has_a_changelog()
@@ -121,6 +117,146 @@ public class ChangelogConsistencyTests
             $"{string.Join(", ", offenders)} contains '## <version>' changelog sections. The changelog "
           + "moved to CHANGELOG.md; a copy left in a README drifts silently and, for the packed ones, "
           + "drifts where consumers read it.");
+    }
+
+
+    /// <summary>
+    /// The section a minor opens with when it changes an answer: a migration that scaffolded and
+    /// applied cleanly while the database ended up different from the model, whose fix changes what
+    /// an existing model scaffolds (CONTRIBUTING.md, A fix that changes an answer).
+    /// </summary>
+    private const string ChangedAnswers = "Changed answers";
+
+    private const string IssuesPrefix = "https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/issues/";
+
+    private static readonly Regex IssueLink = new($@"\]\({Regex.Escape(IssuesPrefix)}\d+\)", RegexOptions.Compiled);
+
+    /// <summary>
+    /// <c>### Changed answers</c> appears only in a minor. A major lists a changed answer as it
+    /// always has, a patch may not change one at all, and a preview is a major's.
+    /// </summary>
+    /// <remarks>
+    /// The section exists so that a silent fix can ship on the LTS line, which has no major number
+    /// left to spend on it. A patch carrying one would be read as "nothing to check" by every
+    /// consumer who upgrades patches unattended, which is the reason the rule says minor.
+    /// </remarks>
+    [TestMethod(DisplayName = "'### Changed answers' appears only in a minor")]
+    public void Changed_answers_appear_only_in_a_minor()
+    {
+        var offenders = VersionSections()
+                       .Where(section => section.Lines.Any(entry => IsSectionHeading(entry.Line, ChangedAnswers)))
+                       .Where(section => !section.Version.IsMinor)
+                       .Select(section => $"{Describe(section.Changelog)} ({section.Version})")
+                       .ToList();
+
+        Assert.IsEmpty(
+            offenders,
+            $"These versions have a '### {ChangedAnswers}' section but are not a minor (x.y.0, y > 0): "
+          + $"{string.Join(", ", offenders)}. A major lists a changed answer as it always has, and a patch "
+          + "may not change one: bump the minor (CONTRIBUTING.md, A fix that changes an answer).");
+    }
+
+    /// <summary>
+    /// <c>### Changed answers</c> is the top of its entry: after the introduction, before any other
+    /// change and any other heading. A reader deciding whether to upgrade must not have to find it.
+    /// </summary>
+    [TestMethod(DisplayName = "'### Changed answers' leads its entry")]
+    public void Changed_answers_lead_their_entry()
+    {
+        var offenders = new List<string>();
+
+        foreach (var (changelog, version, lines) in VersionSections())
+        {
+            var heading = lines.FindIndex(entry => IsSectionHeading(entry.Line, ChangedAnswers));
+            if (heading < 0) continue;
+
+            var before = lines.Take(heading)
+                              .Where(entry => entry.Line.StartsWith("- ", StringComparison.Ordinal)
+                                           || entry.Line.StartsWith("### ", StringComparison.Ordinal))
+                              .Select(entry => $"{Describe(changelog)}:{entry.Number} ({version}): '{Truncate(entry.Line)}'")
+                              .ToList();
+
+            offenders.AddRange(before);
+        }
+
+        Assert.IsEmpty(
+            offenders,
+            $"These lines come before '### {ChangedAnswers}' in their entry. The section goes directly "
+          + "after the entry's introduction, so a consumer sees the changed answers first "
+          + "(CONTRIBUTING.md, A fix that changes an answer):" + Environment.NewLine + string.Join(Environment.NewLine, offenders));
+    }
+
+    /// <summary>
+    /// Every row under <c>### Changed answers</c> links the issue it closes. The rows run to the
+    /// next <c>###</c> heading, so an entry's other changes follow under one of their own.
+    /// </summary>
+    /// <remarks>
+    /// The issue link is what ties the row to the <c>silent</c> label: <c>.github/scripts/pr-hygiene.sh</c>
+    /// fails a <c>silent</c> PR into a minor whose closing issue has no row here, and it finds the row
+    /// by this link. A test does not see labels, so this is the half it can hold.
+    /// </remarks>
+    [TestMethod(DisplayName = "Every '### Changed answers' row links its issue")]
+    public void Every_changed_answer_links_its_issue()
+    {
+        var offenders = new List<string>();
+
+        foreach (var (changelog, version, lines) in VersionSections())
+        {
+            var inside = false;
+
+            foreach (var (number, line) in lines)
+            {
+                if (line.StartsWith("### ", StringComparison.Ordinal))
+                    inside = IsSectionHeading(line, ChangedAnswers);
+                else if (inside && line.StartsWith("- ", StringComparison.Ordinal) && !IssueLink.IsMatch(line))
+                    offenders.Add($"{Describe(changelog)}:{number} ({version}): '{Truncate(line)}'");
+            }
+        }
+
+        Assert.IsEmpty(
+            offenders,
+            $"These '### {ChangedAnswers}' rows link no issue ({IssuesPrefix}n). The rows run to the next "
+          + "### heading, so a change that is not a changed answer goes under a heading of its own "
+          + "(CONTRIBUTING.md, A fix that changes an answer):" + Environment.NewLine + string.Join(Environment.NewLine, offenders));
+    }
+
+    private static bool IsSectionHeading(string line, string name) =>
+        line.StartsWith("### ", StringComparison.Ordinal) && line[4..].Trim() == name;
+
+    private static string Truncate(string line) => line.Length <= 60 ? line : line[..57] + "...";
+
+    /// <summary>
+    /// Each version section of every changelog: the lines after its <c>## x.y.z</c> heading up to the
+    /// next <c>##</c> heading, with their line numbers. The file's own header is not a section.
+    /// </summary>
+    private static IEnumerable<(string Changelog, ReleaseVersion Version, List<(int Number, string Line)> Lines)> VersionSections()
+    {
+        foreach (var changelog in AllChangelogs())
+        {
+            ReleaseVersion? version = null;
+            var lines = new List<(int Number, string Line)>();
+            var all   = File.ReadAllLines(changelog);
+
+            for (var index = 0; index < all.Length; index++)
+            {
+                var line = all[index].TrimEnd();
+
+                if (line.StartsWith("## ", StringComparison.Ordinal))
+                {
+                    if (version is not null) yield return (changelog, version, lines);
+
+                    var heading = VersionHeading.Match(line);
+                    version = heading.Success ? ReleaseVersion.Parse(heading.Groups[1].Value) : null;
+                    lines   = [];
+                }
+                else if (version is not null)
+                {
+                    lines.Add((index + 1, line));
+                }
+            }
+
+            if (version is not null) yield return (changelog, version, lines);
+        }
     }
 
     // A package changelog that is missing entirely is Every_package_has_a_changelog's finding, and its

@@ -1,3 +1,4 @@
+using System.Text.Json;
 using System.Text.RegularExpressions;
 using System.Xml.Linq;
 
@@ -141,7 +142,7 @@ public class PackagingConventionTests
         // it. For Microsoft.EntityFrameworkCore.Design that is ~45 MSBuild/Roslyn components — and
         // "consumers never receive it" is the stated reason NU1903 stays a warning
         // (Directory.Build.props) and the reason .github/dependabot.yml ignores
-        // System.Security.Cryptography.Xml under src/. Nothing else checks it per project.
+        // System.Security.Cryptography.Xml and .Pkcs. Nothing else checks it per project.
         var references = Projects
                         .Select(project => (
                              project,
@@ -177,6 +178,132 @@ public class PackagingConventionTests
     }
 
     /// <summary>
+    /// Public references that a build-only reference also reaches, kept public on purpose. Each
+    /// one is a dependency every consumer takes on, so each one carries its reason.
+    /// </summary>
+    private static readonly Dictionary<string, string> DeliberatelyPublic = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ["Microsoft.EntityFrameworkCore.Abstractions"] =
+            "carries the [10.0.0, 11.0.0) ceiling that keeps NuGet from resolving an EF Core major the differ was never tested against (core csproj)",
+    };
+
+    [TestMethod(DisplayName = "No public reference pins a package that only a build-only reference brings in")]
+    public void No_public_reference_pins_a_build_only_dependency()
+    {
+        // Dependabot's remedy for a vulnerable transitive package is a direct reference that pins
+        // the patched version. For a package reached only through Microsoft.EntityFrameworkCore.Design
+        // (PrivateAssets=all), that reference is public, so the nuspec starts declaring a dependency
+        // consumers never had. They download it, and it surfaces in their own audits, all to silence a
+        // warning that concerned build machines. #49 and #51 did exactly that, every check green, and
+        // the ignore list in .github/dependabot.yml stops it only for the jobs it is configured on.
+        //
+        // The restore graph tells the two kinds apart. A public reference is flagged when a
+        // build-only reference reaches it and no other public reference does. If a public reference
+        // (EF's SQL Server provider, for one) already ships the package to consumers, a pin there
+        // only raises a version they already take.
+        var findings = new List<string>();
+        var exempted = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var project in Projects)
+        {
+            var references = XDocument.Load(project.ProjectFile)
+                                      .Descendants("PackageReference")
+                                      .Where(reference => reference.Attribute("Include") is not null)
+                                      .ToList();
+
+            var buildOnlyRoots = references.Where(IsPrivate).Select(r => r.Attribute("Include")!.Value).ToList();
+            var publicRoots    = references.Where(r => !IsPrivate(r)).Select(r => r.Attribute("Include")!.Value).ToList();
+
+            var graph = RestoreGraph(project, out var projectReferences);
+
+            foreach (var id in buildOnlyRoots.Concat(publicRoots))
+                Assert.IsTrue(
+                    graph.ContainsKey(id),
+                    $"{project}'s project.assets.json has no {id}, so the restore is older than the csproj. "
+                  + "Build the solution before running the suite.");
+
+            var reachedByBuildOnly = Closure(graph, buildOnlyRoots);
+
+            exempted.UnionWith(publicRoots.Where(id => reachedByBuildOnly.Contains(id) && DeliberatelyPublic.ContainsKey(id)));
+
+            foreach (var pinned in publicRoots.Where(id => reachedByBuildOnly.Contains(id) && !DeliberatelyPublic.ContainsKey(id)))
+            {
+                var otherRoots = publicRoots.Where(id => !string.Equals(id, pinned, StringComparison.OrdinalIgnoreCase))
+                                            .Concat(projectReferences);
+
+                if (!Closure(graph, otherRoots).Contains(pinned))
+                    findings.Add($"{project} -> {pinned} (reached otherwise only through {string.Join(", ", buildOnlyRoots)})");
+            }
+        }
+
+        Assert.IsEmpty(
+            findings,
+            $"{string.Join("; ", findings)}. This package's nuspec now declares a dependency its consumers "
+          + "never received before. If it is a Dependabot security pin, close the PR and add the package to "
+          + "the ignore list of every nuget entry in .github/dependabot.yml that reaches src/: the advisory "
+          + "concerns build machines, and NU1903 stays a warning for that reason (Directory.Build.props). "
+          + $"If consumers really need it, add it to {nameof(DeliberatelyPublic)} with the reason.");
+
+        // An exemption that no longer exempts anything would wave through the next pin of that id.
+        var unused = DeliberatelyPublic.Keys.Where(id => !exempted.Contains(id)).ToList();
+
+        Assert.IsEmpty(
+            unused,
+            $"{string.Join(", ", unused)} is in {nameof(DeliberatelyPublic)} but no project references it publicly "
+          + "while a build-only reference reaches it. Remove the entry.");
+    }
+
+    /// <summary>
+    /// The restore graph of <paramref name="project"/> as package id → the ids it depends on, read
+    /// from <c>obj/project.assets.json</c>. Dependencies come from each package's nuspec, so a
+    /// direct pin does not hide the edge that pulls the package in transitively.
+    /// <paramref name="projectReferences"/> receives the referenced projects: their dependencies
+    /// flow to consumers, so they count as public roots.
+    /// </summary>
+    private static Dictionary<string, string[]> RestoreGraph(RepositoryLayout.ShippingProject project, out List<string> projectReferences)
+    {
+        var assets = Path.Combine(project.Directory, "obj", "project.assets.json");
+        Assert.IsTrue(File.Exists(assets), $"{project} has no obj/project.assets.json. Build the solution before running the suite.");
+
+        using var document = JsonDocument.Parse(File.ReadAllText(assets));
+        var targets = document.RootElement.GetProperty("targets").EnumerateObject().ToList();
+
+        // One target framework per project today; a multi-targeted project would need every
+        // target checked, and silently checking the first one is how that goes unnoticed.
+        Assert.HasCount(1, targets, $"{project} restores {targets.Count} targets; this test reads exactly one.");
+
+        var graph = new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase);
+        projectReferences = [];
+
+        foreach (var library in targets[0].Value.EnumerateObject())
+        {
+            var id = library.Name.Split('/')[0];
+
+            graph[id] = library.Value.TryGetProperty("dependencies", out var dependencies)
+                            ? dependencies.EnumerateObject().Select(dependency => dependency.Name).ToArray()
+                            : [];
+
+            if (library.Value.GetProperty("type").GetString() == "project")
+                projectReferences.Add(id);
+        }
+
+        return graph;
+    }
+
+    private static HashSet<string> Closure(Dictionary<string, string[]> graph, IEnumerable<string> roots)
+    {
+        var reached = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var pending = new Stack<string>(roots);
+
+        while (pending.TryPop(out var id))
+            if (reached.Add(id) && graph.TryGetValue(id, out var dependencies))
+                foreach (var dependency in dependencies)
+                    pending.Push(dependency);
+
+        return reached;
+    }
+
+    /// <summary>
     /// Package validation compares each pack against <c>PackageValidationBaselineVersion</c>. A
     /// baseline left behind stops seeing API added since it — a member introduced in 5.1 and
     /// removed in 5.2 is invisible to a 5.0 baseline — so it may be the version being shipped
@@ -194,16 +321,26 @@ public class PackagingConventionTests
             "Directory.Build.props does not enable package validation, so a removed public member "
           + "packs cleanly and whether a release breaks anyone rests on reading the diff.");
 
-        var shipped  = SemanticVersion.Parse(props.Descendants("Version").Single().Value);
-        var previous = ChangelogVersions().Where(version => version < shipped).DefaultIfEmpty().Max();
+        var shipped  = ReleaseVersion.Parse(props.Descendants("Version").Single().Value);
+        var previous = ChangelogVersions().Where(version => !version.IsPrerelease && version < shipped).DefaultIfEmpty().Max();
         var baseline = props.Descendants("PackageValidationBaselineVersion").SingleOrDefault()?.Value.Trim();
 
         Assert.IsNotNull(baseline, "Directory.Build.props sets no PackageValidationBaselineVersion.");
 
+        var parsed = ReleaseVersion.Parse(baseline);
+
+        // A preview is never a baseline: the 11 line validates against the latest stable release
+        // (10.0.0) until 11.0.0 ships, and SecurityPolicyConsistencyTests reads the same property
+        // as the latest release of this line, which a preview is not.
+        Assert.IsFalse(
+            parsed.IsPrerelease,
+            $"PackageValidationBaselineVersion is the preview {parsed}. The baseline is the latest stable "
+          + "release before the version being prepared (CONTRIBUTING.md, Releases on two lines).");
+
         var allowed = new[] { shipped, previous }.Where(version => version is not null).Distinct().ToList();
 
         Assert.IsTrue(
-            allowed.Contains(SemanticVersion.Parse(baseline)),
+            allowed.Contains(parsed),
             $"PackageValidationBaselineVersion is {baseline}, but Directory.Build.props ships {shipped} "
           + $"and the release before it is {previous?.ToString() ?? "none"}. The baseline must be one of "
           + "those two — move it to the release just superseded when bumping Version, or API added "
@@ -211,8 +348,9 @@ public class PackagingConventionTests
     }
 
     // The root CHANGELOG.md's "## x.y.z" headings — the same source ChangelogConsistencyTests reads.
-    private static IEnumerable<SemanticVersion> ChangelogVersions() =>
-        SemanticVersion.InChangelog(RepositoryLayout.RootChangelog);
+    private static IEnumerable<ReleaseVersion> ChangelogVersions() =>
+        Regex.Matches(File.ReadAllText(RepositoryLayout.RootChangelog), $@"^## ({ReleaseVersion.Pattern})\s*$", RegexOptions.Multiline)
+             .Select(match => ReleaseVersion.Parse(match.Groups[1].Value));
 
     private static string ReleaseWorkflow =>
         Path.Combine(RepositoryLayout.Root, ".github", "workflows", "release.yml");

@@ -1,4 +1,7 @@
-# Build and test on every push to main and every PR.
+# Build and test on every push to main, a release branch or net11, and every PR into any of them.
+# Two lines are supported from 11.0.0 on (CONTRIBUTING.md#branches-and-releases), and each branch
+# that ships one needs the same checks as main's: release/10.x holds the LTS line once the v10.0.0
+# tag exists, and net11 holds the .NET 11 retarget and ships 11.0.0-preview.N until then.
 #
 # Split into two jobs on purpose: the unit suite and the integration suite, the latter needing
 # Docker for its PostgreSQL container.
@@ -15,9 +18,9 @@ name: .NET
 
 on:
   push:
-    branches: [ "main" ]
+    branches: [ "main", "release/**", "net11" ]
   pull_request:
-    branches: [ "main" ]
+    branches: [ "main", "release/**", "net11" ]
   workflow_dispatch:
 
 permissions:

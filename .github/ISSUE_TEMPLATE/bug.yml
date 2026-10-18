@@ -1,0 +1,79 @@
+name: Bug
+description: A migration that scaffolds or applies something other than what the model declared, or a failure where there should be none.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        The bugs that matter most here don't throw. `dotnet ef migrations add` succeeds, the
+        migration applies, and the database enforces something other than what the model
+        declared: an index that is missing, a filter that was dropped, a constraint that
+        silently replaced another. If that's what you found, please say so below. It decides
+        which release the fix goes in.
+  - type: dropdown
+    id: package
+    attributes:
+      label: Package
+      multiple: true
+      options:
+        - EFCore.ComplexIndexes
+        - EFCore.ComplexIndexes.PostgreSQL
+        - EFCore.ComplexIndexes.SqlServer
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      placeholder: "5.4.1"
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      description: Where the problem sits, as far as you can tell. A maintainer sets the matching label.
+      multiple: true
+      options:
+        - Indexes (complex-property, composite, unique, filtered)
+        - Expression indexes (expression, typed LINQ, JSON member)
+        - Constraints (temporal, exclusion)
+        - Migrations (the differ, the snapshot, EnsureCreated, design-time wiring)
+        - Release (versioning, changelog, packaging)
+  - type: dropdown
+    id: failure
+    attributes:
+      label: How does it fail?
+      options:
+        - Silently. The migration scaffolds and applies, and the database differs from the model
+        - Loudly. migrations add, Migrate() or the apply throws where it should work
+        - I'm not sure
+    validations:
+      required: true
+  - type: textarea
+    id: model
+    attributes:
+      label: What you declared
+      description: The smallest `OnModelCreating` that shows it, with the entity and complex types it needs.
+      render: csharp
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: What you got
+      description: The scaffolded migration, the generated DDL, or the error. For a silent failure, what the database holds (`\d table`, `sp_helpindex`).
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+      description: The DDL the model should have produced, if you can write it.
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: .NET and EF Core versions, the provider and its version (Npgsql, SQL Server, SQLite), the database version, and whether `UseNpgsqlComplexIndexes()` / `UseComplexIndexes()` is wired at runtime.

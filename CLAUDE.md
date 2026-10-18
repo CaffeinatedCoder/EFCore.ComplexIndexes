@@ -32,17 +32,22 @@ the build reports green.
 
 ## CI
 
-`.github/workflows/dotnet.yml` runs on pushes and PRs to `main`: the unit suite, the integration
-suite (Docker), then a pack job whose value is partly that packing *is* a check — a package
-declaring `PackageReadmeFile` without packing the file fails with NU5019. Everything runs on
+`.github/workflows/dotnet.yml` runs on pushes and PRs to `main`, `release/**` and `net11`: the
+unit suite, the integration suite (Docker), then a pack job whose value is partly that packing
+*is* a check — a package declaring `PackageReadmeFile` without packing the file fails with
+NU5019. Everything runs on
 ubuntu-latest. Actions in both workflows are pinned to commit SHAs with the tag in a trailing
 comment; `.github/dependabot.yml` keeps those pins current (weekly, grouped, minors and patches
 only — majors on the publish path are deliberate, see the artifact-action comments in
 `release.yml`) and covers the test project's NuGet references monthly — not `src/`, whose EF Core
 and provider floors are release decisions. A `src/` entry with no version updates exists only so
 security updates there honour its ignore list: Dependabot's fix for the build-only NU1903 would be
-a *direct* `System.Security.Cryptography.Xml` reference, shipping to consumers a package they never
-had.
+a *direct* `System.Security.Cryptography.Xml` or `.Pkcs` reference, shipping to consumers a package
+they never had. The test entry carries the same ignores, because its job follows the
+ProjectReference and writes the pin into the `src/` csproj. That is how #49 and #51 got through
+while the `src/` job skipped the package as configured. An ignore list covers only the jobs it is
+configured on, so `PackagingConventionTests` also fails any public reference that only a
+`PrivateAssets=all` reference reaches, whichever job wrote it.
 
 The unit job used to fan out across ubuntu/windows/macos for the repository-convention tests, which
 do real path work. Dropped in favour of reacting if it ever bites: **no shipped code touches the
@@ -72,7 +77,7 @@ project is marked so in **every** project. Dropping it from a single csproj is i
 other check — the package still builds, the SBOM test still passes — while that one nuspec starts
 declaring the dependency and its consumers restore the whole subtree behind it. That is what makes
 "consumers never receive it" true, and it is the premise `NU1903` staying a warning rests on
-(`Directory.Build.props`), along with the `System.Security.Cryptography.Xml` ignore under `src/` in
+(`Directory.Build.props`), along with the `System.Security.Cryptography.*` ignores in
 `.github/dependabot.yml`. Confirmed by removing the metadata from one satellite: a consumer of the
 resulting package inherits all eight advisories.
 
@@ -105,6 +110,17 @@ Three things must stay in sync or the policy stops matching — by design, so fi
 than working around it: the workflow **file name** (`release.yml`), the **environment** name
 (`nuget`, declared on the `publish` job *and* in the nuget.org policy), and the repository owner/name.
 
+## Tracking
+
+Work is tracked as labelled GitHub issues, not as lists in docs or memory: open the issue before
+the work, give the PR the issue's labels and milestone, open it with `Closes #n`. The label legend
+is the pinned Roadmap issue (#35) and `CONTRIBUTING.md`'s Issues section; `AGENTS.md` has the
+rules in short form, including the two supported lines (10.x LTS on EF Core 10, 11.x on EF Core
+11), the branches, and the silent-fix rule: after 10.0.0 a fix that changes what an existing model
+scaffolds ships as a minor on every line, never a patch, with `### Changed answers` at the top of
+its changelog entry. `.github/workflows/pr-hygiene.yml` enforces the label half through
+`pr-hygiene.sh`; `ChangelogConsistencyTests` and `SecurityPolicyConsistencyTests` the file half.
+
 ## Quality controls
 
 The signature failure here is a migration that scaffolds *and applies* cleanly while being
@@ -116,14 +132,14 @@ below exist because ordinary review does not catch it.
 
 | Test class | Guards |
 |---|---|
-| `ChangelogConsistencyTests` | The changelog lives in four files (root `CHANGELOG.md` + one per package). Asserts the shipped version is documented, no changelog runs ahead of `Directory.Build.props`, package changelogs are a subset of the root's, sections are newest-first, and no README has grown a duplicate copy. The `## <version>` heading style is asserted too, not merely parsed: `release.yml` matches it literally to extract the release notes, so a section demoted to `###` would read as documented here while the release job published a blank release. |
+| `ChangelogConsistencyTests` | The changelog lives in four files (root `CHANGELOG.md` + one per package). Asserts the shipped version is documented, no changelog runs ahead of `Directory.Build.props`, package changelogs are a subset of the root's, sections are newest-first, and no README has grown a duplicate copy. The `## <version>` heading style is asserted too, not merely parsed: `release.yml` matches it literally to extract the release notes, so a section demoted to `###` would read as documented here while the release job published a blank release. Since the two-line policy it also holds the silent-fix form: `### Changed answers` appears only in a minor (`x.y.0`, `y > 0`), before every other change of its entry, and each row links an issue; headings may be previews (`## 11.0.0-preview.N`), which `ReleaseVersion` orders by SemVer. |
 | `DocumentationLinkTests` | Relative markdown links resolve to real files and `#anchors` to real headings, and the packed READMEs under `src/` carry **no** relative links at all. nuget.org renders those READMEs with nothing to resolve a relative path against, so `[docs](docs/postgresql-indexes.md)` renders as a live link that 404s for every consumer arriving from the package page — while looking correct in the repository. |
 | `DocumentationApiTests` | Every method name the user-facing docs cite exists in the public surface (calls into EF Core, Npgsql, DI and the BCL are an explicit allowlist, so everything else has to be ours), and no provider page cites another provider's *exclusive* API — exclusive meaning after subtracting what core and the other satellite also declare, since `IsUnique`/`HasName`/`IncludeProperties` exist on all three builders. Package validation already fails the pack on a removed public member, so what this adds is the rename fixed in source and forgotten in prose, and the name simply typed wrong. Changelogs are deliberately out of scope: an entry saying 5.0.0 shipped `HasExclusionConstraint` stays true after a later rename, and asserting over them would turn every rename into pressure to rewrite history. |
-| `PackagingConventionTests` | Every package ships its own README as `PackageReadmeFile`; `.targets` ship to both `build/` and `buildTransitive/`, reference a real `IDesignTimeServices` in their own assembly, and set `ForProvider` on satellites but not on core. Package validation is enabled and its baseline is the shipped version or the release before it, never older — the baseline is what `dotnet pack` diffs the public surface against (CP0002 on a removed member), and one left behind stops seeing API added since it. |
+| `PackagingConventionTests` | Every package ships its own README as `PackageReadmeFile`; `.targets` ship to both `build/` and `buildTransitive/`, reference a real `IDesignTimeServices` in their own assembly, and set `ForProvider` on satellites but not on core. No public reference pins a package that only a `PrivateAssets=all` reference brings in, read from each project's restore graph (the shape of a Dependabot security pin; the one deliberate case, core's EF Core `Abstractions` ceiling, is named with its reason). Package validation is enabled and its baseline is the shipped version or the release before it, never older and never a preview — the baseline is what `dotnet pack` diffs the public surface against (CP0002 on a removed member), and one left behind stops seeing API added since it. |
 | `ClaudeMdConsistencyTests` | This file. Prose cannot be asserted, so it checks the falsifiable parts: cited paths and file names exist, annotation keys under a prefix this repo owns are declared somewhere, `Type.Member` references resolve, and the stated size of the Npgsql whitelist matches it. Those are what a rename rots silently — and the count claim had already gone stale by two. |
 | `BuilderApiParityTests` | Every key in a satellite's annotation whitelist is reachable from a builder method. `SqlServer:DataCompression` sat whitelisted with no API for a full release; this catches that class of drift by invoking every builder extension and diffing the keys it sets. |
-| `SecurityPolicyConsistencyTests` | SECURITY.md's supported-versions table names the minor being shipped, and its `< x.y` row meets it; the support-horizon sentence names the EF Core major the core project's dependency floor targets. Both are prose a version bump forgets — the sibling repository shipped 6.2.0 with the table still saying 6.1.x. |
-| `ReleaseWiringConventionTests` | The release path's silent failures: `release.yml` exists under the file name the nuget.org policy names, the publish job is gated on the `nuget` environment, only that job holds `id-token: write`, no job holds both `id-token: write` and `contents: write`, the tag is checked against `Directory.Build.props`, the SBOM tool is pinned in the manifest, and no second publishing path exists under `scripts/`. Rename the environment and nothing else in the build notices — the next tag fails to publish with an authentication error that never mentions the rename. |
+| `SecurityPolicyConsistencyTests` | SECURITY.md's supported-versions table has one `✅` row per supported line, newest first: this branch's line from `PackageValidationBaselineVersion` (the release on NuGet, never the version being prepared), the other line's from `CompanionLineRelease`; never a preview, at most two, adjacent majors, and the `< x.y` row meets the oldest. Each supported line has a "**N.x** targets **EF Core M**" sentence, and for the line this branch prepares M is the core project's dependency floor. All prose a version bump forgets — the sibling repository shipped 6.2.0 with the table still saying 6.1.x. |
+| `ReleaseWiringConventionTests` | The release path's silent failures: `release.yml` exists under the file name the nuget.org policy names, the publish job is gated on the `nuget` environment, only that job holds `id-token: write`, no job holds both `id-token: write` and `contents: write`, the tag is checked against `Directory.Build.props`, the GitHub release step passes `--prerelease --latest=false` for a preview and `--latest=false` for a stable tag older than the current Latest by `sort -V` (script lines only — the comment above it explains both rules, and would pass with the code gone), the SBOM tool is pinned in the manifest, and no second publishing path exists under `scripts/`. Rename the environment and nothing else in the build notices — the next tag fails to publish with an authentication error that never mentions the rename. |
 
 **`test/consumer-smoke-test.sh`** is the only check that exercises *delivery* rather than code. Every
 other layer is verified in isolation and in-process; this one packs the nupkgs, restores them into a
