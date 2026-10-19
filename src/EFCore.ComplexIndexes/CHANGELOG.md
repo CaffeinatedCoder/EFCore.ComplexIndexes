@@ -9,8 +9,9 @@ covers all three packages.
 - **Changed:** `UseComplexIndexes()`, `AddComplexIndexes()` and the design-time
   registration throw `InvalidOperationException` when the EF Core
   they run on is not version 10, naming `CodoMetis.EFCore.SchemaKit` as the package for EF Core 11.
-  The `[10.0.0, 11.0.0)` dependency ranges did not keep EF Core 11 out: a direct reference to it
-  overrides them with NU1608, a warning. The check reads EF Core's version, not the runtime's, so
+  The `[10.0.0, 11.0.0)` dependency ranges did not keep EF Core 11 out: an EF Core 11 prerelease
+  sorts below 11.0.0 and falls inside them, and a direct reference to a release overrides them with
+  only warning NU1608. The check reads EF Core's version, not the runtime's, so
   EF Core 10 on .NET 11 keeps working.
 
 ## 5.4.1
