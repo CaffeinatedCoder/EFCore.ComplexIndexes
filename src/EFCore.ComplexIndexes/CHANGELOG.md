@@ -12,6 +12,10 @@ covers all three packages.
   The `[10.0.0, 11.0.0)` dependency ranges did not keep EF Core 11 out: a direct reference to it
   overrides them with NU1608, a warning. The check reads EF Core's version, not the runtime's, so
   EF Core 10 on .NET 11 keeps working.
+- **New:** the protected `CustomMigrationsModelDiffer.ImplicitFilter`, through which a provider's
+  differ gives an index declared without a filter the one its EF Core convention would give it; the
+  SQL Server satellite uses it for unique indexes over nullable columns. The model's rendering
+  version becomes 3, so the first `migrations add` after upgrading rewrites the snapshot.
 
 ## 5.4.1
 
