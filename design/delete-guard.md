@@ -329,13 +329,30 @@ So in SchemaKit the guard kind is one closed union and one contributor:
 ```csharp
 public closed record RowGuard : ISchemaObject, ISchemaDeclaration<RowGuard>
 {
-    public sealed record OnDelete(Predicate? When)                 : RowGuard;   // event "delete"
-    public sealed record OnUpdate(Predicate? When)                 : RowGuard;   // event "update"
-    public sealed record OnTruncate()                              : RowGuard;   // event "truncate"
-    public sealed record Immutable(IReadOnlyList<string> Paths)    : RowGuard;   // event "immutable"
+    // Provider markers sit on the cases, not on the base (agreed with #61): a truncate guard built by
+    // pg. does not compile into a sqlite. list (CS0029), so P4 holds for the shared type too.
+    public sealed record OnDelete(Predicate? When)              : RowGuard, IPostgresObject, ISqlServerObject, ISqliteObject;  // "delete"
+    public sealed record OnUpdate(Predicate? When)              : RowGuard, IPostgresObject, ISqlServerObject, ISqliteObject;  // "update"
+    public sealed record OnTruncate()                           : RowGuard, IPostgresObject;                                   // "truncate"
+    public sealed record Immutable(IReadOnlyList<string> Paths) : RowGuard, IPostgresObject, ISqlServerObject, ISqliteObject;  // "immutable"
     // Name, Message, Identity, ToAnnotationValue, FromAnnotationValue …
 }
 ```
+
+Identity, agreed with #61: store identity `(event, unresolved when)` for delete and update guards,
+`(update, path)` for an immutable column, the event alone for a truncate guard; name and message stay
+outside it. The diff identity is the resolved descriptor's full value equality, name and message
+included, so a message-only change is drop and create, and a name-only change is the kernel's rename
+(`from.WithName(to.Name) == to`), for which the contributor emits `ALTER TRIGGER … RENAME TO`. An
+operational flag never enters descriptor equality (#61 wraps those in `Operational<T>`). A factory
+overload that takes a predicate has a required `name` parameter with no default, so a missing name
+is CS7036: the application dispatches on it.
+
+Name claims, agreed with #61: a guard returns `Trigger(table, name)`, which PostgreSQL enforces, and
+`Constraint(table, name)`, which is what the application sees as `ConstraintName`. Both are cases of
+the kernel's closed `NameClaim` union, so the guard collides with check, unique and exclusion
+constraints and with EF's own check constraints, under 5.4.0's rule that a collision is reported only
+when one party is SchemaKit's.
 
 - **Additions, not rewrites.** A new case is a new `event` value in the same JSON, a new arm in the
   contributor's own switches (a compile error until written, P9 of #61), and nothing else: the
@@ -370,9 +387,20 @@ compile with a truncate part (#61's P4 at the factory level). One stored format 
 that runs PostgreSQL in production and SQLite in tests declares a guard once and gets it in both,
 which is the reason ROADMAP 6.3 gives for the SQLite package.
 
-Whether the owner is kernel-level (`RowConstraint`) or PostgreSQL-scoped (`Pg.RowConstraint`, as
-#61's section 9 lists it) is the one alignment question left with #61. 5.x does not depend on the
-answer: its annotation is the v1 blob either way.
+**Settled with #61 (PR #63, section 9.7):** the owner is `RowConstraint`, unprefixed. Provider
+unions carry a prefix (`Pg.Index`, `Pg.Exclusion`); a kernel union that every provider renders does
+not. Two conditions keep that consistent with #61:
+
+- **One contributor per owner per context.** Each provider package registers its own `RowConstraint`
+  contributor, and `ForProvider` keeps them apart; the kernel refuses two contributors for one owner
+  in the same context, not across the family.
+- **Provider markers on the cases**, as in 8.1, rather than per-provider factories alone: the value
+  type is shared, so only the case markers make an inexpressible guard a compile error. A
+  compile probe for it belongs in #61's suite.
+
+#61's v1-reader table has the row: `CustomRowConstraint:Constraints` → one `RowGuard` per element,
+`event` picking the case. 5.x writes that blob (section 7); #61 confirmed it will not freeze its v2
+format for one owner before its review.
 
 ## 9. Effort, and whether 4.1 comes first
 
@@ -464,8 +492,8 @@ annotation, with no operations.
 2. **The 5.x rule's exception** in section 10: agreed wording, and the `5.6.0` epic?
 3. **API name:** `HasDeleteGuard` (aligned with SchemaKit's `pg.DeleteGuard`) or 4.2's
    `HasDeleteConstraint` (aligned with how the error surfaces)?
-4. **Owner in SchemaKit:** kernel `RowConstraint` with per-provider factories (section 8.2), or
-   `Pg.RowConstraint`? To settle with #61.
+4. **Owner in SchemaKit:** settled with #61 as kernel `RowConstraint` (section 8.2); it is #61's open
+   question 1 too, so the maintainer's review of #61 confirms both.
 5. **Typed index filters had finding 4 too.** That is #68, fixed for 5.5.0 by PR #69 with EF Core's
    own null compensation (so the index stays usable for EF's query of the same lambda). The guard
    design assumes it is merged.
