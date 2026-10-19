@@ -144,6 +144,29 @@ jobs:
       - name: Scaffold a migration from a throwaway consumer project
         run: ./test/consumer-smoke-test.sh
 
+  # Compile probes for design/schemakit-api.md (#61): each "does not compile" claim of the SchemaKit
+  # design, compiled with Roslyn and checked for its diagnostic. The project targets net11.0 and is
+  # deliberately not in the solution, whose shipping projects build with the .NET 10 SDK, so this job
+  # is the only one that runs it. The SDK is pinned to the build the probes were measured on: they
+  # assert compiler diagnostics, and the compiler ships with the SDK.
+  probes:
+    name: API probes (.NET 11)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5.4.0
+        with:
+          dotnet-version: 11.0.100-rc.2.26504.105
+
+      - name: Compile probes
+        run: >
+          dotnet test test/SchemaKit.ApiProbes/SchemaKit.ApiProbes.csproj
+          --logger "trx;LogFileName=probes.trx"
+          --results-directory TestResults
+
   pack:
     name: Pack
     runs-on: ubuntu-latest

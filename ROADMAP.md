@@ -11,6 +11,14 @@ in 5.4.0, and everything else planned for 5.4.0 — 4.1 to 4.3 — moves to 5.5.
 corrects two claims: the sixth `MigrationsModelDiffer` constructor parameter belongs to EF Core 12,
 not 11, and the temporal annotation constants 4.1 meant to retire are neither public nor dead.
 
+**Note, 2026-10-19.** The "6.0 family" in this document is superseded. EFCore.ComplexIndexes stays
+the EF Core 10 package (5.x), and its EF Core 11 successor is a new package,
+`CodoMetis.EFCore.SchemaKit`, starting at 11.0.0 (#37). Section 5 is no longer the plan: it is input
+to the SchemaKit API design in [design/schemakit-api.md](design/schemakit-api.md) (#61). SchemaKit
+gets an entirely new API rather than this one renamed, and the first SchemaKit preview ships the new
+API only. What stays compatible is the DDL and the snapshot annotations (#58, #59). Section 7 still
+lists what that design leaves room for.
+
 ## 1. Where things stand
 
 **EF Core 11 makes the package name wrong.** `Microsoft.EntityFrameworkCore` 11.0.0-rc.1 was

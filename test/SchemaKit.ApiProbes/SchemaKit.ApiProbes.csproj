@@ -1,0 +1,37 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+    <!--
+        Compile probes for design/schemakit-api.md (#61).
+
+        Prototype/ is the proposed SchemaKit surface as compilable declarations, and Probes/ compiles
+        each forbidden declaration against it with Roslyn and asserts the diagnostic. The project
+        targets net11.0 on its own: it is deliberately not in EFCore.ComplexIndexes.slnx, whose
+        shipping projects stay on net10.0 and build with the .NET 10 SDK. CI runs it in the
+        `API probes (.NET 11)` job of dotnet.yml.
+
+        The prototype is not the implementation. It carries just enough behaviour for the probes
+        and for a handful of sanity tests (annotation keys, DDL shape), and it is deleted once
+        11.0.0-preview.1 ships the real kernel, whose own tests take the probes over.
+    -->
+    <PropertyGroup>
+        <TargetFramework>net11.0</TargetFramework>
+        <ImplicitUsings>enable</ImplicitUsings>
+        <Nullable>enable</Nullable>
+        <IsPackable>false</IsPackable>
+        <NoWarn>$(NoWarn);1591</NoWarn>
+        <RootNamespace>SchemaKit.ApiProbes</RootNamespace>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="11.0.0-rc.2" />
+        <!-- The compiler the probes drive in-process: the one the rc.2 SDK ships, from the
+             dotnet-tools feed (see nuget.config for why not nuget.org's 5.9.0). -->
+        <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="5.12.0-1.26504.105" />
+        <PackageReference Include="MSTest" Version="4.3.3" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <Using Include="Microsoft.VisualStudio.TestTools.UnitTesting" />
+    </ItemGroup>
+
+</Project>
