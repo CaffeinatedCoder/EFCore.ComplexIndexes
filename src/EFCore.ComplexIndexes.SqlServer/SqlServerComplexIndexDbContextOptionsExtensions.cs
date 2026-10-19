@@ -18,8 +18,13 @@ public static class SqlServerComplexIndexDbContextOptionsExtensions
         /// Registers the SQL Server complex-index differ at runtime. Call it after the provider:
         /// <code>options.UseSqlServer(connectionString).UseSqlServerComplexIndexes();</code>
         /// </summary>
+        /// <exception cref="InvalidOperationException">EF Core's major version is not 10. This package
+        /// serves EF Core 10 only; for EF Core 11 and later, use <c>CodoMetis.EFCore.SchemaKit</c>.</exception>
         public DbContextOptionsBuilder UseSqlServerComplexIndexes()
-            => optionsBuilder.ReplaceService<IMigrationsModelDiffer, SqlServerComplexIndexMigrationsModelDiffer>();
+        {
+            EfCoreVersionGuard.ThrowIfUnsupported();
+            return optionsBuilder.ReplaceService<IMigrationsModelDiffer, SqlServerComplexIndexMigrationsModelDiffer>();
+        }
     }
 
     extension<TContext>(DbContextOptionsBuilder<TContext> optionsBuilder) where TContext : DbContext
@@ -36,7 +41,12 @@ public static class SqlServerComplexIndexDbContextOptionsExtensions
         /// equivalent of <c>UseSqlServerComplexIndexes()</c> for applications that build their own
         /// <c>IServiceProvider</c> and pass it to <c>UseInternalServiceProvider</c>.
         /// </summary>
+        /// <exception cref="InvalidOperationException">EF Core's major version is not 10. This package
+        /// serves EF Core 10 only; for EF Core 11 and later, use <c>CodoMetis.EFCore.SchemaKit</c>.</exception>
         public IServiceCollection AddSqlServerComplexIndexes()
-            => services.AddScoped<IMigrationsModelDiffer, SqlServerComplexIndexMigrationsModelDiffer>();
+        {
+            EfCoreVersionGuard.ThrowIfUnsupported();
+            return services.AddScoped<IMigrationsModelDiffer, SqlServerComplexIndexMigrationsModelDiffer>();
+        }
     }
 }

@@ -4,6 +4,15 @@ Changes to the PostgreSQL satellite, newest first. The
 [root changelog](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/CHANGELOG.md)
 covers all three packages.
 
+## 5.5.0
+
+- **Changed:** `UseNpgsqlComplexIndexes()`, `AddNpgsqlComplexIndexes()` and the
+  design-time registration throw `InvalidOperationException` when the EF Core
+  they run on is not version 10, naming `CodoMetis.EFCore.SchemaKit` as the package for EF Core 11.
+  The `[10.0.0, 11.0.0)` dependency ranges did not keep EF Core 11 out: a direct reference to it
+  overrides them with NU1608, a warning. The check reads EF Core's version, not the runtime's, so
+  EF Core 10 on .NET 11 keeps working.
+
 ## 5.4.0
 
 - **Fixed:** indexes on `ToJson()` members are written the way Npgsql's queries read the member —

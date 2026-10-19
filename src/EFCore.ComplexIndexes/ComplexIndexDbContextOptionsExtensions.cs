@@ -32,8 +32,13 @@ public static class ComplexIndexDbContextOptionsExtensions
         /// indexes declared with this package. Call it after the provider:
         /// <code>options.UseSqlite(connection).UseComplexIndexes();</code>
         /// </summary>
+        /// <exception cref="InvalidOperationException">EF Core's major version is not 10. This package
+        /// serves EF Core 10 only; for EF Core 11 and later, use <c>CodoMetis.EFCore.SchemaKit</c>.</exception>
         public DbContextOptionsBuilder UseComplexIndexes()
-            => optionsBuilder.ReplaceService<IMigrationsModelDiffer, CustomMigrationsModelDiffer>();
+        {
+            EfCoreVersionGuard.ThrowIfUnsupported();
+            return optionsBuilder.ReplaceService<IMigrationsModelDiffer, CustomMigrationsModelDiffer>();
+        }
     }
 
     extension<TContext>(DbContextOptionsBuilder<TContext> optionsBuilder) where TContext : DbContext
@@ -50,7 +55,12 @@ public static class ComplexIndexDbContextOptionsExtensions
         /// of <c>UseComplexIndexes()</c> for applications that build their own
         /// <c>IServiceProvider</c> and pass it to <c>UseInternalServiceProvider</c>.
         /// </summary>
+        /// <exception cref="InvalidOperationException">EF Core's major version is not 10. This package
+        /// serves EF Core 10 only; for EF Core 11 and later, use <c>CodoMetis.EFCore.SchemaKit</c>.</exception>
         public IServiceCollection AddComplexIndexes()
-            => services.AddScoped<IMigrationsModelDiffer, CustomMigrationsModelDiffer>();
+        {
+            EfCoreVersionGuard.ThrowIfUnsupported();
+            return services.AddScoped<IMigrationsModelDiffer, CustomMigrationsModelDiffer>();
+        }
     }
 }

@@ -21,10 +21,15 @@ public static class NpgsqlComplexIndexDbContextOptionsExtensions
         /// indexes and constraints. Call this after <c>UseNpgsql(...)</c>:
         /// <code>options.UseNpgsql(connectionString).UseNpgsqlComplexIndexes();</code>
         /// </summary>
+        /// <exception cref="InvalidOperationException">EF Core's major version is not 10. This package
+        /// serves EF Core 10 only; for EF Core 11 and later, use <c>CodoMetis.EFCore.SchemaKit</c>.</exception>
         public DbContextOptionsBuilder UseNpgsqlComplexIndexes()
-            => optionsBuilder
-              .ReplaceService<IMigrationsSqlGenerator, NpgsqlComplexIndexSqlGenerator>()
-              .ReplaceService<IMigrationsModelDiffer, NpgsqlComplexIndexMigrationsModelDiffer>();
+        {
+            EfCoreVersionGuard.ThrowIfUnsupported();
+            return optionsBuilder
+                  .ReplaceService<IMigrationsSqlGenerator, NpgsqlComplexIndexSqlGenerator>()
+                  .ReplaceService<IMigrationsModelDiffer, NpgsqlComplexIndexMigrationsModelDiffer>();
+        }
     }
 
     extension<TContext>(DbContextOptionsBuilder<TContext> optionsBuilder) where TContext : DbContext
@@ -41,9 +46,14 @@ public static class NpgsqlComplexIndexDbContextOptionsExtensions
         /// custom internal service provider — the equivalent of <c>UseNpgsqlComplexIndexes()</c>
         /// for applications that build their own <c>IServiceProvider</c>.
         /// </summary>
+        /// <exception cref="InvalidOperationException">EF Core's major version is not 10. This package
+        /// serves EF Core 10 only; for EF Core 11 and later, use <c>CodoMetis.EFCore.SchemaKit</c>.</exception>
         public IServiceCollection AddNpgsqlComplexIndexes()
-            => services
-              .AddScoped<IMigrationsSqlGenerator, NpgsqlComplexIndexSqlGenerator>()
-              .AddScoped<IMigrationsModelDiffer, NpgsqlComplexIndexMigrationsModelDiffer>();
+        {
+            EfCoreVersionGuard.ThrowIfUnsupported();
+            return services
+                  .AddScoped<IMigrationsSqlGenerator, NpgsqlComplexIndexSqlGenerator>()
+                  .AddScoped<IMigrationsModelDiffer, NpgsqlComplexIndexMigrationsModelDiffer>();
+        }
     }
 }

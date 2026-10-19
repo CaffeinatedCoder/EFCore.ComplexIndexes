@@ -29,6 +29,8 @@ internal static class ComplexIndexDesignTimeRegistration
     /// </summary>
     public static void AddCoreDiffer(IServiceCollection services)
     {
+        EfCoreVersionGuard.ThrowIfUnsupported();
+
         if (services.Any(IsSatelliteDiffer))
             return;
 
@@ -42,6 +44,8 @@ internal static class ComplexIndexDesignTimeRegistration
     public static void AddSatelliteDiffer<TDiffer>(IServiceCollection services)
         where TDiffer : CustomMigrationsModelDiffer
     {
+        EfCoreVersionGuard.ThrowIfUnsupported();
+
         for (var i = services.Count - 1; i >= 0; i--)
         {
             if (services[i].ServiceType        == typeof(IMigrationsModelDiffer)

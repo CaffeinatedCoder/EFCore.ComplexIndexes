@@ -8,6 +8,9 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![.NET 10](https://img.shields.io/badge/.NET-10-512BD4)](https://dotnet.microsoft.com)
 
+> **On EF Core 11 or later?** Use `CodoMetis.EFCore.SchemaKit`, the successor to this package,
+> which serves EF Core 10 only and from 5.5.0 refuses to register on another major.
+
 ## Index support for complex type properties in EF Core migrations — the missing piece for value object-driven architectures.
 EF Core 8.0 introduced complex properties, but migration tooling doesn't automatically generate indexes for these nested value objects. This NuGet package bridges that gap with a clean, fluent API for defining single-column, composite, unique, and filtered indexes directly on complex type properties — and, on PostgreSQL, **expression (functional) indexes**.
 
