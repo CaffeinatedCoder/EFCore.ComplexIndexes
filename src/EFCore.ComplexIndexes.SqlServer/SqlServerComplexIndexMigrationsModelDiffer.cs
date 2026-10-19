@@ -54,6 +54,13 @@ public class SqlServerComplexIndexMigrationsModelDiffer(
     protected override bool CanRenameIndexes => true;
 
     /// <summary>
+    /// An <c>ALTER COLUMN</c> on a column the index reads: SQL Server refuses it while the index
+    /// exists (Msg 5074), and EF drops only its own indexes around it.
+    /// </summary>
+    protected override bool RequiresIndexRecreation(MigrationOperation operation, IReadOnlySet<string> columns)
+        => operation is AlterColumnOperation alter && columns.Contains(alter.Name);
+
+    /// <summary>
     /// SQL Server keeps index names unique per table, so two tables may each carry an index of the
     /// same name.
     /// </summary>

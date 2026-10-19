@@ -12,6 +12,9 @@ covers all three packages.
   The `[10.0.0, 11.0.0)` dependency ranges did not keep EF Core 11 out: a direct reference to it
   overrides them with NU1608, a warning. The check reads EF Core's version, not the runtime's, so
   EF Core 10 on .NET 11 keeps working.
+- **New:** the protected `CustomMigrationsModelDiffer.RequiresIndexRecreation`, through which a
+  provider's differ asks for an unchanged complex index to be dropped before a base operation that
+  cannot run while it exists, and created after it. Off by default.
 
 ## 5.4.1
 

@@ -136,6 +136,28 @@ public class CustomMigrationsModelDiffer(
             }
         }
 
+        // An unchanged index can still be in the way of a base operation, because EF does not know
+        // it exists and so never moves it: SQL Server refuses to alter a column an index uses. Such
+        // an index is dropped before the base operations and created after them, like a changed one.
+        if (target is not null)
+        {
+            foreach (var (kept, origin) in normalizedSource)
+            {
+                if (!targetIndexes.TryGetValue(kept, out var current) || droppedTables.Contains(origin))
+                    continue;
+
+                var columns = ColumnsReadBy(target, current);
+                if (!operations.Any(o => o is ITableMigrationOperation table
+                                      && table.Table  == current.TableName
+                                      && table.Schema == current.Schema
+                                      && RequiresIndexRecreation(o, columns)))
+                    continue;
+
+                pendingDrops.Add(kept);
+                pendingCreates.Add(current);
+            }
+        }
+
         // Placed before the base operations: an index that moves between a native HasIndex and a
         // complex-index declaration surfaces as a base-emitted CreateIndex plus our DropIndex of the
         // same name, and a removed complex property surfaces as a base DropColumn that would take
@@ -245,6 +267,40 @@ public class CustomMigrationsModelDiffer(
     /// <c>HasIndex</c> declarations are not this package's to police.
     /// </remarks>
     protected virtual void ValidateCreatedIndexes(IReadOnlyList<CreateIndexOperation> operations) { }
+
+    /// <summary>
+    /// Whether a base operation on an index's table cannot run while the index exists, so that an
+    /// unchanged complex index has to be dropped before the base operations and created again after
+    /// them.
+    /// </summary>
+    /// <remarks>
+    /// EF Core moves its own indexes out of the way of its operations, and a complex index is not
+    /// one of them. Off in the core: PostgreSQL, SQLite's in-place operations and MySQL need nothing.
+    /// The SQL Server satellite turns it on for <c>ALTER COLUMN</c>, which SQL Server refuses on a
+    /// column an index uses.
+    /// </remarks>
+    /// <param name="operation">A base operation on the index's table.</param>
+    /// <param name="columns">Every column the index reads: its key columns, included columns, and the columns its filter or expressions name.</param>
+    /// <returns><c>true</c> to drop the index before the base operations and create it after them.</returns>
+    protected virtual bool RequiresIndexRecreation(MigrationOperation operation, IReadOnlySet<string> columns) => false;
+
+    // Key columns, every included column (an array-valued provider option), and the table's
+    // columns that the filter or an expression part names. The text match over-approximates, which
+    // costs at most a needless rebuild.
+    private static HashSet<string> ColumnsReadBy(IRelationalModel target, IndexDescriptor index)
+    {
+        var columns = index.ColumnNames.ToHashSet(StringComparer.Ordinal);
+
+        foreach (var value in index.ProviderAnnotations.Values)
+            if (value is string[] names)
+                columns.UnionWith(names);
+
+        var text = string.Join(" ", index.Parts.Where(p => p.IsExpression).Select(p => p.Value).Append(index.Filter ?? ""));
+        if (text.Length > 0 && target.FindTable(index.TableName, index.Schema) is { } table)
+            columns.UnionWith(table.Columns.Select(c => c.Name).Where(name => text.Contains(name, StringComparison.Ordinal)));
+
+        return columns;
+    }
 
     /// <summary>
     /// Whether name-only index changes are emitted as <see cref="RenameIndexOperation"/> instead of
