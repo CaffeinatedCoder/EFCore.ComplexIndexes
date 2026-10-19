@@ -173,7 +173,13 @@ builder.ComplexProperty(x => x.Address, c => c.Property(a => a.City)
 The builders are not generic, so `HasFilter<TEntity>` takes the entity type explicitly. The subset
 is small and fails at the declaration: `==`/`!=` (against `null`: `IS NULL`/`IS NOT NULL`), `<`,
 `<=`, `>`, `>=`, `&&`, `||`, `!`, boolean properties, captured booleans, and on the operands the
-string operations and constants a typed expression index accepts. Two things are refused on
+string operations and constants a typed expression index accepts. Comparisons keep C#'s answer for null,
+written as EF Core writes the same lambda in a query, so the index covers exactly the rows that
+query selects: on a `string?`, `x.Kind != "federated"` becomes
+`("Kind" <> 'federated' OR "Kind" IS NULL)`, a negated comparison is pushed down to it, and a
+captured variable holding null compares with `IS NULL`. Whether an operand can be null is read from
+its C# declaration (a `Nullable<T>`, or a reference type not annotated non-nullable); a `string`
+declared non-nullable but mapped to a nullable column is compared as non-nullable. Two things are refused on
 purpose. An enum comparison: how an enum is stored depends on the property's value conversion,
 which a filter cannot see, so `Status == Status.Active` would compare a text column against `0`
 and fail when the migration is applied — write the stored value in the string overload. And a

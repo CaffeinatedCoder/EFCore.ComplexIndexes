@@ -1,3 +1,4 @@
+using System.Linq.Expressions;
 using EFCore.ComplexIndexes.PostgreSQL;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Migrations.Operations;
@@ -86,6 +87,92 @@ public class NpgsqlTypedFilterTests
         Assert.AreEqual("\"revoked_at\" IS NULL", filters["ix_composite"]);
         Assert.AreEqual("\"is_deleted\"", filters["ix_builder"]);
     }
+
+    // ── Null semantics ──
+
+    private class Account
+    {
+        public Guid    Id        { get; set; }
+        public string  Email     { get; set; } = "";
+        public string? Kind      { get; set; }
+        public bool?   Flag      { get; set; }
+        public int     Count     { get; set; }
+        public int?    Maybe     { get; set; }
+        public string? Name      { get; set; }
+        public bool    IsDeleted { get; set; }
+    }
+
+    private static readonly string? NullMarker = null;
+
+    // Each predicate here once translated with SQL's three-valued logic: a filter that is NULL for a
+    // row leaves the row out of the index, so `Kind != "federated"` stopped covering rows whose Kind
+    // is null although the lambda is true for them, and a unique index over "live" rows enforced
+    // nothing on exactly those rows.
+    private static readonly Dictionary<string, Expression<Func<Account, bool>>> NullablePredicates = new()
+    {
+        ["ix_not_equal"]      = x => x.Kind != "federated",
+        ["ix_bool_not_equal"] = x => x.Flag != true,
+        ["ix_not_or"]         = x => !(x.Count == 1 || x.Maybe == 2),
+        ["ix_captured_null"]  = x => x.Name == NullMarker,
+        ["ix_columns"]        = x => x.Kind != x.Name,
+    };
+
+    private class NullSemanticsContext(DbContextOptions<NullSemanticsContext> options) : DbContext(options)
+    {
+        public DbSet<Account> Accounts => Set<Account>();
+
+        protected override void OnModelCreating(ModelBuilder modelBuilder) =>
+            modelBuilder.Entity<Account>(b =>
+            {
+                b.ToTable("accounts");
+                b.HasKey(x => x.Id);
+                foreach (var (name, predicate) in NullablePredicates)
+                    b.HasComplexIndex(x => x.Email, predicate, indexName: name);
+
+                b.HasComplexIndex(x => x.Email, x => !(x.Maybe > 5), indexName: "ix_not_greater");
+                b.HasComplexIndex(x => x.Email, x => x.Count != 1 && !(x.Count > 5) && !x.IsDeleted, indexName: "ix_not_nullable");
+                b.HasComplexIndex(x => x.Email, x => x.Kind != NullMarker, indexName: "ix_captured_not_null");
+            });
+    }
+
+    [TestMethod(DisplayName = "A comparison with a nullable operand keeps C#'s answer for null rows")]
+    public void Nullable_operands_keep_csharp_semantics()
+    {
+        var filters = Filters<NullSemanticsContext>();
+
+        Assert.AreEqual("(\"Kind\" <> 'federated' OR \"Kind\" IS NULL)", filters["ix_not_equal"]);
+        Assert.AreEqual("(\"Flag\" <> TRUE OR \"Flag\" IS NULL)", filters["ix_bool_not_equal"]);
+        Assert.AreEqual("(\"Count\" <> 1 AND (\"Maybe\" <> 2 OR \"Maybe\" IS NULL))", filters["ix_not_or"]);
+        Assert.AreEqual("\"Name\" IS NULL", filters["ix_captured_null"]);
+        Assert.AreEqual("\"Kind\" IS NOT NULL", filters["ix_captured_not_null"]);
+        Assert.AreEqual("(\"Maybe\" <= 5 OR \"Maybe\" IS NULL)", filters["ix_not_greater"]);
+    }
+
+    [TestMethod(DisplayName = "A filter over nullable operands is the one EF Core writes for the same lambda")]
+    public void Nullable_operands_match_ef_core_queries()
+    {
+        var filters = Filters<NullSemanticsContext>();
+
+        using var context = new NullSemanticsContext(new DbContextOptionsBuilder<NullSemanticsContext>()
+                                                    .UseNpgsql(MigrationHarness.NpgsqlConnection).Options);
+
+        foreach (var (name, predicate) in NullablePredicates)
+        {
+            var query = context.Accounts.Where(predicate).ToQueryString();
+            var where = query[(query.IndexOf("WHERE ", StringComparison.Ordinal) + "WHERE ".Length)..].Replace("a.", "");
+
+            // Parentheses differ (the filter brackets every AND/OR), and EF writes the captured
+            // null as a parameter-free IS NULL; the tokens and their order must not.
+            Assert.AreEqual(Normalize(where), Normalize(filters[name]!), name);
+        }
+
+        static string Normalize(string sql) => string.Concat(sql.Where(c => c is not ('(' or ')' or ' ' or '\n')));
+    }
+
+    [TestMethod(DisplayName = "Operands that cannot be null translate as before")]
+    public void Non_nullable_operands_are_unchanged()
+        => Assert.AreEqual("((\"Count\" <> 1 AND NOT (\"Count\" > 5)) AND NOT (\"IsDeleted\"))",
+                           Filters<NullSemanticsContext>()["ix_not_nullable"]);
 
     [TestMethod(DisplayName = "Expression indexes and exclusion constraints take the same predicates")]
     public void Expression_indexes_and_constraints_take_predicates()
