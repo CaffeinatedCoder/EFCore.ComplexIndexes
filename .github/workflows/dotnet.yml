@@ -164,6 +164,7 @@ jobs:
       - name: Compile probes
         run: >
           dotnet test test/SchemaKit.ApiProbes/SchemaKit.ApiProbes.csproj
+          -p:SchemaKitProbesRequired=true
           --logger "trx;LogFileName=probes.trx"
           --results-directory TestResults
 

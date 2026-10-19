@@ -1,4 +1,4 @@
-<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk" InitialTargets="RequireSchemaKitProbes">
 
     <!--
         Compile probes for design/schemakit-api.md (#61).
@@ -13,8 +13,24 @@
         and for a handful of sanity tests (annotation keys, DDL shape), and it is deleted once
         11.0.0-preview.1 ships the real kernel, whose own tests take the probes over.
     -->
+
+    <!--
+        On an SDK older than 11 the project restores as an empty net10.0 project. GitHub's automatic
+        dependency submission restores every *.csproj in the repository with the runner's default SDK
+        (10, as long as there is no root global.json), and a net11.0 target fails it with NETSDK1045.
+        Pinning SDK 11 in a root global.json would move every other job off the .NET 10 SDK, so the
+        project steps aside instead. Building it on SDK 10 compiles nothing and runs no test, so the
+        probes job passes SchemaKitProbesRequired=true, and an SDK that would skip them fails the
+        build rather than reporting zero tests as a pass.
+    -->
     <PropertyGroup>
-        <TargetFramework>net11.0</TargetFramework>
+        <SchemaKitProbesEnabled Condition="$([MSBuild]::VersionGreaterThanOrEquals('$(NETCoreSdkVersion)', '11.0'))">true</SchemaKitProbesEnabled>
+    </PropertyGroup>
+
+    <PropertyGroup>
+        <TargetFramework Condition="'$(SchemaKitProbesEnabled)' == 'true'">net11.0</TargetFramework>
+        <TargetFramework Condition="'$(SchemaKitProbesEnabled)' != 'true'">net10.0</TargetFramework>
+        <EnableDefaultCompileItems Condition="'$(SchemaKitProbesEnabled)' != 'true'">false</EnableDefaultCompileItems>
         <ImplicitUsings>enable</ImplicitUsings>
         <Nullable>enable</Nullable>
         <IsPackable>false</IsPackable>
@@ -22,7 +38,7 @@
         <RootNamespace>SchemaKit.ApiProbes</RootNamespace>
     </PropertyGroup>
 
-    <ItemGroup>
+    <ItemGroup Condition="'$(SchemaKitProbesEnabled)' == 'true'">
         <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="11.0.0-rc.2" />
         <!-- The compiler the probes drive in-process: the one the rc.2 SDK ships, from the
              dotnet-tools feed (see nuget.config for why not nuget.org's 5.9.0). -->
@@ -30,8 +46,15 @@
         <PackageReference Include="MSTest" Version="4.3.3" />
     </ItemGroup>
 
-    <ItemGroup>
+    <ItemGroup Condition="'$(SchemaKitProbesEnabled)' == 'true'">
         <Using Include="Microsoft.VisualStudio.TestTools.UnitTesting" />
     </ItemGroup>
+
+    <!-- An initial target, so it runs before Restore and VSTest too: `dotnet test` does not build a
+         project that is not a test project, which is what this one is on an older SDK. -->
+    <Target Name="RequireSchemaKitProbes"
+            Condition="'$(SchemaKitProbesRequired)' == 'true' and '$(SchemaKitProbesEnabled)' != 'true'">
+        <Error Text="The SchemaKit compile probes need the .NET 11 SDK; this build runs SDK $(NETCoreSdkVersion), which would skip every probe." />
+    </Target>
 
 </Project>
