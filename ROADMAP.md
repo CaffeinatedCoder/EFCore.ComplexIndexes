@@ -1,4 +1,4 @@
-# Roadmap: 5.5.0, then the 6.0 family
+# Roadmap: 5.5.0, then the SchemaKit family
 
 Written 2026-09-19 against 5.3.0. A plan, not a promise: every item is marked **Decided**,
 **Proposed** or **Open**, and the line references are as of 5.3.0 and will rot. The plan answers
@@ -10,6 +10,14 @@ Updated 2026-09-22 with 5.4.1. 5.4.0 and 5.4.1 are fix releases: the 4.0 name re
 in 5.4.0, and everything else planned for 5.4.0 — 4.1 to 4.3 — moves to 5.5.0. The same update
 corrects two claims: the sixth `MigrationsModelDiffer` constructor parameter belongs to EF Core 12,
 not 11, and the temporal annotation constants 4.1 meant to retire are neither public nor dead.
+
+Updated 2026-10-19: **the family is a spin-off at the EF Core 11 boundary, not a rename on EF
+Core 10.** `EFCore.ComplexIndexes` stays the EF Core 10 package: 5.5.0 makes it refuse EF Core 11,
+and after that `release/5.x` takes fixes only until EF Core 10 leaves support (#36). The family
+ships as `CodoMetis.EFCore.SchemaKit` from 11.0.0 on EF Core 11, on `main` (#37), without the
+features EF Core 11 and Npgsql 11 now do natively. D3 to D11 are decided accordingly (section 2).
+Where the text below says 6.0, 6.0.0 or 6.x, read SchemaKit 11.0.0 or 11.x. Where it plans a feature
+for 5.5.0 (sections 4.1 to 4.3), read SchemaKit 11.x.
 
 ## 1. Where things stand
 
@@ -61,48 +69,61 @@ trigger does not, and is a non-goal.
 | # | Decision | Choice | Status |
 |---|---|---|---|
 | D0 | Name-uniqueness validation for temporal constraints | Ship first, before 4.1, as its own fix | Shipped in 5.4.0 |
-| D1 | Where the delete guard ships first | 5.5.0, PostgreSQL package, design-time `SqlOperation`s | Proposed |
+| D1 | Where the delete guard ships first | SchemaKit 11.x, PostgreSQL package, design-time `SqlOperation`s (was 5.5.0; 5.x takes no features after 5.5.0). Revisit if the consuming application stays on EF Core 10 | Proposed |
 | D2 | What precedes it | One generic descriptor differ replacing the four copies | Proposed |
-| D3 | Rename | Yes, at 6.0.0, whole family, new namespaces | Proposed |
-| D4 | The name | Working name `CodoMetis.EFCore.Syntagma`; shortlist in 5.1 (SchemaKit, Beyond, Perissos, Sterigma, Eutaxia) | Open, Ricardo's call |
-| D5 | Package count | Three: kernel, PostgreSQL, SQL Server; no per-feature packages | Proposed |
-| D6 | Old ids | Frozen at 5.x, deprecated on nuget.org with the alternate set; no forwarder packages | Proposed |
-| D7 | EF Core 10 and 11 | One codebase, `net10.0;net11.0` multi-target, one version stream from 6.x | Proposed |
-| D8 | 6.0.0 timing | On EF Core 10 first, decoupled from EF 11 GA; the `net11.0` target lands in the first 6.x after GA | Proposed |
-| D9 | Version numbering | 6.0.0 continues the sequence; majors do not track EF majors under D7 | Proposed |
-| D10 | Plugin host | Contributors as multiple DI registrations through an options extension, EF's own plugin pattern | Proposed |
-| D11 | Snapshot format | One annotation per declaration from 6.0; the 5.x blob is read forever | Proposed |
+| D3 | Rename | Yes, as a new package at the EF Core 11 boundary (11.0.0), not on EF Core 10; whole family, new namespaces | Decided 2026-10-19 |
+| D4 | The name | `CodoMetis.EFCore.SchemaKit` (5.1) | Decided 2026-10-19 |
+| D5 | Package count | Three: kernel, PostgreSQL, SQL Server; no per-feature packages | Decided 2026-10-19 |
+| D6 | Old ids | Stay the supported EF Core 10 package, fixes only after 5.5.0; deprecated with SchemaKit as the alternate only when EF Core 10 leaves support; no forwarder packages | Decided 2026-10-19 |
+| D7 | EF Core 10 and 11 | Two lines: `EFCore.ComplexIndexes` 5.x on EF Core 10 (`release/5.x`), SchemaKit 11.x on EF Core 11 (`main`); a fix for both goes to `main` first and is cherry-picked with `-x` | Decided 2026-10-19 |
+| D8 | SchemaKit timing | `11.0.0-preview.N` during the EF Core 11 RCs; 11.0.0 when ready, not tied to EF Core 11's GA day | Decided 2026-10-19 |
+| D9 | Version numbering | SchemaKit starts at 11.0.0 and tracks the EF Core major; the old ids continue as 5.x | Decided 2026-10-19 |
+| D10 | Plugin host | Contributors as multiple DI registrations through an options extension, as a **public** contract other packages build on (#56), plus a startup check that SchemaKit still owns the differ and the generator (#57) | Decided 2026-10-19 |
+| D11 | Snapshot format | One annotation per declaration from 11.0.0 (#58); the 5.x blob is read forever | Decided 2026-10-19 |
 | D12 | Non-goals | Generic `HasTrigger(body)` and trigger bodies with subqueries; trigger templates whose semantics the package owns are not a non-goal (7.5, 7.8) | Decided |
-| D13 | Horizon items (section 7) | Unscheduled; enter 6.x by demand; partitioning gated by a spike | Proposed |
+| D13 | Horizon items (section 7) | Unscheduled; enter SchemaKit 11.x by demand; partitioning gated by a spike | Proposed |
 
 ## 3. Release lines and versioning
 
-**5.x (old ids, EF Core 10, `net10.0`).** Received 4.0 in 5.4.0; receives 5.5.0 with the rest of
-section 4, then fixes.
-After 6.0.0 ships it receives security and data-safety fixes only, until the consumer base has
-moved or EF Core 10 leaves support. The dependency ceiling `[10.0.0, 11.0.0)` stays.
+Decided 2026-10-19 (#36, #37); this replaces the one-stream plan of 2026-09-19.
 
-**6.x (new ids).** 6.0.0 is the rename and the split on EF Core 10 (D8). The first 6.x after EF
-Core 11 GA adds `net11.0` to `TargetFrameworks` with the EF 11 dependency floor `[11.0.0, 12.0.0)`
-on that target (D7). Because EF Core 11 requires `net11.0` and EF Core 10 is `net10.0`, the TFM
-selects the EF major, and one package serves both. The known edge: an application on `net11.0`
-that still runs EF Core 10 gets the `net11.0` asset and cannot use the package; it can stay on 5.x,
-whose `net10.0` asset is compatible with a `net11.0` consumer. Document it, do not engineer around
-it.
+**`EFCore.ComplexIndexes` 5.x (EF Core 10, `net10.0`, `release/5.x`).** 5.4.0 shipped 4.0. 5.5.0
+is the last minor with a change of its own: every registration entry point refuses an EF Core major
+other than 10 and names SchemaKit (#55). The dependency ceilings `[10.0.0, 11.0.0)` stay, but they
+don't keep an EF Core 11 application out on their own: a direct reference to Npgsql 11 overrides a
+transitive ceiling with NU1608, a warning. The check is on the EF Core major, never on the runtime,
+because EF Core 10 on .NET 11 is a supported combination and its users belong to this line. After
+5.5.0 the line takes fixes only, until EF Core 10 leaves support (2028-11-10). Then the ids are
+deprecated with SchemaKit as the alternate.
 
-**Why one stream and not two (D7).** Two streams mean a cherry-pick per fix and a backport
-decision per feature for two years, for one maintainer. Multi-targeting costs a second test run
-and a second SDK on the runner. The differences between the two builds are known and small:
-`IEntityType.FindIndex` widening to `IReadOnlyPropertyBase` (source-compatible) and the
-native-index handover in section 8. They live behind
-`NET11_0_OR_GREATER`.
+**`CodoMetis.EFCore.SchemaKit` 11.x (EF Core 11, `net11.0`, `main`).** It starts at 11.0.0 and
+tracks the EF Core major from then on, as Npgsql and CodoMetis.ValueRanges do. It ships
+`11.0.0-preview.N` during the EF Core 11 RCs and 11.0.0 when it is ready (D8). Nobody is stranded
+meanwhile, because 5.x serves EF Core 10.
 
-**Branching.** `main` carries 6.x; `support/5.x` carries the old line. `release.yml` verifies the
-tag against `Directory.Build.props` on the tagged commit and discovers packages from the pack
-output, so both branches release unchanged. Branch protection and the required `Test
-(ubuntu-latest)` check have to be configured on `support/5.x` by hand.
+It leaves out what EF Core 11 and Npgsql 11 do natively (#39), with no `[Obsolete]` shims, since it
+is a new package. Consumers make that move in the same upgrade in which they swap packages, and the
+swap adds no migration (#59). It keeps what stays unique, and it takes the section 4 features that
+were planned for 5.5.0.
 
-## 4. Phase 1: 5.5.0 on EF Core 10
+**Why two lines and not one multi-targeted stream (D7).** The 2026-09-19 plan chose one
+`net10.0;net11.0` stream to avoid a cherry-pick per fix. Two things changed that:
+
+- The surface genuinely differs per EF Core major. Complex-type indexes and temporal constraints
+  are native on 11, so one package would carry a different API per target framework.
+- The rename can ride the platform upgrade. A consumer then swaps packages and moves to the native
+  APIs in one step, instead of renaming on EF Core 10 and rewriting again on 11.
+
+The cost (a cherry-pick per fix that applies to both) is accepted. It stays small because 5.x takes
+fixes only after 5.5.0.
+
+**Branching.** At the `v5.5.0` tag, `release/5.x` is cut and `main` becomes SchemaKit (#38). The
+long-lived `net11` branch of the 2026-10-18 plan is dropped, as in CodoMetis.ValueRanges.
+`release.yml` verifies the tag against `Directory.Build.props` on the tagged commit and discovers
+packages from the pack output, so both branches release unchanged. Branch protection and the
+required `Test (ubuntu-latest)` check have to be configured on `release/5.x` by hand.
+
+## 4. Phase 1: the next features (planned for 5.5.0; now SchemaKit 11.x, section 3)
 
 ### 4.0 Fix first: constraint names are not validated for the temporal kinds (D0, shipped in 5.4.0)
 
@@ -303,7 +324,7 @@ a `migration-safety-review` checklist item for row constraints.
   value (it is in consumers' migrations) and move the choice of value behind a provider virtual in
   6.0 (section 5.4).
 
-## 5. Phase 2: 6.0.0, the family
+## 5. Phase 2: SchemaKit 11.0.0, the family
 
 ### 5.1 The name (D4)
 
@@ -323,25 +344,36 @@ an EF-ecosystem search for the extension words):
 
 | Candidate | Flavour | Sense | Collisions | Verdict |
 |---|---|---|---|---|
-| **`CodoMetis.EFCore.Syntagma`** | Greek, σύνταγμα | an ordered arrangement, a composition; in modern Greek, a constitution. Indexes are the ordering, constraints and policies the constitution | none in software; Syntagma Square | **Working name.** Pronounceable (sin-TAG-ma), memorable, true for every item in section 7 |
-| **`CodoMetis.EFCore.SchemaKit`** | Kit | the kit of schema objects EF leaves out | three small repositories, none .NET | The telling choice; nothing to explain |
+| **`CodoMetis.EFCore.SchemaKit`** | Kit | the kit of schema objects EF leaves out | three small repositories, none .NET | **Decided 2026-10-19.** The telling choice; nothing to explain |
+| `CodoMetis.EFCore.Syntagma` | Greek, σύνταγμα | an ordered arrangement, a composition; in modern Greek, a constitution. Indexes are the ordering, constraints and policies the constitution | none in software; Syntagma Square | Working name until 2026-10-19. Pronounceable (sin-TAG-ma), memorable, true for every item in section 7, but every listing would need the tagline to explain it |
 | **`CodoMetis.EFCore.Beyond`** | English | past what EF Core does on its own | none | The memorable choice; fully durable |
 | `CodoMetis.EFCore.Perissos` | Greek, περισσός | more than enough, beyond the ordinary: the Greek "Beyond" | a pizzeria and a media app | Runner-up to Syntagma |
 | `CodoMetis.EFCore.Sterigma` | Greek, στήριγμα | a support, a prop: what holds EF's schema up | none | Runner-up; the Underpin sense, in Greek |
 | `CodoMetis.EFCore.Eutaxia` | Greek, εὐταξία | good order, discipline | two tiny repositories | Runner-up; less familiar |
 | `CodoMetis.EFCore.DdlKit` | Kit | the DDL kit | none | Telling to DBAs, opaque to application developers |
 | `…Encore`, `…Annex` | English | more after the main act; an added wing | none | Playful and precise respectively; weaker than Beyond |
+| `…DataKit` | Kit | | a `DataKit.*` family of 17 packages on nuget.org (`DataKit.SQL.Postgresql`, `DataKit.ORM`), checked 2026-10-19 | Rejected: unspecific, and taken in the same space |
 | `…Extended`, `…Plus`, `…Extras` | English | | `EntityFramework.Extended`, `Z.EntityFramework.Plus`, `EntityFrameworkExtras` | Rejected: owned by other libraries |
 | `…Pleroma`, `…Nomos`, `…Kanon`, `…Themis`, `…Tekton`, `…Telos`, `…Ecto`, `…Exo` | Greek | | Pleroma (fediverse server), Nomos (two active AI projects), Kanon/Canon, Themis (crypto library), Tekton (CI/CD), Telos (blockchain), Ecto (Elixir), Exokit | Rejected: taken in software |
 | `…Epekeina`, `…Peran`, `…Themelion`, `…Krepis` | Greek | beyond; beyond; foundation; temple base | none | Rejected: hard to say or too obscure |
 | `CodoMetis.Underpin`, `…Buttress`, `…Undergird` | metaphor | | `Underpin-WP` (WordPress) | Rejected as non-telling |
 | `CodoMetis.EFCore.IndexesAndConstraints`, `…SchemaObjects` | literal | | none | Withdrawn: section 7 outgrows the first; the second is the fallback if a literal name is wanted after all |
 
-The working name is used throughout this document; renaming to any other candidate is mechanical.
-Satellites take the provider suffix (`CodoMetis.EFCore.Syntagma.PostgreSQL`, `….SqlServer`), the
-repository follows the kernel id (`CaffeinatedCoder/CodoMetis.EFCore.Syntagma`; GitHub redirects
+**Decided 2026-10-19: `CodoMetis.EFCore.SchemaKit`.** The name says what it owns. EF Core resolves
+the model differ and the migrations SQL generator as single services, so two packages that
+replace them silently lose one of them. SchemaKit is the one owner of both in the CodoMetis
+family, and other packages plug into its public contract (D10, #56, #57). "Schema" is that
+boundary: whatever needs the differ or the generator belongs here or plugs in, and types,
+operators and query translation stay out (ltree's in the planned CodoMetis.Hierarchies, ranges
+in CodoMetis.ValueRanges). It also sits next to `CodoMetis.TypeKit` on the same owner.
+Syntagma, the working name until then, was rejected because every listing would need the
+tagline to explain it. `DataKit` was rejected as unspecific and as taken: a `DataKit.*` family of
+17 packages on nuget.org includes `DataKit.SQL.Postgresql` and `DataKit.ORM`.
+
+Satellites take the provider suffix (`CodoMetis.EFCore.SchemaKit.PostgreSQL`, `….SqlServer`), the
+repository follows the kernel id (`CaffeinatedCoder/CodoMetis.EFCore.SchemaKit`; GitHub redirects
 the old URL, so the absolute links in the packed 5.x READMEs keep working), and the wiring is
-`o => o.UseSyntagma()` (5.6). Tagline for the package pages: "the schema EF Core cannot declare:
+`o => o.UseSchemaKit()` (5.6). Tagline for the package pages: "the schema EF Core cannot declare:
 complex-type, expression and JSON indexes, exclusion and temporal constraints, row constraints,
 typed filters, and more."
 
@@ -360,12 +392,12 @@ application sees.
 
 Three packages, the same count as today, with the boundaries moved:
 
-- **`CodoMetis.EFCore.Syntagma`**, the kernel: the differ host and the generic descriptor differ (4.1), the
+- **`CodoMetis.EFCore.SchemaKit`**, the kernel: the differ host and the generic descriptor differ (4.1), the
   contributor and dialect interfaces, registration, path extraction, `ResolveProperty` with the
   converter unwrap, placeholder resolution, the predicate translator behind the dialect,
   annotation storage, the read-model base, and the provider-agnostic declarations and readers:
   complex indexes, guards, typed check constraints.
-- **`CodoMetis.EFCore.Syntagma.PostgreSQL`** and **`CodoMetis.EFCore.Syntagma.SqlServer`**: the dialect, the rendering
+- **`CodoMetis.EFCore.SchemaKit.PostgreSQL`** and **`CodoMetis.EFCore.SchemaKit.SqlServer`**: the dialect, the rendering
   of the agnostic features for that provider, and what only that provider can express. Exclusion,
   temporal and expression indexes stay PostgreSQL; the custom `IMigrationsSqlGenerator` stays
   PostgreSQL.
@@ -384,7 +416,7 @@ options extension, and EF resolves them as `IEnumerable<T>`.
 - `ISchemaContributor`: `Kind` (ordinal, see 4.1), `Build(IRelationalModel, ISchemaDialect) →
   IReadOnlyList<SchemaObjectDescriptor>`, `Drop`, `Create`, `Rename`, `CanRename`, and a
   `Validate(target)` hook for the name-uniqueness and length rules.
-- `SyntagmaMigrationsModelDiffer` (kernel, the only differ type in the family) takes
+- `SchemaKitMigrationsModelDiffer` (kernel, the only differ type in the family) takes
   `IEnumerable<ISchemaContributor>` and `ISchemaDialect`, runs base `GetDifferences`, then each
   contributor through the generic differ, then post-processing hooks (`btree_gist`, temporal
   rebuilds). `HasDifferences` routes through `GetDifferences` as today.
@@ -433,12 +465,12 @@ in as a fixture.
 **Runtime.** The idiomatic form for a provider plugin is the provider's own options builder:
 
 ```csharp
-options.UseNpgsql(connectionString, o => o.UseSyntagma());
-options.UseSqlServer(connectionString, o => o.UseSyntagma());
-options.UseSyntagma();   // kernel only, providers without a package
+options.UseNpgsql(connectionString, o => o.UseSchemaKit());
+options.UseSqlServer(connectionString, o => o.UseSchemaKit());
+options.UseSchemaKit();   // kernel only, providers without a package
 ```
 
-`UseSyntagma()` adds an `IDbContextOptionsExtension` whose `ApplyServices` registers the
+`UseSchemaKit()` adds an `IDbContextOptionsExtension` whose `ApplyServices` registers the
 contributors, the dialect, `ReplaceService<IMigrationsModelDiffer>` and, on PostgreSQL,
 `ReplaceService<IMigrationsSqlGenerator>`. EF applies every extension's `ApplyServices` in order
 and then the replaced services as a final rewrite pass, so both mechanisms coexist. `ReplaceService`
@@ -459,11 +491,12 @@ back-off-and-remove dance in `ComplexIndexDesignTimeRegistration` becomes a sing
 ### 5.7 Guarding against the old packages
 
 A consumer upgrading one project of a solution, or picking up an old satellite transitively, ends
-up with `EFCore.ComplexIndexes.*` and `CodoMetis.EFCore.Syntagma.*` in one context. Both inject a
+up with `EFCore.ComplexIndexes.*` and `CodoMetis.EFCore.SchemaKit.*` in one context. Both inject a
 design-time attribute and both replace the differ; the loser goes silent. The kernel therefore
 scans the design-time and runtime collections for a differ whose type name starts with
 `EFCore.ComplexIndexes` and throws with the package names to remove. This is the one place the new
-family knows the old one's name.
+family knows the old one's name. The general form, for any package that replaces either
+service after SchemaKit, is the ownership check (#57).
 
 ### 5.8 Packaging, publishing and repository mechanics
 
@@ -471,7 +504,8 @@ family knows the old one's name.
   `_._` placeholder, and it would only install assemblies whose namespaces the consumer still has
   to change, so it buys nothing. The precedent is `DotNet.Testcontainers`: publishing stopped and
   the last version was deprecated as Legacy with `Testcontainers 2.0.1` as the alternate. Do the
-  same once 6.0.0 is out: deprecate the latest 5.x of each old id with the alternate set and a
+  same when EF Core 10 leaves support (D6), not before: until then 5.x is the only package
+  that serves EF Core 10, and deprecation would tell those users not to use it. Then deprecate the latest 5.x of each old id with the alternate set and a
   message naming the support window. Deprecation is web-UI only on nuget.org (no API or CLI), it
   does not unlist, the README stays visible, and consumers see it in Visual Studio and in
   `dotnet list package --deprecated`. Do not unlist: pinned restores must keep working.
@@ -479,15 +513,15 @@ family knows the old one's name.
   packages" scope with a glob that matches it. The `CodoMetis.ValueRanges` family publishes under
   the same owner, so a policy scoped to `CodoMetis.*` may already exist; the policy is per
   repository and workflow file, though, so this repository's policy needs the scope checked before
-  the first 6.0.0 tag. The workflow file name (`release.yml`) and the environment (`nuget`) do not
+  the first SchemaKit tag. The workflow file name (`release.yml`) and the environment (`nuget`) do not
   change, so `ReleaseWiringConventionTests` stays valid. A missing scope fails the publish job with
   an authentication error that never mentions the id.
 - **Package validation.** The first release of each new id omits `PackageValidationBaselineVersion`,
   as `Directory.Build.props` already anticipates; `PackageValidationBaselineName` exists and could
   diff against the old id, but the namespace change makes every member a break, so start the
-  baseline at 6.0.0 instead. `PackagingConventionTests`' baseline rule needs a "no baseline on a
+  baseline at 11.0.0 instead (#46). `PackagingConventionTests`' baseline rule needs a "no baseline on a
   first release" branch.
-- **Repository.** Rename to `CodoMetis.EFCore.Syntagma`; update `RepositoryUrl`, `PackageProjectUrl` and the
+- **Repository.** Rename to `CodoMetis.EFCore.SchemaKit`; update `RepositoryUrl`, `PackageProjectUrl` and the
   absolute links in the packed READMEs; keep `SECURITY.md`'s table on both lines.
 - **SBOM.** Unchanged: `src/*/` is globbed and the id comes from the directory name.
 
@@ -499,18 +533,20 @@ family knows the old one's name.
 | `ClaudeMdConsistencyTests` | assembly list | rename |
 | `BuilderApiParityTests` | the two annotation/builder pairs | rename, and add the dialect's own keys |
 | `DocumentationApiTests` | provider scope by filename token and package-id suffix | unchanged in shape |
-| `SecurityPolicyConsistencyTests` | core found as the non-satellite project; `Microsoft.EntityFrameworkCore.Abstractions` | unchanged; add the `net11.0` floor when it lands |
+| `SecurityPolicyConsistencyTests` | core found as the non-satellite project; `Microsoft.EntityFrameworkCore.Abstractions` | unchanged; the EF Core 11 floor on `main` |
 | `test/consumer-smoke-test.sh` | two satellites by name; the core csproj path; the sentinel literal | loop over `src/*/`; rename; read the sentinel from the dialect |
 | `dotnet.yml`, `release.yml` | the core csproj path for the version | rename |
 | `dependabot.yml` | `/src/*` | unchanged |
-| `.github` branch protection | required check name | keep `Test (ubuntu-latest)`; configure it on `support/5.x` too |
+| `.github` branch protection | required check name | keep `Test (ubuntu-latest)`; configure it on `release/5.x` too |
 
-Multi-targeting (D7) adds `actions/setup-dotnet` with both SDKs, a second test run per TFM, and a
-second consumer per satellite in the smoke test once `net11.0` exists.
+Two lines (D7) mean one SDK per branch (#43): .NET 10 on `release/5.x`, .NET 11 on `main`. There is
+no second TFM in one build.
 
-### 5.10 Consumer migration guide (outline for the 6.0.0 README section)
+### 5.10 Consumer migration guide (outline for the SchemaKit 11.0.0 README section)
 
-1. Replace the package references; the old ids are deprecated with the alternate shown.
+1. Move to EF Core 11, and replace the package references (the old ids stay on EF Core 10).
+   Move complex-type indexes, and temporal constraints where #39 leaves them to Npgsql 11, to the
+   native API. #59 proves this swap adds no migration beyond the ones listed here.
 2. Replace the namespaces.
 3. Replace `UseNpgsqlComplexIndexes()` / `UseSqlServerComplexIndexes()` / `UseComplexIndexes()`
    with the provider-builder form in 5.6.
@@ -519,7 +555,7 @@ second consumer per satellite in the smoke test once `net11.0` exists.
    generator, the three annotation keys they read, and the legacy `PropertyPaths` snapshot form are
    **kept**, because consumers replay old migrations on fresh databases forever.
 
-## 6. Phase 3: the 6.x feature backlog, ordered by reuse
+## 6. Phase 3: the SchemaKit 11.x feature backlog, ordered by reuse
 
 1. **Update guard.** Same trigger with `BEFORE UPDATE`, predicate over the old row.
    `HasUpdateConstraint(x => x.FinalizedAt != null, …)`.
@@ -710,33 +746,43 @@ the templates in 7.5 are in.
 
 ## 8. EF Core 11 in the family
 
-- The `net11.0` target is added in the first 6.x after GA (D8), with `[11.0.0, 12.0.0)` floors on
+- SchemaKit targets `net11.0` only, with `[11.0.0, 12.0.0)` floors on
   `Microsoft.EntityFrameworkCore.Abstractions`, `Npgsql.EntityFrameworkCore.PostgreSQL` and
-  `Microsoft.EntityFrameworkCore.SqlServer` for that target.
-- **Zero-DDL handover.** A `HasComplexIndex` whose name and columns match a native EF Core 11
-  `HasIndex` over the same complex-type path scaffolds nothing instead of drop-and-create, and the
-  native-collision check learns the difference between "same index, moved" and "two indexes, one
-  name". Same for `WITHOUT OVERLAPS` and `PERIOD` against Npgsql 11.
+  `Microsoft.EntityFrameworkCore.SqlServer`. During the RCs the floor is the RC itself, because
+  NuGet orders prereleases below the release (#47).
+- **Native features are left out (#39).** SchemaKit does not render what EF Core 11 and Npgsql 11
+  render natively. The consumer moves those declarations to the native API in the same upgrade.
+- **Zero-DDL swap (#59).** A model and snapshot from 5.x, moved to SchemaKit and the native APIs as
+  the migration guide says, produces no migration beyond the ones the guide lists. That covers
+  index and constraint names, and the 5.x annotations the new differ still has to read (D11).
 - **Constructor.** Nothing to do for EF Core 11: `release/11.0` keeps the five-parameter
-  constructor, and a `net10.0;net11.0` spike build (2026-09-22) needed no source change. The sixth parameter
-  is EF Core 12's, and belongs to whichever 6.x adds that target.
+  constructor, and the `net11` measurement (#47) needed no source change. The sixth parameter is
+  EF Core 12's.
 - **Snapshot generator.** `CSharpSnapshotGenerator` was refactored in rc.1 (parameters object,
-  centralised annotation handling, complex-collection branch). Not subclassed here, but the
-  round-trip fixtures must be regenerated on the `net11.0` run.
-- The integration job needs the .NET 11 SDK; `PostgresIntegrationTests` runs twice.
+  centralised annotation handling, complex-collection branch). It isn't subclassed here, and the
+  round-trip fixtures pass on EF Core 11 (#47).
+- **CodoMetis.ValueRanges** is the other family on EF Core 11. Its range columns are periods and
+  exclusion-constraint operands here, by store type name. Neither package references the other,
+  and both carry cross-tests (#42; CodoMetis.ValueRanges#333). It never replaces the differ or the
+  generator (CodoMetis.ValueRanges#334).
 
 ## 9. Risks and open questions
 
-- **D4 is Ricardo's call.** The document uses `Syntagma` as a working name; every candidate in
-  5.1 reads the same, and the rename is mechanical.
+- **The plugin contract is permanent** once 11.0.0 ships (#56): other packages build on it, so it
+  needs the declaration API's compatibility promise from the first release.
 - **The shared function's name is permanent** once a consumer's migration carries it (4.2); it is
-  owner-branded, so D4 does not gate 5.5.0.
+  owner-branded, so it never depended on D4.
 - **Name-uniqueness for temporal kinds** (4.0) was a behaviour change on a model that already
   failed at apply time, and shipped in 5.4.0 as a fix.
 - **Snapshot v2** produces one empty migration per consumer (5.5). A consumer with a CI gate on
   `has-pending-model-changes` sees it fail once after upgrading; the migration guide has to say so
   up front.
-- **The `net11.0` edge** (section 3): an application on .NET 11 with EF Core 10 must stay on 5.x.
+- **EF Core 11 users on 5.x.** The dependency ceilings let a direct Npgsql 11 reference through
+  with a warning; the EF Core major check in 5.5.0 (#55) refuses it. An application on .NET 11
+  with EF Core 10 stays on 5.x and is supported there.
+- **D1 moved with the features.** The consuming application that needs the delete guard gets it
+  from SchemaKit, so on EF Core 11. If it stays on EF Core 10, it keeps its raw trigger migration
+  or D1 is revisited.
 - **Trusted-publishing scope** (5.8) fails silently until updated.
 - **`AddTrigger` in EF's model** (4.2): confirm what the snapshot generator emits and that Npgsql's
   update pipeline ignores it, before relying on it.
@@ -750,14 +796,14 @@ the templates in 7.5 are in.
 | Step | Line | Content | Gate |
 |---|---|---|---|
 | 0 | 5.4.0, 5.4.1 (shipped) | Constraint-name registry across all kinds and native names (4.0); core index names in the provider's namespace | `verify-the-guard` on each collision pair |
-| 1 | 5.5.0 | Characterisation test for four-kind ordering; generic descriptor differ | Suite green after each kind moves |
-| 2 | 5.5.0 | Delete constraint on PostgreSQL, docs, smoke-test discriminator | Integration test, `verify-the-guard` on every validation |
-| 3 | pre-6.0 | D4 settled; trusted-publishing scope checked for the new ids; repository renamed | nuget.org confirmations |
-| 4 | 6.0.0 | Rename and split; plugin host; dialect; translator move; snapshot v2; old-package guard; convention tests; migration guide | Smoke test on both providers from a cold cache; snapshot fixture from 5.x |
-| 5 | post-6.0 | Deprecate the old ids with the alternate; `support/5.x` branch protection | |
-| 6 | 6.1 | `net11.0` target after EF 11 GA; zero-DDL handover; SQL Server guards; typed check constraints | Both TFMs green, two smoke consumers per provider |
-| 7 | 6.2 | Update constraints, append-only, SQLite package, violation mapper, column immutability | |
-| 8 | 6.3+ | Horizon items by demand (section 7); the partitioning spike before it is scheduled | Spike passes end to end |
+| 1 | 5.5.0 | Refuse EF Core 11 at registration; bug form and READMEs point to SchemaKit (#55) | `verify-the-guard`; tag `v5.5.0`, cut `release/5.x` |
+| 2 | SchemaKit 11.0.0-preview.1 | Rename to the new ids and retarget to EF Core 11 (#38); repository renamed; trusted-publishing scope checked for the new ids | Measurements of #47 re-run; nuget.org confirmations |
+| 3 | SchemaKit previews | Public plugin contract and ownership check (#56, #57); snapshot v2 (#58); leave out what the platform does (#39); dialect; translator move; old-package guard; convention tests | Suite green per step |
+| 4 | SchemaKit 11.0.0 | Zero-DDL swap from 5.x (#59); cross-tests (#42); CI matrix (#43); migration guide | Smoke test on both providers from a cold cache; snapshot fixture from 5.x |
+| 5 | SchemaKit 11.x | Generic descriptor differ (4.1); delete constraint (4.2); 4.3; SQL Server guards; typed check constraints | |
+| 6 | SchemaKit 11.x | Update constraints, append-only, SQLite package, violation mapper, column immutability | |
+| 7 | SchemaKit 11.x | Horizon items by demand (section 7); the partitioning spike before it is scheduled | Spike passes end to end |
+| 8 | at EF Core 10's end of support | Deprecate the old ids with SchemaKit as the alternate | |
 
 ## 11. Sources
 
