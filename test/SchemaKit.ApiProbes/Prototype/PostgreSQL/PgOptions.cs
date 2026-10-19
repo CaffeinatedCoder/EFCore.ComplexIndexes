@@ -17,13 +17,6 @@ public closed record Deferral : ISingleton<Deferral>
     public static Deferral InitiallyImmediate { get; } = new InitiallyImmediateCase();
     public static Deferral InitiallyDeferred { get; } = new InitiallyDeferredCase();
 
-    public string Sql => this switch
-    {
-        NotDeferrableCase      => "",
-        InitiallyImmediateCase => " DEFERRABLE",
-        InitiallyDeferredCase  => " DEFERRABLE INITIALLY DEFERRED",
-    };
-
     static IReadOnlyList<Deferral> ISingleton<Deferral>.All => [NotDeferrable, InitiallyImmediate, InitiallyDeferred];
 }
 
@@ -39,8 +32,6 @@ public closed record GistBuffering : ISingleton<GistBuffering>
     public static GistBuffering Off { get; } = new OffCase();
     public static GistBuffering Auto { get; } = new AutoCase();
 
-    public string Sql => this switch { OnCase => "on", OffCase => "off", AutoCase => "auto" };
-
     static IReadOnlyList<GistBuffering> ISingleton<GistBuffering>.All => [On, Off, Auto];
 }
 
@@ -53,8 +44,6 @@ public closed record NullOrder : ISingleton<NullOrder>
 
     public static NullOrder First { get; } = new FirstCase();
     public static NullOrder Last { get; } = new LastCase();
-
-    public string Sql => this switch { FirstCase => " NULLS FIRST", LastCase => " NULLS LAST" };
 
     static IReadOnlyList<NullOrder> ISingleton<NullOrder>.All => [First, Last];
 }

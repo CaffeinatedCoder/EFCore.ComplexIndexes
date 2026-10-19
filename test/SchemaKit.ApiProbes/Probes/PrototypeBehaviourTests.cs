@@ -125,17 +125,75 @@ public sealed partial class PrototypeBehaviourTests
         });
     }
 
-    private static string Render(ISchemaContributor contributor, ISchemaObject declaration)
+    [TestMethod]
+    public void A_name_only_change_is_a_rename()
     {
-        var table = new SchemaTable("role_grants", null, RenderTarget, p => Placeholder().Replace(p.Template, m => $"\"{Snake(m.Groups[1].Value)}\""));
-        return string.Join("\n", contributor.Create(declaration, table, new PostgresDialect()).Cast<SqlOperation>().Select(o => o.Sql));
+        var renamed = Diff([Pg.BTree(x => x.Kind, name: "ix_old")], [Pg.BTree(x => x.Kind, name: "ix_new")]);
+
+        Assert.AreEqual("ALTER INDEX \"ix_old\" RENAME TO \"ix_new\";", renamed);
     }
 
-    private static string RenderTarget(KeyTarget target) => target switch
+    [TestMethod]
+    public void A_changed_predicate_is_a_drop_and_create()
     {
-        KeyTarget.Column c   => $"\"{Snake(c.Path)}\"",
-        KeyTarget.Template t => Placeholder().Replace(t.Sql, m => $"\"{Snake(m.Groups[1].Value)}\""),
-    };
+        var rebuilt = Diff([Pg.BTree(x => x.Kind, name: "ix_kind")], [Pg.BTree(x => x.Kind, where: x => x.RevokedAt == null, name: "ix_kind")]);
+
+        Assert.AreEqual(
+            "DROP INDEX IF EXISTS \"ix_kind\";\nCREATE INDEX \"ix_kind\" ON \"role_grants\" (\"kind\") WHERE \"revoked_at\" IS NULL;",
+            rebuilt);
+    }
+
+    [TestMethod]
+    public void An_operational_option_never_rebuilds()
+    {
+        Assert.AreEqual("", Diff([Pg.BTree(x => x.Kind, name: "ix_kind")], [Pg.BTree(x => x.Kind, concurrently: true, name: "ix_kind")]));
+    }
+
+    [TestMethod]
+    public void Names_collide_across_contributors_in_the_namespaces_they_claim()
+    {
+        var error = Assert.ThrowsExactly<SchemaValidationException>(() =>
+            Diff([], [Pg.BTree(x => x.Kind, name: "ex_role_grant_active_period"), ActivePeriod]));
+
+        Assert.IsInstanceOfType<SchemaDiagnostic.NameCollision>(error.Diagnostics.Single());
+        StringAssert.StartsWith(error.Message, "SK1001: Pg.Index 'ex_role_grant_active_period' on 'role_grants' and Pg.Exclusion");
+    }
+
+    private static readonly ISchemaContributor[] Contributors = [new PgIndexContributor(), new PgExclusionContributor()];
+
+    private static string Render(ISchemaContributor contributor, ISchemaObject declaration) =>
+        Sql(SchemaDiffer.Diff([contributor], [], [new(declaration, new SnakeCaseResolver())], new PostgresDialect()));
+
+    private static string Diff(IEnumerable<ISchemaObject> source, IEnumerable<ISchemaObject> target) =>
+        Sql(SchemaDiffer.Diff(
+            Contributors,
+            source.Select(d => new SchemaDiffer.Declared(d, new SnakeCaseResolver())),
+            target.Select(d => new SchemaDiffer.Declared(d, new SnakeCaseResolver())),
+            new PostgresDialect()));
+
+    private static string Sql(IEnumerable<MigrationOperation> operations) =>
+        string.Join("\n", operations.Cast<SqlOperation>().Select(o => o.Sql));
+
+    /// <summary>The kernel's resolver reads EF's relational model; this one snake-cases paths onto one table.</summary>
+    private sealed class SnakeCaseResolver : SchemaResolver
+    {
+        private static readonly PostgresDialect PostgreSQL = new();
+
+        public override TableRef Table { get; } = new(PostgreSQL.Identifier("role_grants"), null);
+
+        public override ISchemaDialect Dialect => PostgreSQL;
+
+        public override SqlFragment Target(KeyTarget target) => new(target switch
+        {
+            KeyTarget.Column c   => PostgreSQL.Delimit(Snake(c.Path)),
+            KeyTarget.Template t => Placeholder().Replace(t.Sql, m => PostgreSQL.Delimit(Snake(m.Groups[1].Value))),
+        });
+
+        public override SqlFragment Predicate(Predicate predicate) =>
+            new(Placeholder().Replace(predicate.Template, m => PostgreSQL.Delimit(Snake(m.Groups[1].Value))));
+
+        public override StoreType StoreType(KeyTarget target) => new("text", IsCollatable: true);
+    }
 
     private static string Snake(string path) =>
         Regex.Replace(path.Replace('.', '_'), "(?<=[a-z])([A-Z])", "_$1").ToLowerInvariant();

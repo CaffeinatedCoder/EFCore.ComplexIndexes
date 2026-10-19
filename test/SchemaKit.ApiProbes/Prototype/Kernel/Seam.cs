@@ -1,7 +1,6 @@
 using System.Security.Cryptography;
 using System.Text;
 using Microsoft.EntityFrameworkCore.Metadata;
-using Microsoft.EntityFrameworkCore.Migrations.Operations;
 
 namespace CodoMetis.EFCore.SchemaKit;
 
@@ -44,80 +43,6 @@ public interface IPostgresObject : ISchemaObject;
 
 /// <summary>Marks a declaration SQL Server can render.</summary>
 public interface ISqlServerObject : ISchemaObject;
-
-/// <summary>Where a contributor's operations go relative to EF's own (ROADMAP 4.1, 5.3).</summary>
-public closed record SchemaPlacement
-{
-    private sealed record BeforeTablesCase : SchemaPlacement;
-    private sealed record AfterTablesCase(int Order) : SchemaPlacement;
-
-    /// <summary>Created before EF's <c>CREATE TABLE</c>, dropped after its <c>DROP TABLE</c> (domains, ROADMAP 7.3).</summary>
-    public static SchemaPlacement BeforeTables { get; } = new BeforeTablesCase();
-
-    /// <summary>Dropped before EF's operations and created after them, ordered among contributors by <paramref name="order"/>.</summary>
-    public static SchemaPlacement AfterTables(int order) => new AfterTablesCase(order);
-}
-
-/// <summary>The provider's spellings, resolved by the kernel and handed to every contributor (ROADMAP 5.4).</summary>
-public interface ISchemaDialect
-{
-    string Quote(string identifier);
-
-    int MaxIdentifierLength { get; }
-}
-
-/// <summary>A table as a contributor sees it: its quoted name and a resolver for the declaration's key targets.</summary>
-public sealed record SchemaTable(string Name, string? Schema, Func<KeyTarget, string> Render, Func<Predicate, string> RenderPredicate);
-
-/// <summary>
-/// The open seam on the differ side (#56). The kernel holds a list of these and dispatches by
-/// <see cref="ISchemaObject.Owner"/>; it never sees a contributor's declaration types.
-/// </summary>
-public interface ISchemaContributor
-{
-    string Owner { get; }
-
-    SchemaPlacement Placement { get; }
-
-    IReadOnlyList<MigrationOperation> Create(ISchemaObject declaration, SchemaTable table, ISchemaDialect dialect);
-
-    IReadOnlyList<MigrationOperation> Drop(ISchemaObject declaration, SchemaTable table, ISchemaDialect dialect);
-
-    /// <summary>A name-only change, or null when the kind cannot be renamed and the kernel drops and re-creates it.</summary>
-    IReadOnlyList<MigrationOperation>? Rename(ISchemaObject from, ISchemaObject to, SchemaTable table, ISchemaDialect dialect);
-}
-
-/// <summary>
-/// The base a contributor derives from: typed over its own closed union, so its switches are
-/// exhaustive and a new case in the union is a compile error in every one of them.
-/// </summary>
-public abstract class SchemaContributor<TDeclaration> : ISchemaContributor
-    where TDeclaration : class, ISchemaDeclaration<TDeclaration>
-{
-    public string Owner => TDeclaration.OwnerId;
-
-    public abstract SchemaPlacement Placement { get; }
-
-    protected abstract IReadOnlyList<MigrationOperation> Create(TDeclaration declaration, SchemaTable table, ISchemaDialect dialect);
-
-    protected abstract IReadOnlyList<MigrationOperation> Drop(TDeclaration declaration, SchemaTable table, ISchemaDialect dialect);
-
-    protected virtual IReadOnlyList<MigrationOperation>? Rename(TDeclaration from, TDeclaration to, SchemaTable table, ISchemaDialect dialect) => null;
-
-    IReadOnlyList<MigrationOperation> ISchemaContributor.Create(ISchemaObject declaration, SchemaTable table, ISchemaDialect dialect)
-        => Create(Own(declaration), table, dialect);
-
-    IReadOnlyList<MigrationOperation> ISchemaContributor.Drop(ISchemaObject declaration, SchemaTable table, ISchemaDialect dialect)
-        => Drop(Own(declaration), table, dialect);
-
-    IReadOnlyList<MigrationOperation>? ISchemaContributor.Rename(ISchemaObject from, ISchemaObject to, SchemaTable table, ISchemaDialect dialect)
-        => Rename(Own(from), Own(to), table, dialect);
-
-    private static TDeclaration Own(ISchemaObject declaration) =>
-        declaration as TDeclaration
-        ?? throw new InvalidOperationException(
-            $"The kernel routed a '{declaration.GetType().Name}' ({declaration.Owner}) to the {TDeclaration.OwnerId} contributor.");
-}
 
 /// <summary>Applying, reading and amending declarations: one call each, on EF's own metadata.</summary>
 public static class SchemaDeclarationExtensions

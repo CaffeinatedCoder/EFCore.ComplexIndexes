@@ -51,3 +51,13 @@ public sealed class Order
     public string Number { get; set; } = "";
     public bool Cancelled { get; set; }
 }
+
+/// <summary>Stands in for an ltree path type a CodoMetis.Hierarchies package would ship.</summary>
+public readonly record struct TreePath(string Value);
+
+public sealed class Category
+{
+    public int Id { get; set; }
+    public int? ParentId { get; set; }
+    public TreePath Path { get; set; }
+}

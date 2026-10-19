@@ -21,6 +21,84 @@ public enum ProbeShape { Statement, TopLevel }
 
 public static class ProbeCatalogue
 {
+    /// <summary>
+    /// A complete third-party extension, as CodoMetis.Hierarchies would write it against the kernel:
+    /// its own closed union, descriptor and contributor, and a factory method on PgSchema. The X
+    /// probes change one line of it each.
+    /// </summary>
+    private const string LtreeExtension = """
+        public closed record LtreeObject : IPostgresObject, ISchemaDeclaration<LtreeObject>
+        {
+            public static string OwnerId => "Ltree.Path";
+            public string Owner => OwnerId;
+            public string? Name { get; init; }
+            public string Identity => this switch
+            {
+                MaintainedPath m => $"maintained|{m.Path}|{m.Parent}",
+                PathCheck c => $"check|{c.Path}",
+            };
+            public string ToAnnotationValue() => System.Text.Json.JsonSerializer.Serialize(this);
+            public static LtreeObject FromAnnotationValue(string json) => throw new NotSupportedException();
+
+            public sealed record MaintainedPath(string Path, string Parent) : LtreeObject;
+            public sealed record PathCheck(string Path) : LtreeObject;
+        }
+
+        public sealed record LtreeDescriptor(TableRef Table, Identifier Name, SqlFragment Ddl, bool IsTrigger) : ISchemaDescriptor
+        {
+            public ISchemaDescriptor WithName(Identifier name) => this with { Name = name };
+        }
+
+        public sealed class LtreeContributor : SchemaContributor<LtreeObject, LtreeDescriptor>
+        {
+            public override SchemaPlacement Placement => SchemaPlacement.AfterTables(order: 30);
+
+            protected override LtreeDescriptor Resolve(LtreeObject declaration, SchemaResolver r) => declaration switch
+            {
+                LtreeObject.MaintainedPath m => new(r.Table, r.Name(m.Name, "TR", [new KeyTarget.Column(m.Path)]),
+                    r.Sql.Fragment($"BEFORE INSERT OR UPDATE ON {r.Table} FOR EACH ROW EXECUTE FUNCTION codometis_ltree_path()"), true),
+                /*CHECK-ARM*/LtreeObject.PathCheck c => new(r.Table, r.Name(c.Name, "CK", [new KeyTarget.Column(c.Path)]),
+                    r.Sql.Fragment($"CHECK (nlevel({r.Target(new KeyTarget.Column(c.Path))}) > 0)"), false),/*END-CHECK-ARM*/
+            };
+
+            protected override void Create(LtreeDescriptor d, SchemaSql sql)
+            {
+                if (d.IsTrigger) sql.Statement($"CREATE TRIGGER {d.Name} {d.Ddl}");
+                else sql.Statement($"ALTER TABLE {d.Table} ADD CONSTRAINT {d.Name} {d.Ddl}");
+            }
+
+            protected override void Drop(LtreeDescriptor d, SchemaSql sql)
+            {
+                if (d.IsTrigger) sql.Statement($"DROP TRIGGER IF EXISTS {/*NAME*/d.Name} ON {d.Table}");
+                else sql.Statement($"ALTER TABLE {d.Table} DROP CONSTRAINT IF EXISTS {d.Name}");
+            }
+
+            protected override IEnumerable<NameClaim> Claims(LtreeDescriptor d) =>
+                d.IsTrigger ? [new NameClaim.Trigger(d.Table, d.Name)] : [new NameClaim.Constraint(d.Table, d.Name)];
+        }
+
+        public static class LtreeSchemaExtensions
+        {
+            extension<TEntity>(PgSchema<TEntity> pg) where TEntity : class
+            {
+                public LtreeObject.MaintainedPath MaintainedPath(
+                    System.Linq.Expressions.Expression<Func<TEntity, TreePath>> path,
+                    System.Linq.Expressions.Expression<Func<TEntity, int?>> parent)
+                    => new(((System.Linq.Expressions.MemberExpression)path.Body).Member.Name,
+                           ((System.Linq.Expressions.MemberExpression)parent.Body).Member.Name);
+            }
+        }
+
+        public static class CategoryConfiguration
+        {
+            public static void Configure(EntityTypeBuilder<Category> b) =>
+                b./*APPLY*/DeclarePostgres(pg => [pg.MaintainedPath(x => x.Path, x => x.ParentId), pg.Gist([pg.Key(x => x.Path)])]);
+        }
+        """;
+
+    private static string Without(string source, string from, string to) =>
+        source[..source.IndexOf(from, StringComparison.Ordinal)] + source[(source.IndexOf(to, StringComparison.Ordinal) + to.Length)..];
+
     public static IReadOnlyList<Probe> All { get; } =
     [
         // ── P1: the access method decides which options exist ─────────────────────────────
@@ -146,5 +224,38 @@ public static class ProbeCatalogue
             }
             """,
             "CS8509"),
+
+        // ── E: the engine seam: SQL text only from what the dialect checked ─────────────────
+        new("E1.string-in-ddl", "E", ProbeShape.TopLevel,
+            "public static class Ddl { public static void Drop(SchemaSql sql, Identifier name) => sql.Statement($\"DROP INDEX {name}\"); }",
+            "public static class Ddl { public static void Drop(SchemaSql sql, string name) => sql.Statement($\"DROP INDEX {name}\"); }",
+            "CS1503"),
+        new("E2.fragment-from-string", "E", ProbeShape.TopLevel,
+            "public static class Ddl { public static SqlFragment Make(SchemaSql sql) => sql.Fragment($\"lower(email)\"); }",
+            "public static class Ddl { public static SqlFragment Make(SchemaSql sql) => new SqlFragment(\"lower(email)\"); }",
+            "CS1729"),
+        new("E3.identifier-from-string", "E", ProbeShape.TopLevel,
+            "public static class Ddl { public static Identifier Make(ISchemaDialect dialect) => dialect.Identifier(\"ix_people_name\"); }",
+            "public static class Ddl { public static Identifier Make(ISchemaDialect dialect) => \"ix_people_name\"; }",
+            "CS0029"),
+        new("E4.render-a-declaration", "E", ProbeShape.TopLevel,
+            LtreeExtension,
+            LtreeExtension.Replace("protected override void Create(LtreeDescriptor d, SchemaSql sql)", "protected override void Create(LtreeObject d, SchemaSql sql)"),
+            "CS0115"),
+
+        // ── X: an extension package, end to end ───────────────────────────────────────────
+        new("X1.extension-misses-its-own-case", "X", ProbeShape.TopLevel,
+            LtreeExtension,
+            Without(LtreeExtension, "/*CHECK-ARM*/", "/*END-CHECK-ARM*/"),
+            "CS8509"),
+        new("X2.extension-renders-a-raw-name", "X", ProbeShape.TopLevel,
+            LtreeExtension,
+            LtreeExtension.Replace("{/*NAME*/d.Name}", "{d.Name.Name}"),
+            "CS1503"),
+        new("X3.extension-declaration-on-sqlserver", "X", ProbeShape.TopLevel,
+            LtreeExtension,
+            LtreeExtension.Replace("b./*APPLY*/DeclarePostgres(pg => [pg.MaintainedPath(x => x.Path, x => x.ParentId), pg.Gist([pg.Key(x => x.Path)])]);",
+                "b.DeclareSqlServer(ss => [PgSchema.For<Category>().MaintainedPath(x => x.Path, x => x.ParentId)]);"),
+            "CS0029"),
     ];
 }

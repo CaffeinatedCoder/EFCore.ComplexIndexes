@@ -2,7 +2,6 @@ using System.Linq.Expressions;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
-using Microsoft.EntityFrameworkCore.Migrations.Operations;
 
 namespace CodoMetis.EFCore.SchemaKit.SqlServer;
 
@@ -168,33 +167,81 @@ public static class SqlServerSchema
     public static SqlServerSchema<TEntity> For<TEntity>() where TEntity : class => default;
 }
 
-public sealed class SqlServerIndexContributor : SchemaContributor<SqlServerIndex>
+/// <summary>A resolved <see cref="SqlServerIndex"/>.</summary>
+public sealed record SqlServerIndexDescriptor(
+    TableRef Table,
+    Identifier Name,
+    bool Unique,
+    SqlFragment Kind,
+    ValueList<SqlFragment> Keys,
+    ValueList<SqlFragment> Include,
+    SqlFragment? Where,
+    ValueList<SqlFragment> With) : ISchemaDescriptor
+{
+    public ISchemaDescriptor WithName(Identifier name) => this with { Name = name };
+}
+
+public sealed class SqlServerIndexContributor : SchemaContributor<SqlServerIndex, SqlServerIndexDescriptor>
 {
     public override SchemaPlacement Placement => SchemaPlacement.AfterTables(order: 10);
 
-    protected override IReadOnlyList<MigrationOperation> Create(SqlServerIndex index, SchemaTable table, ISchemaDialect dialect)
+    protected override SqlServerIndexDescriptor Resolve(SqlServerIndex index, SchemaResolver r)
     {
-        var keys = index.KeyList.Select(k => table.Render(k.Target) + (k.Descending ? " DESC" : ""));
-        var name = index.Name ?? $"IX_{table.Name}_{string.Join("_", index.KeyList.Select(k => k.Target.NameToken))}";
-        var (kind, tail) = index switch
+        var sql = r.Sql;
+        var (kind, include, where) = index switch
         {
-            SqlServerIndex.Clustered => ("CLUSTERED", ""),
-            SqlServerIndex.Nonclustered n => ("NONCLUSTERED",
-                (n.Include.Count > 0 ? $" INCLUDE ({string.Join(", ", n.Include.Select(p => table.Render(new KeyTarget.Column(p))))})" : "")
-                + (n.Where is { } w ? $" WHERE {table.RenderPredicate(w)}" : "")),
+            SqlServerIndex.Clustered => (sql.Fragment($"CLUSTERED"), ValueList<string>.Empty, (Predicate?)null),
+            SqlServerIndex.Nonclustered n => (sql.Fragment($"NONCLUSTERED"), n.Include, n.Where),
         };
-        var with = new[]
-        {
-            index.FillFactor is { } f ? $"FILLFACTOR = {f}" : null,
-            index.Online ? "ONLINE = ON" : null,
-            index.SortInTempDb ? "SORT_IN_TEMPDB = ON" : null,
-            index.Compression is { } c ? $"DATA_COMPRESSION = {c.Sql}" : null,
-        }.OfType<string>().ToList();
-        var sql = $"CREATE {(index.Unique ? "UNIQUE " : "")}{kind} INDEX {dialect.Quote(name)} ON {dialect.Quote(table.Name)} ({string.Join(", ", keys)})"
-                + tail + (with.Count > 0 ? $" WITH ({string.Join(", ", with)})" : "") + ";";
-        return [new SqlOperation { Sql = sql }];
+        IEnumerable<SqlFragment?> with =
+        [
+            index.FillFactor is { } f ? sql.Fragment($"FILLFACTOR = {f}") : null,
+            index.Online ? sql.Fragment($"ONLINE = ON") : null,
+            index.SortInTempDb ? sql.Fragment($"SORT_IN_TEMPDB = ON") : null,
+            index.Compression is null ? null
+                : index.Compression == Compression.Page ? sql.Fragment($"DATA_COMPRESSION = PAGE")
+                : index.Compression == Compression.Row ? sql.Fragment($"DATA_COMPRESSION = ROW")
+                : sql.Fragment($"DATA_COMPRESSION = NONE"),
+        ];
+        return new SqlServerIndexDescriptor(
+            r.Table,
+            r.Name(index.Name, "IX", index.KeyList.Select(k => k.Target)),
+            index.Unique,
+            kind,
+            [.. index.KeyList.Select(k => k.Descending ? sql.Fragment($"{r.Target(k.Target)} DESC") : r.Target(k.Target))],
+            [.. include.Select(p => r.Target(new KeyTarget.Column(p)))],
+            where is null ? null : r.Predicate(where),
+            [.. with.OfType<SqlFragment>()]);
     }
 
-    protected override IReadOnlyList<MigrationOperation> Drop(SqlServerIndex index, SchemaTable table, ISchemaDialect dialect)
-        => [new SqlOperation { Sql = $"DROP INDEX {dialect.Quote(index.Name!)} ON {dialect.Quote(table.Name)};" }];
+    protected override void Create(SqlServerIndexDescriptor d, SchemaSql sql)
+    {
+        var unique = d.Unique ? sql.Fragment($"UNIQUE ") : SchemaSql.Empty;
+        var include = d.Include.Count > 0 ? sql.Fragment($" INCLUDE ({sql.List(d.Include)})") : SchemaSql.Empty;
+        var where = d.Where is { } w ? sql.Fragment($" WHERE {w}") : SchemaSql.Empty;
+        var with = d.With.Count > 0 ? sql.Fragment($" WITH ({sql.List(d.With)})") : SchemaSql.Empty;
+        sql.Statement($"CREATE {unique}{d.Kind} INDEX {d.Name} ON {d.Table} ({sql.List(d.Keys)}){include}{where}{with}");
+    }
+
+    protected override void Drop(SqlServerIndexDescriptor d, SchemaSql sql) => sql.Statement($"DROP INDEX {d.Name} ON {d.Table}");
+
+    protected override IEnumerable<NameClaim> Claims(SqlServerIndexDescriptor d) => [new NameClaim.TableIndex(d.Table, d.Name)];
+}
+
+public sealed class SqlServerDialect : ISchemaDialect
+{
+    public string Delimit(string identifier) => $"[{identifier.Replace("]", "]]")}]";
+
+    public string DelimitIfNeeded(string name) => Delimit(name);
+
+    public string StatementTerminator => ";";
+
+    public string StringLiteral(string value) => $"N'{value.Replace("'", "''")}'";
+
+    public Identifier Identifier(string name) =>
+        name.Length > 128 ? throw new InvalidOperationException($"'{name}' is {name.Length} characters long; SQL Server allows 128.") : new Identifier(name);
+
+    public SqlName Name(string name) => new(Identifier(name).Name);
+
+    public SqlOperator Operator(string token) => throw new NotSupportedException("SQL Server declarations have no operators.");
 }
