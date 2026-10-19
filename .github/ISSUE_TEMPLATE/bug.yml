@@ -25,7 +25,19 @@ body:
     id: version
     attributes:
       label: Version
-      placeholder: "5.4.1"
+      placeholder: "5.5.0"
+    validations:
+      required: true
+  - type: dropdown
+    id: efcore
+    attributes:
+      label: EF Core version
+      description: >-
+        This package serves EF Core 10 only, and from 5.5.0 it refuses to register on another
+        major. On EF Core 11 or later, use `CodoMetis.EFCore.SchemaKit` instead, its successor
+        for EF Core 11.
+      options:
+        - 10.x
     validations:
       required: true
   - type: dropdown
@@ -76,4 +88,4 @@ body:
     id: environment
     attributes:
       label: Environment
-      description: .NET and EF Core versions, the provider and its version (Npgsql, SQL Server, SQLite), the database version, and whether `UseNpgsqlComplexIndexes()` / `UseComplexIndexes()` is wired at runtime.
+      description: The .NET version, the provider and its version (Npgsql, SQL Server, SQLite), the database version, and whether `UseNpgsqlComplexIndexes()` / `UseComplexIndexes()` is wired at runtime.
