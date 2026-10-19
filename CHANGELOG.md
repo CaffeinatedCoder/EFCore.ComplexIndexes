@@ -13,6 +13,12 @@ and from EF Core 11 on its successor is a new package, `CodoMetis.EFCore.SchemaK
 makes the line refuse EF Core 11 instead of running on it untested. After it the 5.x line takes
 fixes only, until EF Core 10 leaves support in November 2028.
 
+### Changed answers
+
+- [#86](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/issues/86): on SQLite, `dotnet ef migrations add` refuses a migration that rebuilds a table carrying a complex index, instead of scaffolding one that silently drops it. SQLite runs an `ALTER COLUMN`, a `DROP COLUMN`, a key, foreign key, unique or check constraint change, and a table rename (EF renames the primary key with it) by rebuilding the table, and EF Core re-creates only its own indexes, so every complex index on the table vanished, unique ones included, while the migration applied cleanly and the snapshot still listed them. No operation in the same migration can re-create them, because EF's SQLite generator runs every rebuild last; the error names the indexes and the way out, three migrations: remove the declarations on the table, make the change, declare them again. **Upgrading:** a SQLite database that went through such a migration before is missing those indexes while its snapshot lists them. Check with `SELECT name FROM sqlite_master WHERE type = 'index'` and re-create any missing one with `migrationBuilder.Sql(…)` in a new migration.
+
+### Changed
+
 - **Changed:** every registration entry point throws `InvalidOperationException` when the EF Core it runs on is not version 10: `UseComplexIndexes()`, `UseNpgsqlComplexIndexes()`, `UseSqlServerComplexIndexes()`, their `Add…ComplexIndexes()` counterparts, and the design-time registration `dotnet ef` runs. The `[10.0.0, 11.0.0)` dependency ranges did not keep EF Core 11 out on their own: a direct reference to Npgsql or EF Core 11 overrides them with NU1608, a warning, and the differ then ran against an EF Core it was never tested on. The message names `CodoMetis.EFCore.SchemaKit` as the package for EF Core 11. The check reads EF Core's version, not the runtime's, so EF Core 10 on .NET 11 keeps working. **Upgrading:** nothing changes on EF Core 10. An application on EF Core 11 now fails at startup or at `migrations add` with that message; NU1608 in its restore output is the sign it was running on a version this package never supported.
 
 ## 5.4.1
