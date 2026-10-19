@@ -96,8 +96,10 @@ Decided 2026-10-19 (#36, #37); this replaces the one-stream plan of 2026-09-19.
 **`EFCore.ComplexIndexes` 5.x (EF Core 10, `net10.0`, `release/5.x`).** 5.4.0 shipped 4.0. 5.5.0
 is the last minor with a change of its own: every registration entry point refuses an EF Core major
 other than 10 and names SchemaKit (#55). The dependency ceilings `[10.0.0, 11.0.0)` stay, but they
-don't keep an EF Core 11 application out on their own: a direct reference to Npgsql 11 overrides a
-transitive ceiling with NU1608, a warning. The check is on the EF Core major, never on the runtime,
+don't keep an EF Core 11 application out on their own. A prerelease such as 11.0.0-rc.2 sorts below
+11.0.0, so it is inside the range and restores with no warning at all (measured with SDK
+11.0.100-rc.2); only a GA release breaks the ceiling, and a direct reference then overrides it with
+NU1608, a warning (#74). The check is on the EF Core major, never on the runtime,
 because EF Core 10 on .NET 11 is a supported combination and its users belong to this line. After
 5.5.0 the line takes fixes only, until EF Core 10 leaves support (2028-11-10). Then the ids are
 deprecated with SchemaKit as the alternate.

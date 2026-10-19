@@ -857,9 +857,10 @@ CodoMetis:{Owner}:{hash}
 - `CodoMetis:` is the owner prefix, never the product name (ROADMAP 5.1), since keys live in
   consumers' snapshots forever. It sits beside EF's `Relational:` and the providers' `SqlServer:` and
   `Npgsql:`.
-- `Owner` is the contributor's namespace: `Pg.Index`, `Pg.Exclusion`, `SqlServer.Index`, later
-  `Pg.RowConstraint`, `Ltree.Path`. A package picks its own; the kernel refuses two contributors with
-  one owner at registration.
+- `Owner` is the declaration union's namespace: `Pg.Index`, `Pg.Exclusion`, `SqlServer.Index`; a
+  kernel union that every provider renders takes an unprefixed owner (`RowConstraint`, #64); a
+  package picks its own (`Ltree.Path`). The kernel refuses two contributors for one owner in one
+  context; a kernel union has one contributor per provider package, and a context has one provider.
 - `hash` is the first 16 hex digits of SHA-256 over the declaration's **store identity**. Declaring
   the same identity again overwrites the same annotation, which is the replace rule without a
   lookup, and a rename rewrites the value in place.
@@ -914,6 +915,7 @@ declaration changed.
 | `CustomExclusion:Constraints` | One `PgExclusion` per element; `method` picks the case |
 | `CustomTemporal:Constraints`, `CustomTemporal:ForeignKeys` | Not declarations any more ([section 12](#12-what-is-left-out-39)); read only so the handover to Npgsql's native keys is computed instead of drop-and-create (#59) |
 | `CustomTemporal:SuppressAutoExtension` | The same switch for `btree_gist` injection |
+| `CustomRowConstraint:Constraints` (if the delete guard ships on 5.x first, #64) | One `RowGuard` per element |
 | `CustomIndex:IndexParts`, `CustomTemporal:WithoutOverlaps`, `ForeignKeyDependentPeriod`, `ForeignKeyPrincipalPeriod` (on operations in old migrations) | Rendered by the legacy SQL generator; never written again |
 
 A 5.x declaration v2 cannot represent (a GIN index declared unique) never applied to a database; the
@@ -1315,7 +1317,7 @@ needs from the contract at most one optional interface:
 
 | Item | Declaration shape | Needs |
 |---|---|---|
-| Row constraints / delete guard (ROADMAP 4.2) | `PgRowGuard`, owner `Pg.RowConstraint`, cases `Delete(when?)`, `Update(when?)`, `Truncate`, `ImmutableColumn(path)`; append-only is a factory returning three values. `pg.DeleteGuard(name:, message:)` unconditional, `pg.DeleteGuard(when: x => x.FinalizedAt != null, name:, message:)` with `name` required (a parameter without a default: CS7036 when missing, since the application dispatches on it). Claims a trigger name and a constraint name. Designed for 5.x first (`design/delete-guard.md`, its own PR), stored there as a v1 blob the v1 reader adds a row for | Contract as-is |
+| Row constraints / delete guard (ROADMAP 4.2, #64) | A **kernel** union `RowGuard` (`OnDelete(when?)`, `OnUpdate(when?)`, `OnTruncate`, `Immutable(path)`), owner `RowConstraint`, because the same guard must render on PostgreSQL, SQL Server and the SQLite test database alike. Per-provider factories (`pg.`, `ss.`, `sqlite.`) offer only what the provider renders, and the provider markers sit on the **cases**, not the base, so an `OnTruncate` built for PostgreSQL does not compile into a SQLite list (P4 holds). Each provider package registers its own contributor for the owner; one context has one provider, so one contributor per owner per context still holds. `name` is required wherever a predicate is given (a parameter without a default: CS7036, since the application dispatches on it). Claims a trigger name and a constraint name. Designed for 5.x first in `design/delete-guard.md` (draft PR #65), stored there as the v1 blob `CustomRowConstraint:Constraints` | Contract as-is |
 | 7.1 Row-level security policies | `pg.Policy(name, PolicyCommand.Select, using: x => …, withCheck: x => …)`, `PolicyCommand` closed | A session-setting marker in the translator (`Session.Setting("app.tenant")`) |
 | 7.2 Extended statistics | `pg.Statistics(name, StatisticsKind.Dependencies \| …, [pg.Key(…)])` | Contract as-is |
 | 7.3 Domain types | `model.DeclarePostgres(pg => [pg.Domain<Email>("email", check: v => v.Value.Length <= 320)])` on the model | Below-table placement; a type-mapping plugin through the same options extension |
@@ -1334,7 +1336,7 @@ needs from the contract at most one optional interface:
    referenced, overload resolution between the two lambdas depends on the lambda body). Also to
    confirm: `PgSchema<T>` / `SqlServerSchema<T>` for the factories, `pg.Unique` as B-tree's unique
    form, `Sql.Raw<T>`, and the owners `Pg.Index`, `Pg.Exclusion`, `SqlServer.Index` (and
-   `Pg.RowConstraint` for the delete guard) that land in snapshots for good.
+   `RowConstraint` for the delete guard's kernel union, #64) that land in snapshots for good.
 2. **Column-only indexes (#39).** Keep SchemaKit's typed index for column-only keys next to the native
    `HasIndex`, as this design does, or leave column-only indexes to the platform and keep `PgIndex`
    for expression and JSON-member keys only? Keeping it is what makes P1 reach plain indexes.
