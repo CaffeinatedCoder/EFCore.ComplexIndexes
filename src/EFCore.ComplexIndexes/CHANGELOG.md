@@ -6,6 +6,12 @@ covers all three packages.
 
 ## 5.5.0
 
+### Changed answers
+
+- [#86](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/issues/86): on SQLite, `dotnet ef migrations add` refuses a migration that rebuilds a table carrying a complex index, instead of scaffolding one that silently drops it. SQLite runs an `ALTER COLUMN`, a `DROP COLUMN`, a key, foreign key, unique or check constraint change, and a table rename (EF renames the primary key with it) by rebuilding the table, and EF Core re-creates only its own indexes, so every complex index on the table vanished, unique ones included, while the migration applied cleanly and the snapshot still listed them. No operation in the same migration can re-create them, because EF's SQLite generator runs every rebuild last; the error names the indexes and the way out, three migrations: remove the declarations on the table, make the change, declare them again. **Upgrading:** a SQLite database that went through such a migration before is missing those indexes while its snapshot lists them. Check with `SELECT name FROM sqlite_master WHERE type = 'index'` and re-create any missing one with `migrationBuilder.Sql(…)` in a new migration.
+
+### Changed
+
 - **Changed:** `UseComplexIndexes()`, `AddComplexIndexes()` and the design-time
   registration throw `InvalidOperationException` when the EF Core
   they run on is not version 10, naming `CodoMetis.EFCore.SchemaKit` as the package for EF Core 11.
