@@ -71,7 +71,8 @@ CREATE TRIGGER "RC_Invoices_Finalized" BEFORE DELETE ON "billing"."Invoices"
 - **ROADMAP 4.2 needs six corrections** before it is implemented (section 2): the rename it plans
   reports the old name, `CREATE OR REPLACE` breaks under a second migration role, a column type
   change under a guard fails at apply time, and the typed predicate lets rows with a null column
-  through a guard their C# predicate covers. All four are verified.
+  through a guard their C# predicate covers (fixed for typed filters by #68, which guards then
+  inherit). All four are verified.
 - **Permanent from the first migration a consumer applies:** the function's name, signature and
   body, the trigger shape, the annotation key and JSON, the predicate rendering, the default name
   rule, and the SQLSTATE contract (section 6).
@@ -93,7 +94,7 @@ What it gets wrong or leaves out, each with what this design does instead:
 | 1 | A name-only change is `ALTER TRIGGER "old" ON t RENAME TO "new"`; the name is passed to the function as `TG_ARGV[0]` | The trigger is renamed, but its arguments are not: the guard keeps raising with `ConstraintName` = the **old** name. The application's error mapping, which dispatches on that name, silently stops matching. Verified: after the rename, `pg_get_triggerdef` still shows `('RC_Invoices_CreatedAt', …)` | The function reads the name from `TG_NAME`, which follows a rename. The only argument is the message. Rename stays a catalog update |
 | 2 | `CREATE OR REPLACE FUNCTION` in every migration that adds a guard, "the way `btree_gist` is handled" | Fails with 42501 "must be owner of function" when the migration runs under a role other than the one that created the function (a deploy role per environment, an ownership hand-over). Verified. And `REPLACE` would let any later package version silently change the behaviour of every guard already in the database | Create if missing: `CREATE FUNCTION` inside a `DO` block that swallows `duplicate_function` (42723). The body is frozen; a different body would get a different name (`codometis_row_constraint_v2`), never a replace |
 | 3 | Nothing about base operations on the columns a predicate reads | `ALTER COLUMN … TYPE` on a column used in a trigger's `WHEN` fails: "cannot alter type of a column used in a trigger definition" (verified). EF emits exactly that for a length or precision change. The migration fails at apply time, which is loud, but on every such change, and the consumer's only fix is hand-editing the migration | A guard whose resolved predicate reads a column that the base operations alter is dropped before them and created after them, even though its descriptor did not change (the temporal FK's forced rebuild, applied to guards) |
-| 4 | The typed overload runs `TranslatePredicate`, "exactly as typed filters do" | Typed filters render SQL three-valued logic: `x.Status != "Draft"` becomes `"Status" <> 'Draft'`, which is NULL for a null status. In a trigger `WHEN`, NULL means *does not fire*: the row is deleted, although the C# predicate the developer wrote is true for it. Verified. For a guard that is the whole failure: the protection silently has a hole | Guards translate with C# null semantics: `==`/`!=` with a nullable operand become `IS NOT DISTINCT FROM`/`IS DISTINCT FROM`, a comparison under `!` is wrapped in `COALESCE(…, FALSE)`. The same defect in typed index filters is a separate bug (filed against 5.x, see section 12) |
+| 4 | The typed overload runs `TranslatePredicate`, "exactly as typed filters do" | Typed filters rendered SQL three-valued logic: `x.Status != "Draft"` became `"Status" <> 'Draft'`, which is NULL for a null status. In a trigger `WHEN`, NULL means *does not fire*: the row is deleted, although the C# predicate the developer wrote is true for it. Verified. For a guard that is the whole failure: the protection silently has a hole | The same defect in typed index filters is #68, fixed for 5.5.0 in PR #69: `TranslatePredicate` now writes comparisons with a nullable operand as EF Core does (`"Status" <> 'Draft' OR "Status" IS NULL`) and pushes negations down to them. Guards reuse it unchanged, so this needs no guard-specific code once #69 is merged; a guard test pins it |
 | 5 | "Identifier length (63 bytes)" | PostgreSQL truncates a longer trigger name with only a NOTICE (verified). The next migration's `DROP TRIGGER IF EXISTS "<full name>"` finds nothing and the old trigger stays next to the new one | Kept, and moved to the top of the validations: a name over 63 UTF-8 bytes fails `migrations add`, through the existing `ThrowIfIdentifierTooLong` |
 | 6 | Name uniqueness "per table through the generic differ" | Trigger names are unique per table in PostgreSQL, but the application sees the guard as a *constraint*: a guard and a CHECK constraint may share a name (verified), and then the application cannot tell which one fired | The guard's name is claimed in the table's **constraint** namespace too, in `ValidateNamesAcrossKinds`: it may not equal a check, unique, exclusion, temporal or foreign key constraint name on the same table, nor another guard |
 
@@ -273,7 +274,7 @@ SchemaKit must render or read it unchanged forever:
 | Trigger arguments | `(message)` or none | Changing them is drop-and-create of every guard |
 | Trigger shape | `BEFORE DELETE … FOR EACH ROW [WHEN (…)] EXECUTE FUNCTION …` | SchemaKit's diff compares resolved descriptors; another shape is a rebuild |
 | Trigger name | the declared name; default `RC_{table}` for the unconditional form | Snapshot and database both hold it; the application dispatches on it |
-| Predicate rendering | placeholders → `OLD."col"`, JSON members as the 5.4.0 rendering with `OLD.` on the container, C# null semantics (section 2, finding 4) | Resolved on both sides at diff time: a rendering change would never reach existing databases. Carried as a guard rendering version, so a future change is a deliberate rebuild (the `RenderingVersion` rule) |
+| Predicate rendering | placeholders → `OLD."col"`, JSON members as the 5.4.0 rendering with `OLD.` on the container, C# null semantics as `TranslatePredicate` writes them since #68 (section 2, finding 4) | Resolved on both sides at diff time: a rendering change would never reach existing databases. Carried as a guard rendering version, so a future change is a deliberate rebuild (the `RenderingVersion` rule) |
 | Annotation key | `CustomRowConstraint:Constraints` on the entity type | In every snapshot |
 | JSON | `event`, `when`, `name`, `message`; fixed order; absent = null; `event` values `delete` (later `update`, `truncate`, `immutable`) | Read by SchemaKit's v1 reader forever |
 | EF trigger metadata | `HasTrigger(<name>)` on the table | In the snapshot; SQL Server's update pipeline depends on it |
@@ -384,7 +385,7 @@ lines.
 | Declaration, definition, JSON storage, read model, mutable API | `NpgsqlDeleteGuardExtensions.cs`, `RowConstraintDefinition.cs`, `RowConstraintDeclaration.cs`, `NpgsqlRowConstraintModelExtensions.cs`, `NpgsqlRowConstraintMutableExtensions.cs`, `NpgsqlRowConstraintAnnotations.cs` | ~450 lines |
 | Differ step, forced rebuild, function DDL, name claims | `NpgsqlComplexIndexMigrationsModelDiffer.cs` | ~300 lines |
 | Row qualifier in `ResolveFilter` | `CustomMigrationsModelDiffer.cs` (core) | ~30 lines; makes it a core minor too |
-| C# null semantics for guard predicates | `NpgsqlLinqIndexTranslator.cs` | ~80 lines |
+| C# null semantics for guard predicates | none: inherited from `TranslatePredicate` after #68 | a test |
 | Tests | differ (create, drop, rename, message change, no churn, forced rebuild, ordering), snapshot round trip with a compiled snapshot, read model, every validation with `verify-the-guard`, translator null semantics, integration on 16 and 18 (23514 and `ConstraintName` via SaveChanges and ExecuteDelete, cascade, rename keeps the name, ALTER COLUMN TYPE, idempotent script, second role), consumer smoke test assertion | ~1,100 lines, ~60 tests |
 | Docs | `docs/postgresql-guards.md`, README feature bullet and wiring-table row, root and package changelogs, CLAUDE.md paragraph, `migration-safety-review` checklist item | ~250 lines |
 
@@ -465,6 +466,6 @@ annotation, with no operations.
    `HasDeleteConstraint` (aligned with how the error surfaces)?
 4. **Owner in SchemaKit:** kernel `RowConstraint` with per-provider factories (section 8.2), or
    `Pg.RowConstraint`? To settle with #61.
-5. **Typed index filters have finding 4 too.** Filed separately against 5.x: fixing it changes the
-   index an existing model scaffolds, so it is a `silent` fix with a `### Changed answers` row, and
-   the planner-matching question (EF's own query for the same lambda) decides the rendering.
+5. **Typed index filters had finding 4 too.** That is #68, fixed for 5.5.0 by PR #69 with EF Core's
+   own null compensation (so the index stays usable for EF's query of the same lambda). The guard
+   design assumes it is merged.
