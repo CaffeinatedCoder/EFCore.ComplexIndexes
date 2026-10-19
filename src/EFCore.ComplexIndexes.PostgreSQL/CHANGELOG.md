@@ -6,6 +6,12 @@ covers all three packages.
 
 ## 5.5.0
 
+### Changed answers
+
+- [#72](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/issues/72): typed expression indexes render `Substring`, `Trim`, `TrimStart` and `TrimEnd` as EF Core's queries render them, so a query over the same lambda can use the index. `x.Code.Substring(1, 3)` was `substr("Code", 2, 3)` and is now `substring("Code", 2, 3)`; `x.Code.Trim()` was `btrim("Code")`, which trims spaces only, and is now `btrim("Code", E' \t\n\r')`. PostgreSQL treats `substr` and `substring` as different functions, so those indexes applied and served no query, and a unique index on `Trim()` accepted values that differ only in a trailing tab or line break. **Upgrading:** the first `migrations add` re-creates each typed expression index over these methods. A unique trimmed index may then refuse rows that differ only in tabs or line breaks at the ends, which are the duplicates it was declared to refuse.
+
+### Changed
+
 - **Changed:** `UseNpgsqlComplexIndexes()`, `AddNpgsqlComplexIndexes()` and the
   design-time registration throw `InvalidOperationException` when the EF Core
   they run on is not version 10, naming `CodoMetis.EFCore.SchemaKit` as the package for EF Core 11.

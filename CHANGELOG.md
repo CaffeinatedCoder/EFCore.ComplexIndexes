@@ -13,6 +13,12 @@ and from EF Core 11 on its successor is a new package, `CodoMetis.EFCore.SchemaK
 makes the line refuse EF Core 11 instead of running on it untested. After it the 5.x line takes
 fixes only, until EF Core 10 leaves support in November 2028.
 
+### Changed answers
+
+- [#72](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/issues/72): typed expression indexes render `Substring`, `Trim`, `TrimStart` and `TrimEnd` as EF Core's queries render them, so a query over the same lambda can use the index. `x.Code.Substring(1, 3)` was `substr("Code", 2, 3)` and is now `substring("Code", 2, 3)`; `x.Code.Trim()` was `btrim("Code")`, which trims spaces only, and is now `btrim("Code", E' \t\n\r')`. PostgreSQL treats `substr` and `substring` as different functions, so those indexes applied and served no query, and a unique index on `Trim()` accepted values that differ only in a trailing tab or line break. **Upgrading:** the first `migrations add` re-creates each typed expression index over these methods. A unique trimmed index may then refuse rows that differ only in tabs or line breaks at the ends, which are the duplicates it was declared to refuse.
+
+### Changed
+
 - **Changed:** every registration entry point throws `InvalidOperationException` when the EF Core it runs on is not version 10: `UseComplexIndexes()`, `UseNpgsqlComplexIndexes()`, `UseSqlServerComplexIndexes()`, their `Add…ComplexIndexes()` counterparts, and the design-time registration `dotnet ef` runs. The `[10.0.0, 11.0.0)` dependency ranges did not keep EF Core 11 out on their own: a direct reference to Npgsql or EF Core 11 overrides them with NU1608, a warning, and the differ then ran against an EF Core it was never tested on. The message names `CodoMetis.EFCore.SchemaKit` as the package for EF Core 11. The check reads EF Core's version, not the runtime's, so EF Core 10 on .NET 11 keeps working. **Upgrading:** nothing changes on EF Core 10. An application on EF Core 11 now fails at startup or at `migrations add` with that message; NU1608 in its restore output is the sign it was running on a version this package never supported.
 
 ## 5.4.1

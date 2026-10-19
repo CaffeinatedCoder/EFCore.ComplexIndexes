@@ -344,6 +344,35 @@ public class PostgresIntegrationTests
         AssertRejected("INSERT INTO ig_people (\"Id\", email) VALUES (2, 'a@EXAMPLE.com')");
     }
 
+    // ── Typed Trim(): the characters EF Core's queries trim ──
+
+    private class Tag
+    {
+        public int    Id    { get; set; }
+        public string Value { get; set; } = "";
+    }
+
+    private class TagContext(DbContextOptions<TagContext> options) : DbContext(options)
+    {
+        protected override void OnModelCreating(ModelBuilder modelBuilder) =>
+            modelBuilder.Entity<Tag>(b =>
+            {
+                b.ToTable("ig_tags");
+                b.HasKey(x => x.Id);
+                b.HasExpressionIndex(x => x.Value.Trim(), isUnique: true, indexName: "ux_ig_tags_value_trimmed");
+            });
+    }
+
+    [TestMethod(DisplayName = "A unique typed Trim() index treats a trailing tab as Trim() does")]
+    public void Typed_trim_index_trims_what_trim_trims()
+    {
+        Migrate<TagContext>();
+
+        // btrim(x) alone trims spaces only, so 'Y' and 'Y<tab>' both went in.
+        Sql("INSERT INTO ig_tags (\"Id\", \"Value\") VALUES (1, 'Y')");
+        AssertRejected("INSERT INTO ig_tags (\"Id\", \"Value\") VALUES (2, E'Y\\t')");
+    }
+
     // ── JSON-member index: unique index on a ToJson complex member ──
 
     private class CompanyName
