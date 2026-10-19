@@ -1,5 +1,8 @@
 # EFCore.ComplexIndexes
 
+> **On EF Core 11 or later?** Use `CodoMetis.EFCore.SchemaKit`, the successor to this package,
+> which serves EF Core 10 only and from 5.5.0 refuses to register on another major.
+
 Index support for **complex type properties** in EF Core migrations — the missing piece for value
 object-driven architectures.
 

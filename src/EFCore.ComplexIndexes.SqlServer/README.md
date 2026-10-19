@@ -1,5 +1,8 @@
 # EFCore.ComplexIndexes.SqlServer
 
+> **On EF Core 11 or later?** Use `CodoMetis.EFCore.SchemaKit`, the successor to this package,
+> which serves EF Core 10 only and from 5.5.0 refuses to register on another major.
+
 SQL Server index options for
 [EFCore.ComplexIndexes](https://www.nuget.org/packages/EFCore.ComplexIndexes/). The core package is
 included automatically.
