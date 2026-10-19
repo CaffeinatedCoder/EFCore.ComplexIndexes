@@ -61,3 +61,13 @@ public sealed class Category
     public int? ParentId { get; set; }
     public TreePath Path { get; set; }
 }
+
+/// <summary>Stands in for a CodoMetis.ValueRanges range type SchemaKit knows nothing about.</summary>
+public readonly record struct DayRange(DateOnly Start, DateOnly End);
+
+public sealed class Booking
+{
+    public int Id { get; set; }
+    public int RoomId { get; set; }
+    public DayRange Validity { get; set; }
+}

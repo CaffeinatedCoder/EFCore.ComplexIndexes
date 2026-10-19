@@ -96,6 +96,26 @@ public static class ProbeCatalogue
         }
         """;
 
+    /// <summary>Vocabulary only: what CodoMetis.ValueRanges adds so its own range types are typed exclusion operands.</summary>
+    private const string RangeVocabulary = """
+        public static class ValueRangesSchemaExtensions
+        {
+            extension<TEntity>(ExclusionDraft<TEntity> draft) where TEntity : class
+            {
+                public ExclusionElements<TEntity> Overlaps(System.Linq.Expressions.Expression<Func<TEntity, DayRange>> range)
+                    => draft.WithUncheckedOperator(range, "&&");
+            }
+        }
+        """;
+
+    private const string BookingConfiguration = """
+        public static class BookingConfiguration
+        {
+            public static void Configure(EntityTypeBuilder<Booking> b) =>
+                b.DeclarePostgres(pg => [pg.Exclusion(pg.Equal(x => x.RoomId).Overlaps(x => x.Validity))]);
+        }
+        """;
+
     private static string Without(string source, string from, string to) =>
         source[..source.IndexOf(from, StringComparison.Ordinal)] + source[(source.IndexOf(to, StringComparison.Ordinal) + to.Length)..];
 
@@ -257,5 +277,11 @@ public static class ProbeCatalogue
             LtreeExtension.Replace("b./*APPLY*/DeclarePostgres(pg => [pg.MaintainedPath(x => x.Path, x => x.ParentId), pg.Gist([pg.Key(x => x.Path)])]);",
                 "b.DeclareSqlServer(ss => [PgSchema.For<Category>().MaintainedPath(x => x.Path, x => x.ParentId)]);"),
             "CS0029"),
+
+        // ── V: vocabulary from another package, no contributor ────────────────────────────
+        new("V1.operand-by-extension-member", "V", ProbeShape.TopLevel,
+            RangeVocabulary + BookingConfiguration,
+            BookingConfiguration,
+            "CS0411"),
     ];
 }
