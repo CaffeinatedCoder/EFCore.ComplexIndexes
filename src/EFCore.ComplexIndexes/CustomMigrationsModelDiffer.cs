@@ -381,6 +381,29 @@ public class CustomMigrationsModelDiffer(
     protected virtual string ToOperationAnnotationName(string annotationName) => annotationName;
 
     /// <summary>
+    /// The filter a provider gives an index declared without one, the way EF Core's conventions give
+    /// it to the provider's own indexes. Null in the core.
+    /// </summary>
+    /// <remarks>
+    /// Resolved on both sides of the diff, like every other part of the descriptor, so a provider that
+    /// starts adding one must gate it on <see cref="ComplexIndexAnnotations.RenderingVersion"/>:
+    /// otherwise the source would resolve alike and an existing index would never change.
+    /// </remarks>
+    /// <param name="entityType">The entity type that declares the index.</param>
+    /// <param name="storeObject">The index's table.</param>
+    /// <param name="columns">The index's key columns, expression parts left out.</param>
+    /// <param name="isUnique">Whether the index is unique.</param>
+    /// <param name="providerAnnotations">The index's forwarded provider options.</param>
+    /// <returns>The filter, or null for none.</returns>
+    protected virtual string? ImplicitFilter(
+        IEntityType                           entityType,
+        StoreObjectIdentifier                 storeObject,
+        IReadOnlyList<string>                 columns,
+        bool                                  isUnique,
+        IReadOnlyDictionary<string, object?>  providerAnnotations
+    ) => null;
+
+    /// <summary>
     /// Transforms a forwarded provider-annotation value before it is compared and stamped onto the
     /// index operation. Satellites use this to resolve property paths inside their option values —
     /// e.g. INCLUDE lists — to column names. The default returns the value unchanged.
@@ -885,7 +908,10 @@ public class CustomMigrationsModelDiffer(
                 providerAnnotations[annotation.Name] = TransformIndexAnnotation(entityType, annotation.Name, annotation.Value, storeObject);
         }
 
-        return new IndexDescriptor(tableName, schema, [part], indexName, declaration.IsUnique, ResolveFilter(entityType, declaration.Filter, storeObject), providerAnnotations);
+        var filter = ResolveFilter(entityType, declaration.Filter, storeObject)
+                  ?? ImplicitFilter(entityType, storeObject, part.IsExpression ? [] : [part.Value], declaration.IsUnique, providerAnnotations);
+
+        return new IndexDescriptor(tableName, schema, [part], indexName, declaration.IsUnique, filter, providerAnnotations);
     }
 
     private IndexDescriptor ResolveEntityLevelIndex(
@@ -934,7 +960,10 @@ public class CustomMigrationsModelDiffer(
         foreach (var (key, value) in declaration.ProviderAnnotations)
             providerAnnotations[key] = TransformIndexAnnotation(entityType, key, value, storeObject);
 
-        return new IndexDescriptor(tableName, schema, parts, indexName, declaration.IsUnique, ResolveFilter(entityType, declaration.Filter, storeObject), providerAnnotations);
+        var filter = ResolveFilter(entityType, declaration.Filter, storeObject)
+                  ?? ImplicitFilter(entityType, storeObject, [.. parts.Where(p => !p.IsExpression).Select(p => p.Value)], declaration.IsUnique, providerAnnotations);
+
+        return new IndexDescriptor(tableName, schema, parts, indexName, declaration.IsUnique, filter, providerAnnotations);
     }
 
     // Builds a default index-name token for a part: column names pass through; expressions are
