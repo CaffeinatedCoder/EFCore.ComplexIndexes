@@ -6,6 +6,15 @@ covering only what changed for that package:
 [PostgreSQL](src/EFCore.ComplexIndexes.PostgreSQL/CHANGELOG.md),
 [SQL Server](src/EFCore.ComplexIndexes.SqlServer/CHANGELOG.md).
 
+## 5.5.0
+
+The last minor of EFCore.ComplexIndexes with a change of its own. The package serves EF Core 10,
+and from EF Core 11 on its successor is a new package, `CodoMetis.EFCore.SchemaKit`. This release
+makes the line refuse EF Core 11 instead of running on it untested. After it the 5.x line takes
+fixes only, until EF Core 10 leaves support in November 2028.
+
+- **Changed:** every registration entry point throws `InvalidOperationException` when the EF Core it runs on is not version 10: `UseComplexIndexes()`, `UseNpgsqlComplexIndexes()`, `UseSqlServerComplexIndexes()`, their `Add…ComplexIndexes()` counterparts, and the design-time registration `dotnet ef` runs. The `[10.0.0, 11.0.0)` dependency ranges did not keep EF Core 11 out on their own: a direct reference to Npgsql or EF Core 11 overrides them with NU1608, a warning, and the differ then ran against an EF Core it was never tested on. The message names `CodoMetis.EFCore.SchemaKit` as the package for EF Core 11. The check reads EF Core's version, not the runtime's, so EF Core 10 on .NET 11 keeps working. **Upgrading:** nothing changes on EF Core 10. An application on EF Core 11 now fails at startup or at `migrations add` with that message; NU1608 in its restore output is the sign it was running on a version this package never supported.
+
 ## 5.4.1
 
 One fix, to the index-name check: it compared names per table on every provider, so on SQLite a name

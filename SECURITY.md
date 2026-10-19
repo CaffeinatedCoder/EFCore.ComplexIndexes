@@ -45,10 +45,12 @@ Reporters are credited in the advisory unless they ask not to be.
 
 ## Supported versions
 
-Up to two lines are supported at once, one per EF Core major: the LTS line and the current line.
-Each receives security fixes on its latest released minor. Older minors of a line are fixed by
-upgrading to its latest minor, which never changes the EF Core major you target. Older lines are
-not maintained — the remedy for those is to upgrade.
+Up to two lines are supported at once, one per EF Core major. From EF Core 11 on the line ships
+under a new package id: `EFCore.ComplexIndexes` 5.x serves EF Core 10, and its successor
+`CodoMetis.EFCore.SchemaKit` 11.x serves EF Core 11. Each line receives security fixes on its
+latest released minor. Older minors of a line are fixed by upgrading to its latest minor, which
+never changes the EF Core major you target. Older lines are not maintained — the remedy for those
+is to upgrade.
 
 | Version | Supported |
 |---|---|
@@ -60,27 +62,28 @@ in the next preview.
 
 ### How the table changes
 
-- **Until 10.0.0 ships**, one line is supported: 5.4.x, under the current package ids.
-- **When 10.0.0 ships**, under the new `CodoMetis.` package ids, 5.x stops receiving fixes and
-  10.0.x takes its row. The 11.0.0 previews continue and still have no row.
-- **When 11.0.0 ships**, the table gets its second row: 11.0.x, and below it the latest 10.x
-  minor. From then on each line's row moves when that line ships a minor.
+- **Until SchemaKit 11.0.0 ships**, one line is supported: the latest 5.x minor.
+- **When SchemaKit 11.0.0 ships**, the table gets its second row: 11.0.x, and below it the latest
+  5.x minor. From then on each line's row moves when that line ships a minor.
+- **When EF Core 10 leaves support** (November 2028), 5.x stops receiving fixes and its row goes.
+  The `EFCore.ComplexIndexes` ids are then deprecated on nuget.org with SchemaKit as the
+  alternate, and not before: while EF Core 10 is supported they are the only package serving it.
 
 ### For how long
 
 There is no fixed end-of-support date. Each line is tied to the EF Core major it targets:
 
-- **5.x** targets **EF Core 10** (`net10.0`) and receives fixes until 10.0.0 ships.
-- **10.x**, the LTS line, targets **EF Core 10** (`net10.0`, .NET 10 LTS). The intention is to
-  maintain it for as long as Microsoft supports EF Core 10 (until November 2028).
-- **11.x** targets **EF Core 11** (`net11.0`, .NET 11, Npgsql 11), as previews until EF Core 11 is
-  released. The intention is to maintain it for as long as Microsoft supports EF Core 11.
+- **5.x** targets **EF Core 10** (`net10.0`, .NET 10 LTS, and EF Core 10 on .NET 11 too). From
+  5.5.0 on it refuses to register on any other EF Core major, and it takes fixes only. The
+  intention is to maintain it for as long as Microsoft supports EF Core 10 (until November 2028).
+- **11.x**, published as `CodoMetis.EFCore.SchemaKit`, targets **EF Core 11** (`net11.0`, .NET 11,
+  Npgsql 11), as previews until it is released. The intention is to maintain it for as long as
+  Microsoft supports EF Core 11.
 
-From 11.0.0 on, a new major means a new EF Core release, and nothing else. A fix that changes
-what a migration scaffolds for an existing model ships as a minor on every supported line, with a
-"Changed answers" section at the top of that version's changelog entry, so a line never stops
-receiving the fixes that matter most. If this intention changes, it is recorded here before
-anywhere else.
+A new major means a new EF Core release, and nothing else. A fix that changes what a migration
+scaffolds for an existing model ships as a minor on every supported line, with a "Changed answers"
+section at the top of that version's changelog entry, so a line never stops receiving the fixes
+that matter most. If this intention changes, it is recorded here before anywhere else.
 
 ### If this project stops being maintained
 
