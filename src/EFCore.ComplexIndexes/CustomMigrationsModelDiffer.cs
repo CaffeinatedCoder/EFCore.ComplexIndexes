@@ -52,6 +52,11 @@ public class CustomMigrationsModelDiffer(
     /// </summary>
     public const string RuntimeWiringSentinel = "__requires_UseNpgsqlComplexIndexes__";
 
+    // Read from the type mapping source because the differ has no other view of the provider; the
+    // core serves SQLite without a satellite.
+    private readonly bool _rebuildsTablesLikeSqlite =
+        typeMappingSource.GetType().Namespace?.StartsWith("Microsoft.EntityFrameworkCore.Sqlite", StringComparison.Ordinal) == true;
+
     /// <summary>
     /// Runs EF Core's own diff, then adds the operations for complex-type indexes.
     /// </summary>
@@ -82,6 +87,9 @@ public class CustomMigrationsModelDiffer(
 
         if (sourceIndexes.Count == 0 && targetIndexes.Count == 0)
             return operations;
+
+        if (_rebuildsTablesLikeSqlite)
+            ThrowIfSqliteRebuildDropsIndexes(operations, targetIndexes);
 
         var droppedTables = operations
                            .OfType<DropTableOperation>()
@@ -199,6 +207,84 @@ public class CustomMigrationsModelDiffer(
             return operations;
 
         return [.. drops, .. operations, .. renames, .. creates];
+    }
+
+    /// <summary>
+    /// Fails when SQLite would rebuild a table that carries a complex index.
+    /// </summary>
+    /// <remarks>
+    /// SQLite runs an <c>ALTER COLUMN</c>, a <c>DROP COLUMN</c> and every key, foreign key, unique or
+    /// check constraint change by rebuilding the table (<c>CREATE TABLE "ef_temp_…"</c>, copy, drop,
+    /// rename), and EF Core re-creates only the indexes in its own model. Every complex index on the
+    /// table vanished, unique ones included, the migration applied cleanly, and the snapshot still
+    /// listed the index. Dropping it before and creating it after does not help here:
+    /// <c>SqliteMigrationsSqlGenerator</c> emits every rebuild after all other operations of the
+    /// migration, so any <c>CREATE INDEX</c> from this differ runs first and goes down with the old
+    /// table. The list mirrors that generator's <c>RewriteOperations</c> (EF Core 10).
+    /// </remarks>
+    private static void ThrowIfSqliteRebuildDropsIndexes(
+        IReadOnlyList<MigrationOperation> operations, HashSet<IndexDescriptor> targetIndexes)
+    {
+        var created = operations.OfType<CreateTableOperation>().Select(o => (o.Name, o.Schema)).ToHashSet();
+
+        // Operations before a RenameTable name the old table; the rebuild runs under the new name.
+        var renamed = new Dictionary<(string Name, string? Schema), (string Name, string? Schema)>();
+        var rebuilt = new Dictionary<(string Name, string? Schema), MigrationOperation>();
+
+        foreach (var operation in operations)
+        {
+            if (operation is RenameTableOperation rename)
+            {
+                var to = (rename.NewName ?? rename.Name, rename.NewSchema);
+                foreach (var key in renamed.Where(r => r.Value == (rename.Name, rename.Schema)).Select(r => r.Key).ToList())
+                    renamed[key] = to;
+                renamed[(rename.Name, rename.Schema)] = to;
+                if (rebuilt.Remove((rename.Name, rename.Schema), out var trigger))
+                    rebuilt[to] = trigger;
+                continue;
+            }
+
+            var rebuilds = operation switch
+            {
+                AddForeignKeyOperation foreignKey => !created.Contains((foreignKey.Table, foreignKey.Schema)),
+                AddColumnOperation addColumn      => addColumn.Comment is not null,
+                AlterColumnOperation or DropColumnOperation or AlterTableOperation
+                    or AddPrimaryKeyOperation or DropPrimaryKeyOperation
+                    or AddUniqueConstraintOperation or DropUniqueConstraintOperation
+                    or AddCheckConstraintOperation or DropCheckConstraintOperation
+                    or DropForeignKeyOperation => true,
+                _ => false,
+            };
+
+            if (rebuilds && operation is ITableMigrationOperation table)
+                rebuilt.TryAdd((table.Table, table.Schema), operation);
+            else if (rebuilds && operation is AlterTableOperation alterTable)
+                rebuilt.TryAdd((alterTable.Name, alterTable.Schema), operation);
+        }
+
+        foreach (var ((table, schema), trigger) in rebuilt)
+        {
+            var lost = targetIndexes.Where(i => i.TableName == table && i.Schema == schema)
+                                    .Select(i => $"'{i.IndexName}'")
+                                    .ToList();
+            if (lost.Count == 0)
+                continue;
+
+            var what = trigger switch
+            {
+                AlterColumnOperation alter => $"altering column '{alter.Name}'",
+                DropColumnOperation drop   => $"dropping column '{drop.Name}'",
+                _                          => $"a {trigger.GetType().Name.Replace("Operation", "")}",
+            };
+
+            throw new InvalidOperationException(
+                $"SQLite rebuilds table '{table}' for this migration ({what}) and re-creates only the indexes EF Core "
+              + $"knows, so the complex index{(lost.Count == 1 ? "" : "es")} {string.Join(", ", lost)} on it would be dropped "
+              + "and not created again, while the migration applies cleanly. No operation in the same migration can "
+              + "re-create it: EF Core's SQLite generator runs every table rebuild after all other operations. Split the "
+              + $"change into three migrations: remove the complex index declarations on '{table}' and add a migration; "
+              + "make this change and add a migration; declare the indexes again and add a migration.");
+        }
     }
 
     /// <summary>

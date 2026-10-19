@@ -6,6 +6,12 @@ covers all three packages.
 
 ## 5.5.0
 
+### Changed answers
+
+- [#68](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/issues/68): a typed filter whose comparison has an operand that can be null now keeps C#'s answer for the rows where it is null, written the way EF Core writes the same lambda in a query. `x => x.Kind != "federated"` on a `string?` scaffolded `"Kind" <> 'federated'`, which is NULL for a null `Kind`, so those rows fell out of the partial index and a unique index did not enforce on them; it is now `("Kind" <> 'federated' OR "Kind" IS NULL)`. A negation over such a comparison is pushed down to it (`!(x.Maybe > 5)` is `("Maybe" <= 5 OR "Maybe" IS NULL)`), and a captured variable holding null compares with `IS [NOT] NULL` instead of `= NULL`, which matched no row. This covers every typed filter: `HasComplexIndex`, `HasComplexCompositeIndex` and `HasExpressionIndex` with a predicate, `HasFilter<T>`, `AddComplexIndexFilter<T>`, and exclusion-constraint filters. Operands that cannot be null (a non-nullable value type, or a reference type annotated non-nullable) translate as before. **Upgrading:** the first `migrations add` drops and re-creates each index and exclusion constraint whose typed filter changed. A unique index now covers rows it left out, so re-creating it fails if those rows hold duplicates; those are duplicates it should have refused.
+
+### Changed
+
 - **Changed:** `UseNpgsqlComplexIndexes()`, `AddNpgsqlComplexIndexes()` and the
   design-time registration throw `InvalidOperationException` when the EF Core
   they run on is not version 10, naming `CodoMetis.EFCore.SchemaKit` as the package for EF Core 11.
