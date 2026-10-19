@@ -6,6 +6,12 @@ covers all three packages.
 
 ## 5.5.0
 
+### Changed answers
+
+- [#70](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/issues/70): a brace in a string literal of a typed filter is compared as written. `x => x.Code != "{draft}"` scaffolded `"Code" <> '{{draft}}'`, a different value, so rows whose code is `{draft}` were indexed (and constrained, if unique) although the filter excludes them; it is now `"Code" <> '{draft}'`. Typed expression indexes were not affected. **Upgrading:** the first `migrations add` re-creates each index and exclusion constraint whose typed filter has a brace in a string literal.
+
+### Changed
+
 - **Changed:** `UseNpgsqlComplexIndexes()`, `AddNpgsqlComplexIndexes()` and the
   design-time registration throw `InvalidOperationException` when the EF Core
   they run on is not version 10, naming `CodoMetis.EFCore.SchemaKit` as the package for EF Core 11.
