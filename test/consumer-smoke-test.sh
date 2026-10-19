@@ -42,6 +42,15 @@ export NUGET_PACKAGES="$work/packages"
 version="$(dotnet msbuild "$repo_root/src/EFCore.ComplexIndexes/EFCore.ComplexIndexes.csproj" -getProperty:Version)"
 version="$(echo "$version" | tr -d '[:space:]')"
 
+# The EF Core version the packages are built against, for the consumer's design-time package and
+# the dotnet-ef tool. Not "latest": while EF Core 11 is in prerelease, Npgsql pins
+# Microsoft.EntityFrameworkCore to one exact build, so a consumer whose Design package is one RC
+# ahead of the provider fails to restore with NU1107 — which is a real consumer's problem too, but
+# not the one this test exists to find.
+ef_version="$(sed -n 's/.*Include="Microsoft.EntityFrameworkCore.Design" Version="\([^"]*\)".*/\1/p' \
+                 "$repo_root/src/EFCore.ComplexIndexes/EFCore.ComplexIndexes.csproj" | head -1)"
+[[ -n "$ef_version" ]] || { echo "Could not read the Microsoft.EntityFrameworkCore.Design version from the core csproj."; exit 1; }
+
 if [[ -z "$feed" ]]; then
     feed="$work/feed"
     echo "==> Packing $version"
@@ -73,7 +82,7 @@ assert_contains() {
 }
 
 # One tool install shared by both consumers; the per-project alternative downloads it twice.
-run dotnet tool install dotnet-ef --version "10.*" --tool-path "$work/tools"
+run dotnet tool install dotnet-ef --version "$ef_version" --tool-path "$work/tools"
 export PATH="$work/tools:$PATH"
 
 # Creates a consumer project and installs the satellite. Program.cs is written by the caller
@@ -91,7 +100,7 @@ scaffold_consumer() {
     echo "==> $name: consumer project, $package"
     mkdir -p "$app"
     cd "$app"
-    run dotnet new console --framework net10.0 --output .
+    run dotnet new console --framework net11.0 --output .
 
     cat > nuget.config <<XML
 <?xml version="1.0" encoding="utf-8"?>
@@ -117,7 +126,7 @@ XML
     # No --source flag: it would override the mapping above and restrict the whole restore,
     # transitive dependencies included, to the local feed.
     run dotnet add package "$package" --version "$version"
-    run dotnet add package Microsoft.EntityFrameworkCore.Design
+    run dotnet add package Microsoft.EntityFrameworkCore.Design --version "$ef_version"
 
     # Built explicitly first: `dotnet ef` reports a compile error only as "Build failed. Use dotnet
     # build to see the errors", which in CI is indistinguishable from the design-time host failing.

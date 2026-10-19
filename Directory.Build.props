@@ -1,6 +1,6 @@
 <Project>
     <PropertyGroup>
-        <Version>5.4.1</Version>
+        <Version>11.0.0-preview.1</Version>
         <Authors>CaffeinatedCoder</Authors>
         <PackageLicenseExpression>MIT</PackageLicenseExpression>
         <GenerateDocumentationFile>true</GenerateDocumentationFile>
@@ -60,10 +60,17 @@
         changelog — commit it, and delete it after the release once the baseline moves past it. A
         new package with no release yet sets PackageValidationBaselineVersion empty in its own
         csproj until it has one.
+
+        On the 11 line the baseline is a net10.0 release and the packages ship net11.0 only, so the
+        baseline validator reports PKV006 (target framework dropped) and, with nothing left to pair
+        the frameworks, compares no API at all. Each package suppresses PKV006 in its
+        CompatibilitySuppressions.xml — the retarget is the deliberate break — which means the pack
+        no longer fails on a removed public member until an 11-line release becomes the baseline.
+        The surface is checked by hand with the apicompat tool until then; see issue #46.
     -->
     <PropertyGroup>
         <EnablePackageValidation>true</EnablePackageValidation>
-        <PackageValidationBaselineVersion>5.4.0</PackageValidationBaselineVersion>
+        <PackageValidationBaselineVersion>5.4.1</PackageValidationBaselineVersion>
     </PropertyGroup>
 
     <!--

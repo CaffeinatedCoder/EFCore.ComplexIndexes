@@ -4,6 +4,13 @@ Changes to the PostgreSQL satellite, newest first. The
 [root changelog](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/CHANGELOG.md)
 covers all three packages.
 
+## 11.0.0-preview.1
+
+- **Changed:** targets `net11.0` and requires EF Core 11 and Npgsql.EntityFrameworkCore.PostgreSQL 11. The retarget alone; the public
+  surface is that of 5.4.1. See the
+  [root changelog](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/CHANGELOG.md)
+  for the dependency floors and the prerelease pin.
+
 ## 5.4.0
 
 - **Fixed:** indexes on `ToJson()` members are written the way Npgsql's queries read the member —
