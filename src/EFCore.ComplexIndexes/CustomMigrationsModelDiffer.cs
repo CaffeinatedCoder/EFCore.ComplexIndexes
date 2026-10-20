@@ -201,7 +201,7 @@ public class CustomMigrationsModelDiffer(
 
         // A drop/create pair that differs only by name is a rename — cheap DDL instead of an index
         // rebuild — on providers whose generator can rename these indexes standalone.
-        var renames = new List<MigrationOperation>();
+        var renamePairs = new List<(IndexDescriptor From, IndexDescriptor To)>();
         if (CanRenameIndexes)
         {
             for (var i = pendingDrops.Count - 1; i >= 0; i--)
@@ -211,13 +211,7 @@ public class CustomMigrationsModelDiffer(
                 if (renamed is null)
                     continue;
 
-                renames.Add(new RenameIndexOperation
-                            {
-                                Name    = dropped.IndexName,
-                                NewName = renamed.IndexName,
-                                Table   = renamed.TableName,
-                                Schema  = renamed.Schema
-                            });
+                renamePairs.Add((dropped, renamed));
                 pendingDrops.RemoveAt(i);
                 pendingCreates.Remove(renamed);
             }
@@ -226,23 +220,49 @@ public class CustomMigrationsModelDiffer(
         // An unchanged index can still be in the way of a base operation, because EF does not know
         // it exists and so never moves it: SQL Server refuses to alter a column an index uses. Such
         // an index is dropped before the base operations and created after them, like a changed one.
+        bool InTheWay(IndexDescriptor current)
+        {
+            var columns = ColumnsReadBy(target!, current);
+            return operations.Any(o => o is ITableMigrationOperation table
+                                    && table.Table  == current.TableName
+                                    && table.Schema == current.Schema
+                                    && RequiresIndexRecreation(o, columns));
+        }
+
         if (target is not null)
         {
             foreach (var (kept, origin) in normalizedSource)
             {
-                if (!targetIndexes.TryGetValue(kept, out var current) || droppedTables.Contains(origin))
-                    continue;
-
-                var columns = ColumnsReadBy(target, current);
-                if (!operations.Any(o => o is ITableMigrationOperation table
-                                      && table.Table  == current.TableName
-                                      && table.Schema == current.Schema
-                                      && RequiresIndexRecreation(o, columns)))
+                if (!targetIndexes.TryGetValue(kept, out var current) || droppedTables.Contains(origin) || !InTheWay(current))
                     continue;
 
                 pendingDrops.Add(kept);
                 pendingCreates.Add(current);
             }
+        }
+
+        // Renames run after the base operations, so a rename stays one only when nothing before it
+        // needs its index gone: not a base operation the index is in the way of (#141), and not
+        // anything the target model gives the old name to, which the base operations may create
+        // first (#143) — a native index, a key, another complex index renamed into it. Otherwise the
+        // pair is a drop under the old name before the base operations and a create after them.
+        var renames = new List<MigrationOperation>();
+        foreach (var (from, to) in renamePairs)
+        {
+            if (target is not null && (InTheWay(to) || IsIndexNameInUse(target, targetIndexes, to, from.IndexName)))
+            {
+                pendingDrops.Add(from);
+                pendingCreates.Add(to);
+                continue;
+            }
+
+            renames.Add(new RenameIndexOperation
+                        {
+                            Name    = from.IndexName,
+                            NewName = to.IndexName,
+                            Table   = to.TableName,
+                            Schema  = to.Schema
+                        });
         }
 
         // A rebuild drops every index on the table and re-creates only EF Core's. Each complex index
@@ -1095,6 +1115,34 @@ public class CustomMigrationsModelDiffer(
            };
 
     private NameKeyComparer NameKeys => new(IndexNameComparer);
+
+    /// <summary>
+    /// Whether the target model gives an index name, within the provider's
+    /// <see cref="IndexNameScope"/>, to a complex index, a native index or a key — so that a complex
+    /// index renamed away from it cannot be renamed after the base operations, which may already
+    /// have created the other object under it.
+    /// </summary>
+    /// <remarks>
+    /// Over-approximates on purpose: an object created after the renames, such as another complex
+    /// index, costs the renamed index a rebuild it did not need, where missing one fails the
+    /// migration at apply. The PostgreSQL satellite adds the rest of its relation namespace.
+    /// </remarks>
+    /// <param name="target">The target model.</param>
+    /// <param name="targetIndexes">The complex indexes of the target model.</param>
+    /// <param name="renamed">The renamed index, under its new name. It never counts against itself,
+    /// which a rename that changes only the case would under a comparer that ignores case.</param>
+    /// <param name="name">The name it is renamed away from.</param>
+    internal virtual bool IsIndexNameInUse(
+        IRelationalModel target, IReadOnlyCollection<IndexDescriptor> targetIndexes, IndexDescriptor renamed, string name)
+    {
+        var key  = NameKey(renamed.TableName, renamed.Schema, name);
+        var keys = NameKeys;
+
+        return targetIndexes.Any(i => !ReferenceEquals(i, renamed) && keys.Equals(NameKey(i.TableName, i.Schema, i.IndexName), key))
+            || target.Tables.Any(t => t.Indexes.Select(i => i.Name)
+                                       .Concat(t.UniqueConstraints.Select(c => c.Name))
+                                       .Any(n => keys.Equals(NameKey(t.Name, t.Schema, n), key)));
+    }
 
     private string UniquenessRule(bool sameTable, bool ignoringCase)
         => (sameTable, IndexNameScope) switch

@@ -511,6 +511,48 @@ public class SqlServerIntegrationTests
         AssertDuplicateRefused("INSERT INTO customers (Id, name, email, phone) VALUES (NEWID(), N'b', N'b@x', N'1')");
     }
 
+    // A renamed index under the shrinking column: once with its default name, which changes with
+    // the table, and once renamed explicitly on the same table.
+    private class RenameUnderAlterV1Context(DbContextOptions<RenameUnderAlterV1Context> options) : CustomerContext(options)
+    {
+        protected override int PhoneLength => 64;
+
+        protected override void Declare(EntityTypeBuilder<Customer> b)
+        {
+            b.HasComplexIndex(x => x.Contact.Phone, isUnique: true);
+            b.HasComplexIndex(x => x.Contact.Email, indexName: "ix_email_v1");
+        }
+    }
+
+    private class RenameUnderAlterV2Context(DbContextOptions<RenameUnderAlterV2Context> options) : CustomerContext(options)
+    {
+        protected override string Table       => "clients";
+        protected override int    EmailLength => 128;
+
+        protected override void Declare(EntityTypeBuilder<Customer> b)
+        {
+            b.HasComplexIndex(x => x.Contact.Phone, isUnique: true);
+            b.HasComplexIndex(x => x.Contact.Email, indexName: "ix_email_v2");
+        }
+    }
+
+    [TestMethod(DisplayName = "ALTER COLUMN under a renamed complex index applies (#141)")]
+    public void Alter_column_under_a_renamed_index_applies()
+    {
+        var v1 = Model<RenameUnderAlterV1Context>();
+        Migrate(null, v1);
+        Sql("INSERT INTO customers (Id, name, email, phone) VALUES (NEWID(), N'a', N'a@x', N'1')");
+
+        // Failed with Msg 5074: the renames ran after the ALTER COLUMN, with the indexes still in place.
+        Migrate(v1, Model<RenameUnderAlterV2Context>());
+
+        Assert.IsNull(ReadIndex("clients", "IX_customers_phone"));
+        Assert.IsNull(ReadIndex("clients", "ix_email_v1"));
+        Assert.IsTrue(AssertIndex("clients", "IX_clients_phone").IsUnique);
+        CollectionAssert.AreEqual(new[] { "email" }, AssertIndex("clients", "ix_email_v2").Keys);
+        AssertDuplicateRefused("INSERT INTO clients (Id, name, email, phone) VALUES (NEWID(), N'b', N'b@x', N'1')");
+    }
+
     // ── The clustered slot and key names (#90) ──
 
     private class OneClusteredContext(DbContextOptions options) : CustomerContext(options)
