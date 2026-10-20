@@ -152,8 +152,8 @@ provided the member's type is the converter's provider type. `x => x.CreatedAt.Y
 resolve, and says so.
 
 Index names must be unique wherever the provider requires — across the whole database on SQLite,
-per schema on PostgreSQL, where tables, views and sequences share the namespace, per table on SQL
-Server — and the package enforces it rather than letting
+per schema on PostgreSQL, where tables, views and sequences share the namespace (the sequence
+PostgreSQL creates for an identity or serial column included), per table on SQL Server — and the package enforces it rather than letting
 the database reject the migration: reusing a name throws at the declaration, and two declarations
 that resolve to the same name — including a property-level and an entity-level index over one
 column, which share a default name, or a complex and a native index on two SQLite tables — throw

@@ -235,7 +235,74 @@ public class NpgsqlNameCollisionTests
         }
     }
 
+    // The sequence PostgreSQL creates for an identity or serial column is in no model.
+    private class ComplexIndexLikeIdentitySequenceContext(DbContextOptions<ComplexIndexLikeIdentitySequenceContext> o) : ModelContext(o)
+    {
+        protected override void Configure(ModelBuilder m) => m.Entity<Booking>(b =>
+        {
+            MapBooking(b);
+            b.HasComplexIndex(x => x.Code, indexName: "bookings_Id_seq");
+        });
+    }
+
+    private class ExclusionLikeSerialSequenceContext(DbContextOptions<ExclusionLikeSerialSequenceContext> o) : ModelContext(o)
+    {
+        protected override void Configure(ModelBuilder m)
+        {
+            m.Entity<Booking>(b =>
+            {
+                MapBooking(b);
+                b.HasExclusionConstraint(x => x.RoomId, x => x.Period, name: "stays_Id_seq");
+            });
+            m.Entity<Stay>(b =>
+            {
+                MapStay(b);
+                b.Property(x => x.Id).UseSerialColumn();
+            });
+        }
+    }
+
+    private class TemporalLikeSerialTypeSequenceContext(DbContextOptions<TemporalLikeSerialTypeSequenceContext> o) : ModelContext(o)
+    {
+        protected override void Configure(ModelBuilder m)
+        {
+            m.Entity<Booking>(b =>
+            {
+                MapBooking(b);
+                b.HasTemporalConstraint(x => x.RoomId, x => x.Period, name: "stays_BookingId_seq");
+            });
+            m.Entity<Stay>(b =>
+            {
+                MapStay(b);
+                b.Property(x => x.BookingId).HasColumnType("bigserial");
+            });
+        }
+    }
+
     // ── Legitimate reuse ──
+
+    private class ComplexIndexLikeSequenceOfKeyWithoutIdentityContext(DbContextOptions<ComplexIndexLikeSequenceOfKeyWithoutIdentityContext> o) : ModelContext(o)
+    {
+        protected override void Configure(ModelBuilder m) => m.Entity<Booking>(b =>
+        {
+            MapBooking(b);
+            b.Property(x => x.Id).ValueGeneratedNever();
+            b.HasComplexIndex(x => x.Code, indexName: "bookings_Id_seq");
+        });
+    }
+
+    private class ComplexIndexLikeIdentitySequenceInOtherSchemaContext(DbContextOptions<ComplexIndexLikeIdentitySequenceInOtherSchemaContext> o) : ModelContext(o)
+    {
+        protected override void Configure(ModelBuilder m)
+        {
+            m.Entity<Booking>(b =>
+            {
+                MapBooking(b);
+                b.HasComplexIndex(x => x.Code, indexName: "stays_Id_seq");
+            });
+            m.Entity<Stay>(b => MapStay(b, "south"));
+        }
+    }
 
     private class TemporalForeignKeysAcrossTablesContext(DbContextOptions<TemporalForeignKeysAcrossTablesContext> o) : ModelContext(o)
     {
@@ -425,6 +492,46 @@ public class NpgsqlNameCollisionTests
         StringAssert.Contains(message, "temporal constraint 'booking_numbers'");
         StringAssert.Contains(message, "the sequence 'booking_numbers'");
     }
+
+    [TestMethod(DisplayName = "A complex index named like an identity column's sequence is rejected (42P07)")]
+    public void Complex_index_like_identity_sequence_collides()
+    {
+        var message = Rejected<ComplexIndexLikeIdentitySequenceContext>().Message;
+        StringAssert.Contains(message, "complex index 'bookings_Id_seq' on table 'bookings'");
+        StringAssert.Contains(message, "the sequence 'bookings_Id_seq', which PostgreSQL creates for the identity or serial column 'Id' of table 'bookings'");
+        StringAssert.Contains(message, "(42P07)");
+    }
+
+    [TestMethod(DisplayName = "An exclusion constraint named like a serial column's sequence is rejected")]
+    public void Exclusion_constraint_like_serial_sequence_collides()
+        => StringAssert.Contains(Rejected<ExclusionLikeSerialSequenceContext>().Message, "the sequence 'stays_Id_seq'");
+
+    [TestMethod(DisplayName = "A temporal constraint named like the sequence of a column typed bigserial is rejected")]
+    public void Temporal_constraint_like_serial_type_sequence_collides()
+        => StringAssert.Contains(Rejected<TemporalLikeSerialTypeSequenceContext>().Message, "the sequence 'stays_BookingId_seq'");
+
+    [TestMethod(DisplayName = "A key PostgreSQL does not generate has no sequence to collide with")]
+    public void Complex_index_like_sequence_of_key_without_identity_is_allowed()
+        => Accepted<ComplexIndexLikeSequenceOfKeyWithoutIdentityContext>();
+
+    [TestMethod(DisplayName = "A complex index may share a name with an identity sequence in another schema")]
+    public void Complex_index_like_identity_sequence_in_other_schema_is_allowed()
+        => Accepted<ComplexIndexLikeIdentitySequenceInOtherSchemaContext>();
+
+    // PostgreSQL's ChooseRelationName: the longer of table and column is cut first, byte by byte,
+    // and a multi-byte character is never split. PostgresIntegrationTests asks a live server.
+    public static IEnumerable<object[]> ImplicitSequenceNames =>
+    [
+        ["rows", "Id", "rows_Id_seq"],
+        ["t_" + new string('a', 63), "Id", "t_" + new string('a', 54) + "_Id_seq"],
+        ["tbl_" + new string('c', 30), "col_" + new string('c', 30), "tbl_" + new string('c', 25) + "_col_" + new string('c', 25) + "_seq"],
+        ["t__" + new string('\u00e4', 30), "Id", "t__" + new string('\u00e4', 26) + "_Id_seq"]
+    ];
+
+    [TestMethod(DisplayName = "An implicit sequence is named as PostgreSQL names it, past 63 bytes included")]
+    [DynamicData(nameof(ImplicitSequenceNames))]
+    public void Implicit_sequence_name_matches_postgresql(string table, string column, string expected)
+        => Assert.AreEqual(expected, NpgsqlComplexIndexMigrationsModelDiffer.ImplicitSequenceName(table, column));
 
     [TestMethod(DisplayName = "A temporal foreign key may share a name with a table — it owns no index")]
     public void Temporal_foreign_key_like_table_is_allowed()

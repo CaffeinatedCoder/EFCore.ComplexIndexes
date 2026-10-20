@@ -312,7 +312,10 @@ namespaces: constraint names per **table** (42710; against an exclusion constrai
 replacement instead, confirmed on PostgreSQL 18: the temporal `UNIQUE` vanished and the migration
 applied clean), and index names per **schema**, where every primary key, unique, exclusion and
 temporal constraint also owns an index, and which tables, views and sequences share — the
-relation namespace, `pg_class` (42P07). A collision is reported only when one party is
+relation namespace, `pg_class` (42P07). That includes the sequence PostgreSQL creates for an
+identity or serial column, which is in no model: `ImplicitSequenceName` names it as PostgreSQL's
+`ChooseRelationName` does, truncation past 63 bytes included, and `PostgresIntegrationTests` asks
+a live server for the same names. A collision is reported only when one party is
 this package's; two of EF's own objects are EF's business. It collects into a list, not a set: the
 two same-named declarations it exists to find produce identical entries, and a set merged them.
 
