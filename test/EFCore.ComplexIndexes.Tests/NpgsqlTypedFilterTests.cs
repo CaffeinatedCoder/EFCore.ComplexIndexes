@@ -223,6 +223,57 @@ public class NpgsqlTypedFilterTests
         Assert.IsEmpty(MigrationHarness.NpgsqlDiff(model, MigrationHarness.NpgsqlModel<TypedFilterContext>()));
     }
 
+    // ── Char, HasValue, Value and other members of scalar types (#80) ──
+
+    private class Ticket
+    {
+        public Guid      Id        { get; set; }
+        public char      Grade     { get; set; }
+        public char?     Backup    { get; set; }
+        public DateTime? RevokedAt { get; set; }
+        public int?      Count     { get; set; }
+        public bool?     Flag      { get; set; }
+        public DateTime  CreatedAt { get; set; }
+    }
+
+    private static string Predicate(Expression<Func<Ticket, bool>> predicate) => NpgsqlLinqIndexTranslator.TranslatePredicate(predicate);
+
+    [TestMethod(DisplayName = "A char comparison renders a char literal, not the char's code")]
+    public void Char_comparison_renders_a_char()
+    {
+        // C# compares Convert(x.Grade, int) with 65; "Grade" = 65 failed at apply.
+        Assert.AreEqual("{Grade} = 'A'", Predicate(x => x.Grade == 'A'));
+        Assert.AreEqual("'A' < {Grade}", Predicate(x => 'A' < x.Grade));
+        Assert.AreEqual("coalesce({Backup}, 'B') = 'A'", Predicate(x => (x.Backup ?? 'B') == 'A'));
+        Assert.AreEqual("{Grade} = {Backup}", Predicate(x => x.Grade == x.Backup));
+    }
+
+    // .Value on a nullable is what the lambdas under test are written with.
+#pragma warning disable CS8629
+    [TestMethod(DisplayName = "HasValue is the null check and Value is the column")]
+    public void HasValue_and_Value_translate()
+    {
+        // Both passed the declaration as the paths {RevokedAt.HasValue} and {Count.Value} and failed
+        // at migrations add.
+        Assert.AreEqual("{RevokedAt} IS NOT NULL", Predicate(x => x.RevokedAt.HasValue));
+        Assert.AreEqual("{RevokedAt} IS NULL", Predicate(x => !x.RevokedAt.HasValue));
+        Assert.AreEqual("({Count} > 5 AND {RevokedAt} IS NULL)", Predicate(x => x.Count.Value > 5 && !x.RevokedAt.HasValue));
+        Assert.AreEqual("{Flag}", Predicate(x => x.Flag.Value));
+        Assert.AreEqual("({Count} IS NOT NULL)", NpgsqlLinqIndexTranslator.Translate((Expression<Func<Ticket, bool>>)(x => x.Count.HasValue)));
+    }
+
+    [TestMethod(DisplayName = "Any other member of a scalar type is refused at the declaration")]
+    public void Scalar_member_is_refused()
+    {
+        var exception = Assert.ThrowsExactly<NotSupportedException>(() => Predicate(x => x.CreatedAt.Year > 2020));
+        StringAssert.Contains(exception.Message, "Year");
+
+        Assert.ThrowsExactly<NotSupportedException>(() => Predicate(x => x.RevokedAt.Value.Month == 1));
+        Assert.ThrowsExactly<NotSupportedException>(
+            () => NpgsqlLinqIndexTranslator.Translate((Expression<Func<Ticket, int>>)(x => x.CreatedAt.Day)));
+    }
+#pragma warning restore CS8629
+
     [TestMethod(DisplayName = "An enum comparison is refused at the declaration")]
     public void Enum_comparison_is_refused()
     {

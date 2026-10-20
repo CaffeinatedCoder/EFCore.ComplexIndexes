@@ -223,321 +223,6 @@ unchecked: Date and time JSON members compared in a filter (#119)
     - filter: x => !(x.Doc.Date >= x.Date)
     - filter: x => !(x.Doc.Date >= x.NDate)
 
-unchecked: Char comparisons, HasValue, Value and members of scalar types (#80)
-    A char comparison renders the char's code ("Chr" = 65), which PostgreSQL refuses at apply, and
-    HasValue, Value or a member such as DateTime.Year passes the declaration as a property path and
-    fails at migrations add. Open: https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/issues/80
-    - expression: x => x.NInt.HasValue
-    - expression: x => x.NInt.Value
-    - expression: x => x.NLong.HasValue
-    - expression: x => x.NLong.Value
-    - expression: x => x.NShort.HasValue
-    - expression: x => x.NShort.Value
-    - expression: x => x.NByte.HasValue
-    - expression: x => x.NByte.Value
-    - expression: x => x.NDec.HasValue
-    - expression: x => x.NDec.Value
-    - expression: x => x.NDbl.HasValue
-    - expression: x => x.NDbl.Value
-    - expression: x => x.NFlt.HasValue
-    - expression: x => x.NFlt.Value
-    - expression: x => x.NBool.HasValue
-    - expression: x => x.NBool.Value
-    - expression: x => x.NChr.HasValue
-    - expression: x => x.NChr.Value
-    - expression: x => x.NGuid.HasValue
-    - expression: x => x.NGuid.Value
-    - expression: x => x.NDate.HasValue
-    - expression: x => x.NDate.Value
-    - expression: x => x.Doc.NInt.HasValue
-    - expression: x => x.Doc.NInt.Value
-    - expression: x => x.Doc.NBool.HasValue
-    - expression: x => x.Doc.NBool.Value
-    - filter: x => x.NInt.HasValue == true
-    - filter: x => x.NInt.HasValue != true
-    - filter: x => x.NInt.Value == 5
-    - filter: x => x.NInt.Value != 5
-    - filter: x => x.NInt.Value < 5
-    - filter: x => x.NInt.Value <= 5
-    - filter: x => x.NInt.Value > 5
-    - filter: x => x.NInt.Value >= 5
-    - filter: x => x.NLong.HasValue == true
-    - filter: x => x.NLong.HasValue != true
-    - filter: x => x.NLong.Value == 5L
-    - filter: x => x.NLong.Value != 5L
-    - filter: x => x.NLong.Value < 5L
-    - filter: x => x.NLong.Value <= 5L
-    - filter: x => x.NLong.Value > 5L
-    - filter: x => x.NLong.Value >= 5L
-    - filter: x => x.NShort.HasValue == true
-    - filter: x => x.NShort.HasValue != true
-    - filter: x => x.NShort.Value == (short)5
-    - filter: x => x.NShort.Value != (short)5
-    - filter: x => x.NShort.Value < (short)5
-    - filter: x => x.NShort.Value <= (short)5
-    - filter: x => x.NShort.Value > (short)5
-    - filter: x => x.NShort.Value >= (short)5
-    - filter: x => x.NByte.HasValue == true
-    - filter: x => x.NByte.HasValue != true
-    - filter: x => x.NByte.Value == (byte)5
-    - filter: x => x.NByte.Value != (byte)5
-    - filter: x => x.NByte.Value < (byte)5
-    - filter: x => x.NByte.Value <= (byte)5
-    - filter: x => x.NByte.Value > (byte)5
-    - filter: x => x.NByte.Value >= (byte)5
-    - filter: x => x.NDec.HasValue == true
-    - filter: x => x.NDec.HasValue != true
-    - filter: x => x.NDec.Value == 5.5m
-    - filter: x => x.NDec.Value != 5.5m
-    - filter: x => x.NDec.Value < 5.5m
-    - filter: x => x.NDec.Value <= 5.5m
-    - filter: x => x.NDec.Value > 5.5m
-    - filter: x => x.NDec.Value >= 5.5m
-    - filter: x => x.NDbl.HasValue == true
-    - filter: x => x.NDbl.HasValue != true
-    - filter: x => x.NDbl.Value == 5.5
-    - filter: x => x.NDbl.Value != 5.5
-    - filter: x => x.NDbl.Value < 5.5
-    - filter: x => x.NDbl.Value <= 5.5
-    - filter: x => x.NDbl.Value > 5.5
-    - filter: x => x.NDbl.Value >= 5.5
-    - filter: x => x.NFlt.HasValue == true
-    - filter: x => x.NFlt.HasValue != true
-    - filter: x => x.NFlt.Value == 5.5f
-    - filter: x => x.NFlt.Value != 5.5f
-    - filter: x => x.NFlt.Value < 5.5f
-    - filter: x => x.NFlt.Value <= 5.5f
-    - filter: x => x.NFlt.Value > 5.5f
-    - filter: x => x.NFlt.Value >= 5.5f
-    - filter: x => x.NBool.HasValue == true
-    - filter: x => x.NBool.HasValue != true
-    - filter: x => x.NBool.Value == true
-    - filter: x => x.NBool.Value != true
-    - filter: x => x.NChr.HasValue == true
-    - filter: x => x.NChr.HasValue != true
-    - filter: x => x.NChr.Value == 'A'
-    - filter: x => x.NChr.Value != 'A'
-    - filter: x => x.NChr.Value < 'A'
-    - filter: x => x.NChr.Value <= 'A'
-    - filter: x => x.NChr.Value > 'A'
-    - filter: x => x.NChr.Value >= 'A'
-    - filter: x => x.NGuid.HasValue == true
-    - filter: x => x.NGuid.HasValue != true
-    - filter: x => x.NDate.HasValue == true
-    - filter: x => x.NDate.HasValue != true
-    - filter: x => x.Doc.NInt.HasValue == true
-    - filter: x => x.Doc.NInt.HasValue != true
-    - filter: x => x.Doc.NInt.Value == 5
-    - filter: x => x.Doc.NInt.Value != 5
-    - filter: x => x.Doc.NInt.Value < 5
-    - filter: x => x.Doc.NInt.Value <= 5
-    - filter: x => x.Doc.NInt.Value > 5
-    - filter: x => x.Doc.NInt.Value >= 5
-    - filter: x => x.Doc.NBool.HasValue == true
-    - filter: x => x.Doc.NBool.HasValue != true
-    - filter: x => x.Doc.NBool.Value == true
-    - filter: x => x.Doc.NBool.Value != true
-    - filter: x => !(x.NInt.HasValue == true)
-    - filter: x => !(x.NInt.HasValue != true)
-    - filter: x => !(x.NInt.Value == 5)
-    - filter: x => !(x.NInt.Value != 5)
-    - filter: x => !(x.NInt.Value < 5)
-    - filter: x => !(x.NInt.Value <= 5)
-    - filter: x => !(x.NInt.Value > 5)
-    - filter: x => !(x.NInt.Value >= 5)
-    - filter: x => !(x.NLong.HasValue == true)
-    - filter: x => !(x.NLong.HasValue != true)
-    - filter: x => !(x.NLong.Value == 5L)
-    - filter: x => !(x.NLong.Value != 5L)
-    - filter: x => !(x.NLong.Value < 5L)
-    - filter: x => !(x.NLong.Value <= 5L)
-    - filter: x => !(x.NLong.Value > 5L)
-    - filter: x => !(x.NLong.Value >= 5L)
-    - filter: x => !(x.NShort.HasValue == true)
-    - filter: x => !(x.NShort.HasValue != true)
-    - filter: x => !(x.NShort.Value == (short)5)
-    - filter: x => !(x.NShort.Value != (short)5)
-    - filter: x => !(x.NShort.Value < (short)5)
-    - filter: x => !(x.NShort.Value <= (short)5)
-    - filter: x => !(x.NShort.Value > (short)5)
-    - filter: x => !(x.NShort.Value >= (short)5)
-    - filter: x => !(x.NByte.HasValue == true)
-    - filter: x => !(x.NByte.HasValue != true)
-    - filter: x => !(x.NByte.Value == (byte)5)
-    - filter: x => !(x.NByte.Value != (byte)5)
-    - filter: x => !(x.NByte.Value < (byte)5)
-    - filter: x => !(x.NByte.Value <= (byte)5)
-    - filter: x => !(x.NByte.Value > (byte)5)
-    - filter: x => !(x.NByte.Value >= (byte)5)
-    - filter: x => !(x.NDec.HasValue == true)
-    - filter: x => !(x.NDec.HasValue != true)
-    - filter: x => !(x.NDec.Value == 5.5m)
-    - filter: x => !(x.NDec.Value != 5.5m)
-    - filter: x => !(x.NDec.Value < 5.5m)
-    - filter: x => !(x.NDec.Value <= 5.5m)
-    - filter: x => !(x.NDec.Value > 5.5m)
-    - filter: x => !(x.NDec.Value >= 5.5m)
-    - filter: x => !(x.NDbl.HasValue == true)
-    - filter: x => !(x.NDbl.HasValue != true)
-    - filter: x => !(x.NDbl.Value == 5.5)
-    - filter: x => !(x.NDbl.Value != 5.5)
-    - filter: x => !(x.NDbl.Value < 5.5)
-    - filter: x => !(x.NDbl.Value <= 5.5)
-    - filter: x => !(x.NDbl.Value > 5.5)
-    - filter: x => !(x.NDbl.Value >= 5.5)
-    - filter: x => !(x.NFlt.HasValue == true)
-    - filter: x => !(x.NFlt.HasValue != true)
-    - filter: x => !(x.NFlt.Value == 5.5f)
-    - filter: x => !(x.NFlt.Value != 5.5f)
-    - filter: x => !(x.NFlt.Value < 5.5f)
-    - filter: x => !(x.NFlt.Value <= 5.5f)
-    - filter: x => !(x.NFlt.Value > 5.5f)
-    - filter: x => !(x.NFlt.Value >= 5.5f)
-    - filter: x => !(x.NBool.HasValue == true)
-    - filter: x => !(x.NBool.HasValue != true)
-    - filter: x => !(x.NBool.Value == true)
-    - filter: x => !(x.NBool.Value != true)
-    - filter: x => !(x.NChr.HasValue == true)
-    - filter: x => !(x.NChr.HasValue != true)
-    - filter: x => !(x.NChr.Value == 'A')
-    - filter: x => !(x.NChr.Value != 'A')
-    - filter: x => !(x.NChr.Value < 'A')
-    - filter: x => !(x.NChr.Value <= 'A')
-    - filter: x => !(x.NChr.Value > 'A')
-    - filter: x => !(x.NChr.Value >= 'A')
-    - filter: x => !(x.NGuid.HasValue == true)
-    - filter: x => !(x.NGuid.HasValue != true)
-    - filter: x => !(x.NDate.HasValue == true)
-    - filter: x => !(x.NDate.HasValue != true)
-    - filter: x => !(x.Doc.NInt.HasValue == true)
-    - filter: x => !(x.Doc.NInt.HasValue != true)
-    - filter: x => !(x.Doc.NInt.Value == 5)
-    - filter: x => !(x.Doc.NInt.Value != 5)
-    - filter: x => !(x.Doc.NInt.Value < 5)
-    - filter: x => !(x.Doc.NInt.Value <= 5)
-    - filter: x => !(x.Doc.NInt.Value > 5)
-    - filter: x => !(x.Doc.NInt.Value >= 5)
-    - filter: x => !(x.Doc.NBool.HasValue == true)
-    - filter: x => !(x.Doc.NBool.HasValue != true)
-    - filter: x => !(x.Doc.NBool.Value == true)
-    - filter: x => !(x.Doc.NBool.Value != true)
-    - filter: x => x.NInt.HasValue
-    - filter: x => !x.NInt.HasValue
-    - filter: x => x.NLong.HasValue
-    - filter: x => !x.NLong.HasValue
-    - filter: x => x.NShort.HasValue
-    - filter: x => !x.NShort.HasValue
-    - filter: x => x.NByte.HasValue
-    - filter: x => !x.NByte.HasValue
-    - filter: x => x.NDec.HasValue
-    - filter: x => !x.NDec.HasValue
-    - filter: x => x.NDbl.HasValue
-    - filter: x => !x.NDbl.HasValue
-    - filter: x => x.NFlt.HasValue
-    - filter: x => !x.NFlt.HasValue
-    - filter: x => x.NBool.HasValue
-    - filter: x => !x.NBool.HasValue
-    - filter: x => x.NBool.Value
-    - filter: x => !x.NBool.Value
-    - filter: x => x.NChr.HasValue
-    - filter: x => !x.NChr.HasValue
-    - filter: x => x.NGuid.HasValue
-    - filter: x => !x.NGuid.HasValue
-    - filter: x => x.NDate.HasValue
-    - filter: x => !x.NDate.HasValue
-    - filter: x => x.Doc.NInt.HasValue
-    - filter: x => !x.Doc.NInt.HasValue
-    - filter: x => x.Doc.NBool.HasValue
-    - filter: x => !x.Doc.NBool.HasValue
-    - filter: x => x.Doc.NBool.Value
-    - filter: x => !x.Doc.NBool.Value
-    - expression: x => x.Date.Year
-    - expression: x => x.Doc.Date.Year
-    - filter: x => x.Date.Year == 5
-    - filter: x => x.Date.Year != 5
-    - filter: x => x.Date.Year < 5
-    - filter: x => x.Date.Year <= 5
-    - filter: x => x.Date.Year > 5
-    - filter: x => x.Date.Year >= 5
-    - filter: x => x.Doc.Date.Year == 5
-    - filter: x => x.Doc.Date.Year != 5
-    - filter: x => x.Doc.Date.Year < 5
-    - filter: x => x.Doc.Date.Year <= 5
-    - filter: x => x.Doc.Date.Year > 5
-    - filter: x => x.Doc.Date.Year >= 5
-    - filter: x => !(x.Date.Year == 5)
-    - filter: x => !(x.Date.Year != 5)
-    - filter: x => !(x.Date.Year < 5)
-    - filter: x => !(x.Date.Year <= 5)
-    - filter: x => !(x.Date.Year > 5)
-    - filter: x => !(x.Date.Year >= 5)
-    - filter: x => !(x.Doc.Date.Year == 5)
-    - filter: x => !(x.Doc.Date.Year != 5)
-    - filter: x => !(x.Doc.Date.Year < 5)
-    - filter: x => !(x.Doc.Date.Year <= 5)
-    - filter: x => !(x.Doc.Date.Year > 5)
-    - filter: x => !(x.Doc.Date.Year >= 5)
-    - filter: x => x.Chr == 'A'
-    - filter: x => 'A' == x.Chr
-    - filter: x => x.Chr != 'A'
-    - filter: x => 'A' != x.Chr
-    - filter: x => x.Chr < 'A'
-    - filter: x => 'A' < x.Chr
-    - filter: x => x.Chr <= 'A'
-    - filter: x => 'A' <= x.Chr
-    - filter: x => x.Chr > 'A'
-    - filter: x => 'A' > x.Chr
-    - filter: x => x.Chr >= 'A'
-    - filter: x => 'A' >= x.Chr
-    - filter: x => (x.NChr ?? 'A') == 'A'
-    - filter: x => (x.NChr ?? 'A') != 'A'
-    - filter: x => (x.NChr ?? 'A') < 'A'
-    - filter: x => (x.NChr ?? 'A') <= 'A'
-    - filter: x => (x.NChr ?? 'A') > 'A'
-    - filter: x => (x.NChr ?? 'A') >= 'A'
-    - filter: x => x.Doc.Chr == 'A'
-    - filter: x => 'A' == x.Doc.Chr
-    - filter: x => x.Doc.Chr != 'A'
-    - filter: x => 'A' != x.Doc.Chr
-    - filter: x => x.Doc.Chr < 'A'
-    - filter: x => 'A' < x.Doc.Chr
-    - filter: x => x.Doc.Chr <= 'A'
-    - filter: x => 'A' <= x.Doc.Chr
-    - filter: x => x.Doc.Chr > 'A'
-    - filter: x => 'A' > x.Doc.Chr
-    - filter: x => x.Doc.Chr >= 'A'
-    - filter: x => 'A' >= x.Doc.Chr
-    - filter: x => !(x.Chr == 'A')
-    - filter: x => !('A' == x.Chr)
-    - filter: x => !(x.Chr != 'A')
-    - filter: x => !('A' != x.Chr)
-    - filter: x => !(x.Chr < 'A')
-    - filter: x => !('A' < x.Chr)
-    - filter: x => !(x.Chr <= 'A')
-    - filter: x => !('A' <= x.Chr)
-    - filter: x => !(x.Chr > 'A')
-    - filter: x => !('A' > x.Chr)
-    - filter: x => !(x.Chr >= 'A')
-    - filter: x => !('A' >= x.Chr)
-    - filter: x => !((x.NChr ?? 'A') == 'A')
-    - filter: x => !((x.NChr ?? 'A') != 'A')
-    - filter: x => !((x.NChr ?? 'A') < 'A')
-    - filter: x => !((x.NChr ?? 'A') <= 'A')
-    - filter: x => !((x.NChr ?? 'A') > 'A')
-    - filter: x => !((x.NChr ?? 'A') >= 'A')
-    - filter: x => !(x.Doc.Chr == 'A')
-    - filter: x => !('A' == x.Doc.Chr)
-    - filter: x => !(x.Doc.Chr != 'A')
-    - filter: x => !('A' != x.Doc.Chr)
-    - filter: x => !(x.Doc.Chr < 'A')
-    - filter: x => !('A' < x.Doc.Chr)
-    - filter: x => !(x.Doc.Chr <= 'A')
-    - filter: x => !('A' <= x.Doc.Chr)
-    - filter: x => !(x.Doc.Chr > 'A')
-    - filter: x => !('A' > x.Doc.Chr)
-    - filter: x => !(x.Doc.Chr >= 'A')
-    - filter: x => !('A' >= x.Doc.Chr)
-
 unchecked: Concatenation with a nullable operand (#94)
     C# concatenates null as an empty string, PostgreSQL's || returns NULL, and EF Core wraps the
     operand in COALESCE(…, ''). The index holds NULL where the query computes a value, so a unique
@@ -929,3 +614,39 @@ same: Null checks shaped unlike EF Core's (#118)
     - filter: x => !(x.Doc.NInt > 5 || x.Str.Trim() == "a")
     - filter: x => !(x.Str.Trim() == "a" && x.Doc.NInt > 5)
     - filter: x => !(x.Str.Trim() == "a" || x.Doc.NInt > 5)
+    - filter: x => !(x.NInt.Value < 5)
+    - filter: x => !(x.NInt.Value <= 5)
+    - filter: x => !(x.NInt.Value > 5)
+    - filter: x => !(x.NInt.Value >= 5)
+    - filter: x => !(x.NLong.Value < 5L)
+    - filter: x => !(x.NLong.Value <= 5L)
+    - filter: x => !(x.NLong.Value > 5L)
+    - filter: x => !(x.NLong.Value >= 5L)
+    - filter: x => !(x.NShort.Value < (short)5)
+    - filter: x => !(x.NShort.Value <= (short)5)
+    - filter: x => !(x.NShort.Value > (short)5)
+    - filter: x => !(x.NShort.Value >= (short)5)
+    - filter: x => !(x.NByte.Value < (byte)5)
+    - filter: x => !(x.NByte.Value <= (byte)5)
+    - filter: x => !(x.NByte.Value > (byte)5)
+    - filter: x => !(x.NByte.Value >= (byte)5)
+    - filter: x => !(x.NDec.Value < 5.5m)
+    - filter: x => !(x.NDec.Value <= 5.5m)
+    - filter: x => !(x.NDec.Value > 5.5m)
+    - filter: x => !(x.NDec.Value >= 5.5m)
+    - filter: x => !(x.NDbl.Value < 5.5)
+    - filter: x => !(x.NDbl.Value <= 5.5)
+    - filter: x => !(x.NDbl.Value > 5.5)
+    - filter: x => !(x.NDbl.Value >= 5.5)
+    - filter: x => !(x.NFlt.Value < 5.5f)
+    - filter: x => !(x.NFlt.Value <= 5.5f)
+    - filter: x => !(x.NFlt.Value > 5.5f)
+    - filter: x => !(x.NFlt.Value >= 5.5f)
+    - filter: x => !(x.NChr.Value < 'A')
+    - filter: x => !(x.NChr.Value <= 'A')
+    - filter: x => !(x.NChr.Value > 'A')
+    - filter: x => !(x.NChr.Value >= 'A')
+    - filter: x => !(x.Doc.NInt.Value < 5)
+    - filter: x => !(x.Doc.NInt.Value <= 5)
+    - filter: x => !(x.Doc.NInt.Value > 5)
+    - filter: x => !(x.Doc.NInt.Value >= 5)

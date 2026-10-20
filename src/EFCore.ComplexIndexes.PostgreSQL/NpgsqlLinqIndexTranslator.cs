@@ -64,6 +64,11 @@ internal static class NpgsqlLinqIndexTranslator
         = new Dictionary<(Type, string), Func<string, string>>
         {
             [(typeof(string), nameof(string.Length))] = target => $"length({target})",
+
+            // Nullable<T>.Value is the column itself, as in EF Core's queries; HasValue is its null
+            // check (a filter writes it bare, and pushes a negation into IS NULL).
+            [(typeof(Nullable<>), nameof(Nullable<int>.Value))]    = target => target,
+            [(typeof(Nullable<>), nameof(Nullable<int>.HasValue))] = target => $"({target} IS NOT NULL)",
         };
 
     /// <summary>The operators an operand may use besides calls and members: concatenation of strings and <c>??</c>.</summary>
@@ -168,7 +173,7 @@ internal static class NpgsqlLinqIndexTranslator
                 return VisitPredicate(convert.Operand, root, negated);
 
             case UnaryExpression { NodeType: ExpressionType.Not } not when LogicalOperators.Contains(not.NodeType):
-                return ComparesNullable(not.Operand, root)
+                return ComparesNullable(not.Operand, root) || IsHasValue(not.Operand, root)
                            ? VisitPredicate(not.Operand, root, !negated)
                            : Negate($"NOT ({VisitPredicate(not.Operand, root, negated: false)})", negated);
 
@@ -191,8 +196,7 @@ internal static class NpgsqlLinqIndexTranslator
                 if (IsNullValue(equality.Left, root))
                     return $"{VisitOperand(equality.Right, root)} IS {(notEqual ? "NOT " : "")}NULL";
 
-                var left          = VisitOperand(equality.Left, root);
-                var right         = VisitOperand(equality.Right, root);
+                var (left, right) = VisitOperands(equality, root);
                 var leftNullable  = CanBeNull(equality.Left, root);
                 var rightNullable = CanBeNull(equality.Right, root);
 
@@ -210,8 +214,7 @@ internal static class NpgsqlLinqIndexTranslator
 
             case BinaryExpression comparison when ComparisonOperators.ContainsKey(comparison.NodeType):
             {
-                var left  = VisitOperand(comparison.Left, root);
-                var right = VisitOperand(comparison.Right, root);
+                var (left, right) = VisitOperands(comparison, root);
 
                 if (!negated)
                     return $"{left} {ComparisonOperators[comparison.NodeType]} {right}";
@@ -233,9 +236,12 @@ internal static class NpgsqlLinqIndexTranslator
                 return $"({left} {ComparisonOperators[complement]} {right}{nulls})";
             }
 
-            // A boolean column stands on its own.
-            case MemberExpression member when member.Type == typeof(bool) && TryGetPath(member, root, out var path):
-                return Negate("{" + path + "}", negated);
+            case MemberExpression hasValue when IsHasValue(hasValue, root):
+                return $"{Visit(hasValue.Expression!, root)} IS {(negated ? "" : "NOT ")}NULL";
+
+            // A boolean column, or a bool? column's Value, stands on its own.
+            case MemberExpression member when member.Type == typeof(bool) && DependsOnParameter(member, root):
+                return Negate(Visit(member, root), negated);
         }
 
         // A captured flag: bake it in.
@@ -266,6 +272,34 @@ internal static class NpgsqlLinqIndexTranslator
 
         return Visit(node, root);
     }
+
+    // C# compares chars as ints: x.Grade == 'A' arrives as Convert(x.Grade) == 65, and the constant
+    // rendered as 65 met a character column, which PostgreSQL refuses at apply. The constant goes
+    // back to the char it was written as, as EF Core renders it.
+    private static (string Left, string Right) VisitOperands(BinaryExpression comparison, ParameterExpression root)
+    {
+        var left  = VisitOperand(comparison.Left, root);
+        var right = VisitOperand(comparison.Right, root);
+
+        if (IsConvertedChar(comparison.Left) && CharCode(comparison.Right, root) is { } rightChar)
+            right = Literal(rightChar);
+        else if (IsConvertedChar(comparison.Right) && CharCode(comparison.Left, root) is { } leftChar)
+            left = Literal(leftChar);
+
+        return (left, right);
+    }
+
+    private static bool IsConvertedChar(Expression node)
+        => node is UnaryExpression { NodeType: ExpressionType.Convert } convert
+        && (Nullable.GetUnderlyingType(convert.Operand.Type) ?? convert.Operand.Type) == typeof(char);
+
+    private static char? CharCode(Expression node, ParameterExpression root)
+        => !DependsOnParameter(node, root) && !IsConvertedChar(node) && Evaluate(node) is int code ? (char)code : null;
+
+    private static bool IsHasValue(Expression node, ParameterExpression root)
+        => node is MemberExpression { Member.Name: nameof(Nullable<int>.HasValue), Expression: { } target }
+        && Nullable.GetUnderlyingType(target.Type) is not null
+        && DependsOnParameter(target, root);
 
     private static string Negate(string predicate, bool negated)
         => negated ? $"NOT ({predicate})" : predicate;
@@ -340,6 +374,10 @@ internal static class NpgsqlLinqIndexTranslator
 
         protected override Expression VisitMember(MemberExpression node)
         {
+            // HasValue is never null, whatever its target is.
+            if (node.Member.Name == nameof(Nullable<int>.HasValue) && Nullable.GetUnderlyingType(node.Member.DeclaringType!) is not null)
+                return node;
+
             // string.Length and Nullable<T>.Value are members too, but not of the entity: their
             // nullability is their target's, which the base visit reaches.
             var ofEntity = node.Member.DeclaringType != typeof(string)
@@ -422,7 +460,27 @@ internal static class NpgsqlLinqIndexTranslator
         }
 
         path = string.Join(".", segments);
-        return ReferenceEquals(current, root);
+        if (!ReferenceEquals(current, root))
+            return false;
+
+        // A member of a scalar type (CreatedAt.Year, RevokedAt.Value outside the table above) is no
+        // property the model maps: it passed as the path {CreatedAt.Year} and failed at `migrations
+        // add` with "Could not resolve property path". Refuse it here, at the declaration.
+        for (Expression? node = member; node is MemberExpression m; node = m.Expression)
+            if (m.Expression is { } owner && IsScalar(owner.Type))
+                throw new NotSupportedException(
+                    $"The expression '{member}' reads {m.Member.Name} of a {owner.Type.Name}, which is not a property the model " +
+                    "maps and has no translation in a typed index expression or filter. Use the raw-SQL overload for it.");
+
+        return true;
+    }
+
+    private static bool IsScalar(Type type)
+    {
+        type = Nullable.GetUnderlyingType(type) ?? type;
+        return type.IsPrimitive || type.IsEnum || type.IsArray || type == typeof(string) || type == typeof(decimal)
+            || type == typeof(DateTime) || type == typeof(DateTimeOffset) || type == typeof(DateOnly) || type == typeof(TimeOnly)
+            || type == typeof(TimeSpan) || type == typeof(Guid);
     }
 
     private static string Literal(object? value) => value switch
