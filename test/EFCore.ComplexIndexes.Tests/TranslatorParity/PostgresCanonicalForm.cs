@@ -69,6 +69,8 @@ internal static class PostgresCanonicalForm
             Is test         => test with { Operand = Rewrite(test.Operand, rules) },
             Call call       => call with { Arguments = call.Arguments.Select(a => Rewrite(a, rules)).ToList() },
             Cast cast       => cast with { Operand = Rewrite(cast.Operand, rules) },
+            Case @case      => new Case(@case.Branches.Select(b => (Rewrite(b.When, rules), Rewrite(b.Then, rules))).ToList(),
+                                        @case.Else is null ? null : Rewrite(@case.Else, rules)),
             _               => node,
         };
 

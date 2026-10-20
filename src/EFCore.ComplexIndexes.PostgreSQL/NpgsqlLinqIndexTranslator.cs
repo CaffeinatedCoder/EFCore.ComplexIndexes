@@ -193,36 +193,41 @@ internal static class NpgsqlLinqIndexTranslator
 
                 // A captured variable that holds null is a null comparison too; inlined, it read `= NULL`.
                 if (IsNullValue(equality.Right, root))
-                    return $"{VisitOperand(equality.Left, root)} IS {(notEqual ? "NOT " : "")}NULL";
+                    return NullTest(equality.Left, root, isNull: !notEqual);
 
                 if (IsNullValue(equality.Left, root))
-                    return $"{VisitOperand(equality.Right, root)} IS {(notEqual ? "NOT " : "")}NULL";
+                    return NullTest(equality.Right, root, isNull: !notEqual);
 
                 var (left, right) = VisitOperands(equality, root);
-                var leftNullable  = CanBeNull(equality.Left, root);
-                var rightNullable = CanBeNull(equality.Right, root);
+                var leftNull      = NullCheck(equality.Left, root, isNull: true);
+                var rightNull     = NullCheck(equality.Right, root, isNull: true);
 
-                // EF Core's own null compensation for the same comparisons.
-                return (notEqual, leftNullable, rightNullable) switch
+                // EF Core's own null compensation for the same comparisons, testing the operands'
+                // nullable columns as EF Core does: lower("Name") is null exactly when "Name" is.
+                return (notEqual, leftNull, rightNull) switch
                 {
-                    (false, true, true)  => $"({left} = {right} OR ({left} IS NULL AND {right} IS NULL))",
-                    (false, _, _)        => $"{left} = {right}",
-                    (true, true, true)   => $"(({left} <> {right} OR {left} IS NULL OR {right} IS NULL) AND ({left} IS NOT NULL OR {right} IS NOT NULL))",
-                    (true, true, false)  => $"({left} <> {right} OR {left} IS NULL)",
-                    (true, false, true)  => $"({left} <> {right} OR {right} IS NULL)",
-                    (true, false, false) => $"{left} <> {right}",
+                    (false, { } l, { } r) => $"({left} = {right} OR ({l} AND {r}))",
+                    (false, _, _)         => $"{left} = {right}",
+                    (true, { } l, { } r)  => $"(({left} <> {right} OR {l} OR {r}) AND ({NullCheck(equality.Left, root, isNull: false)} OR {NullCheck(equality.Right, root, isNull: false)}))",
+                    (true, { } l, null)   => $"({left} <> {right} OR {l})",
+                    (true, null, { } r)   => $"({left} <> {right} OR {r})",
+                    (true, null, null)    => $"{left} <> {right}",
                 };
             }
 
             case BinaryExpression comparison when ComparisonOperators.ContainsKey(comparison.NodeType):
             {
                 var (left, right) = VisitOperands(comparison, root);
+                var op            = ComparisonOperators[comparison.NodeType];
 
                 if (!negated)
-                    return $"{left} {ComparisonOperators[comparison.NodeType]} {right}";
+                    return $"{left} {op} {right}";
 
                 // Negated: C#'s lifted comparison is false for a null, so its negation is true there,
-                // which the complement alone would make NULL.
+                // which the complement alone would make NULL. EF Core writes that as a CASE.
+                if (CanBeNull(comparison.Left, root) || CanBeNull(comparison.Right, root))
+                    return $"CASE WHEN {left} {op} {right} THEN FALSE ELSE TRUE END";
+
                 var complement = comparison.NodeType switch
                 {
                     ExpressionType.LessThan        => ExpressionType.GreaterThanOrEqual,
@@ -231,11 +236,7 @@ internal static class NpgsqlLinqIndexTranslator
                     _                              => ExpressionType.LessThan,
                 };
 
-                var nulls = string.Concat(
-                    CanBeNull(comparison.Left, root) ? $" OR {left} IS NULL" : "",
-                    CanBeNull(comparison.Right, root) ? $" OR {right} IS NULL" : "");
-
-                return $"({left} {ComparisonOperators[complement]} {right}{nulls})";
+                return $"{left} {ComparisonOperators[complement]} {right}";
             }
 
             case MemberExpression hasValue when IsHasValue(hasValue, root):
@@ -333,6 +334,57 @@ internal static class NpgsqlLinqIndexTranslator
             => CanBeNull(comparison.Left, root) || CanBeNull(comparison.Right, root),
         _ => false,
     };
+
+    // `operand IS [NOT] NULL` as EF Core writes it: over the operand's nullable columns rather than
+    // the operand itself where the two are null together, else over the operand.
+    private static string NullTest(Expression operand, ParameterExpression root, bool isNull)
+        => NullCheck(operand, root, isNull) ?? $"{VisitOperand(operand, root)} IS {(isNull ? "" : "NOT ")}NULL";
+
+    // The test for an operand being null (or not), written over the columns it is null through, or
+    // null when it cannot be null. A function the translator accepts is strict: lower(x) is null
+    // exactly when x is, so its test is its nullable inputs' tests ORed (ANDed for IS NOT NULL). A
+    // coalesce is null when all its inputs are, a concatenation never (its operands are coalesced),
+    // HasValue never.
+    private static string? NullCheck(Expression node, ParameterExpression root, bool isNull)
+    {
+        while (node is UnaryExpression { NodeType: ExpressionType.Convert } convert)
+            node = convert.Operand;
+
+        if (!CanBeNull(node, root))
+            return null;
+
+        switch (node)
+        {
+            case BinaryExpression { NodeType: ExpressionType.Coalesce } coalesce:
+            {
+                // Null only when every input is; an input that cannot be null makes it never null.
+                var left  = NullCheck(coalesce.Left, root, isNull);
+                var right = NullCheck(coalesce.Right, root, isNull);
+                return left is null || right is null ? null : Combine([left, right], all: isNull);
+            }
+
+            case MemberExpression { Expression: { } target } member
+                when DependsOnParameter(target, root) && TryGetValueMember(member, out _):
+                return NullCheck(target, root, isNull);
+
+            case MethodCallExpression { Object: { } target } call when StringMethods.ContainsKey(call.Method):
+                return Combine([NullCheck(target, root, isNull), .. call.Arguments.Select(a => NullCheck(a, root, isNull))], all: !isNull);
+        }
+
+        return $"{Visit(node, root)} IS {(isNull ? "" : "NOT ")}NULL";
+    }
+
+    // ANDs (all) or ORs the tests of the inputs that can be null; with one, it stands alone.
+    private static string? Combine(IReadOnlyList<string?> checks, bool all)
+    {
+        var present = checks.OfType<string>().ToList();
+        return present.Count switch
+        {
+            0 => null,
+            1 => present[0],
+            _ => "(" + string.Join(all ? " AND " : " OR ", present) + ")",
+        };
+    }
 
     // Whether an operand can be NULL in SQL. A captured value is known; a property path is
     // nullable when any member on it is (a Nullable<T>, or a reference type not annotated as

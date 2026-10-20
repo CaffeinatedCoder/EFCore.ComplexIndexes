@@ -171,7 +171,7 @@ public class NpgsqlTypedFilterTests
         Assert.AreEqual("(\"Count\" <> 1 AND (\"Maybe\" <> 2 OR \"Maybe\" IS NULL))", filters["ix_not_or"]);
         Assert.AreEqual("\"Name\" IS NULL", filters["ix_captured_null"]);
         Assert.AreEqual("\"Kind\" IS NOT NULL", filters["ix_captured_not_null"]);
-        Assert.AreEqual("(\"Maybe\" <= 5 OR \"Maybe\" IS NULL)", filters["ix_not_greater"]);
+        Assert.AreEqual("CASE WHEN \"Maybe\" > 5 THEN FALSE ELSE TRUE END", filters["ix_not_greater"]);
     }
 
     [TestMethod(DisplayName = "A filter over nullable operands is the one EF Core writes for the same lambda")]
@@ -194,6 +194,33 @@ public class NpgsqlTypedFilterTests
 
         static string Normalize(string sql) => string.Concat(sql.Where(c => c is not ('(' or ')' or ' ' or '\n')));
     }
+
+    [TestMethod(DisplayName = "A computed operand is null-checked through its columns, as EF Core checks it")]
+    public void Computed_operands_are_checked_through_their_columns()
+    {
+        // lower("Name") IS NULL selects the same rows as "Name" IS NULL, but EF Core writes the
+        // latter, and an index predicate is provably usable by a query only in the same shape.
+        Assert.AreEqual("(lower({Name}) <> 'a' OR {Name} IS NULL)", AccountPredicate(x => x.Name!.ToLower() != "a"));
+        Assert.AreEqual("(coalesce({Name}, {Kind}) <> 'a' OR ({Name} IS NULL AND {Kind} IS NULL))", AccountPredicate(x => (x.Name ?? x.Kind) != "a"));
+        Assert.AreEqual("{Name} IS NULL", AccountPredicate(x => x.Name!.Trim() == null));
+        Assert.AreEqual("((lower({Name}) <> {Kind} OR {Name} IS NULL OR {Kind} IS NULL) AND ({Name} IS NOT NULL OR {Kind} IS NOT NULL))",
+                        AccountPredicate(x => x.Name!.ToLower() != x.Kind));
+
+        // A coalesce with a fallback that cannot be null is never null.
+        Assert.AreEqual("coalesce({Name}, 'z') <> 'a'", AccountPredicate(x => (x.Name ?? "z") != "a"));
+    }
+
+    [TestMethod(DisplayName = "A negated comparison over a nullable operand is EF Core's CASE")]
+    public void Negated_nullable_comparison_is_a_case()
+    {
+        Assert.AreEqual("CASE WHEN {Maybe} < 5 THEN FALSE ELSE TRUE END", AccountPredicate(x => !(x.Maybe < 5)));
+        Assert.AreEqual("({Count} <> 1 OR CASE WHEN {Maybe} > 2 THEN FALSE ELSE TRUE END)", AccountPredicate(x => !(x.Count == 1 && x.Maybe > 2)));
+
+        // Over operands that cannot be null the complement stands, inside a pushed-down negation.
+        Assert.AreEqual("({Count} >= 1 OR CASE WHEN {Maybe} > 2 THEN FALSE ELSE TRUE END)", AccountPredicate(x => !(x.Count < 1 && x.Maybe > 2)));
+    }
+
+    private static string AccountPredicate(Expression<Func<Account, bool>> predicate) => NpgsqlLinqIndexTranslator.TranslatePredicate(predicate);
 
     [TestMethod(DisplayName = "Operands that cannot be null translate as before")]
     public void Non_nullable_operands_are_unchanged()
