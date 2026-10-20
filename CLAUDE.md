@@ -23,8 +23,10 @@ dotnet pack src/EFCore.ComplexIndexes/EFCore.ComplexIndexes.csproj
 
 Tests run in parallel at the method level (`Scope = ExecutionScope.MethodLevel`). The
 `PostgresIntegrationTests` class (`[TestCategory("Integration")]`, `[DoNotParallelize]`) spins up a
-PostgreSQL 18 Testcontainer and applies generated DDL for real; without Docker it needs excluding
-via `--filter "TestCategory!=Integration"`.
+PostgreSQL 18 Testcontainer and applies generated DDL for real; `Postgres16IntegrationTests` does
+the same on PostgreSQL 16, one fresh database per test, so an extension an earlier test installed
+cannot hide a migration that would not install it. Without Docker they need excluding via
+`--filter "TestCategory!=Integration"`.
 
 Locally, no Docker means those tests go **inconclusive**. When the `CI` environment variable is set
 they **fail** instead — an unreachable container must not quietly retire the end-to-end layer while
@@ -434,6 +436,9 @@ differ let satellites resolve what the core cannot:
   so a rendering change never renames an index; and `ResolvedIndexPart` equality ignores both
   internal members, or identical SQL would still rebuild. Exclusion constraint filters pass
   `renderingVersion: 1` and keep the old rendering: rebuilding a constraint buys no enforcement.
+  The exception is a member the current rendering casts (a number, boolean, uuid or enum): as
+  text it never applied (42883, 42804), so since 5.5.0 it takes the current rendering, on both
+  sides of the diff alike.
 - `ResolveTemplatePart` — substitutes template placeholders with quoted columns or parenthesized
   JSON extractions. Since 5.2.0 the core implements it, quoting through the `QuoteIdentifier`
   virtual (ANSI by default; the SQL Server satellite brackets), so satellites override neither.
@@ -498,7 +503,9 @@ if a constraint nevertheless re-emits on every `migrations add` in a consuming a
 snapshot is stale (`--no-build`, stale migrations assembly), not a differ bug. The
 `btree_gist` auto-injection is shared with temporal constraints (single `CREATE EXTENSION`, same
 `UseBtreeGist()` / `SuppressTemporalExtensionAutoInjection()` switches) and triggers when a gist
-constraint has an `=` element.
+constraint (method compared case-insensitively) has a column element whose store type has no GiST
+operator class of its own, or an expression element under a B-tree operator — whatever the
+operator: `<>` on an integer needs it as much as `=` does.
 
 ### Provider validation is scoped, never a list sweep
 

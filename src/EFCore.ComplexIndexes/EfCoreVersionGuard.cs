@@ -67,6 +67,22 @@ internal static class EfCoreVersionGuard
           + $"{SuccessorPackage} instead: {SuccessorTracking}");
     }
 
+    /// <summary>
+    /// Runs <see cref="ThrowIfUnsupported"/> and returns <paramref name="argument"/>, so that a
+    /// primary constructor can run the check on its way to the base constructor.
+    /// </summary>
+    /// <remarks>
+    /// The differs and the Npgsql SQL generator are public, and an application can register them
+    /// itself (<c>ReplaceService&lt;IMigrationsModelDiffer, CustomMigrationsModelDiffer&gt;()</c>)
+    /// without passing any registration entry point. On EF Core 11 that differ constructed, and the
+    /// first diff failed with a <see cref="MissingMethodException"/> that named nothing.
+    /// </remarks>
+    internal static T Guarded<T>(T argument)
+    {
+        ThrowIfUnsupported();
+        return argument;
+    }
+
     private sealed class Scope(Version? previous) : IDisposable
     {
         public void Dispose() => Override.Value = previous;

@@ -172,7 +172,7 @@ filter, idempotently.
 
 ### `btree_gist`
 
-Scalar equality elements under `gist` need the extension; the differ injects
+Scalar elements under `gist` need the extension, whatever their operator; the differ injects
 `CREATE EXTENSION IF NOT EXISTS btree_gist` automatically. Use `modelBuilder.UseBtreeGist()` for
 explicit control or `SuppressTemporalExtensionAutoInjection()` to opt out.
 
