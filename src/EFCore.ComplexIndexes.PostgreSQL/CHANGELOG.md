@@ -20,6 +20,7 @@ The last 5.x minor with a change of its own: the line refuses EF Core 11, whose 
 
 ### Fixed
 
+- Indexes: a complex index, exclusion constraint or temporal constraint named like a table, view or sequence of its schema fails at `migrations add`, where it failed at apply with 42P07 ([Index names](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/README.md#single-column-index-on-a-complex-property)).
 - Docs: the temporal foreign key samples pass both type arguments to `HasTemporalForeignKey`, and compile ([Temporal foreign keys](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/docs/postgresql-constraints.md#temporal-foreign-keys-period--requires-postgresql-18)).
 
 ## [5.4.0] — 2026-09-22

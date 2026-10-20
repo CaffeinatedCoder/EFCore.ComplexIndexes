@@ -304,11 +304,13 @@ time — the second constraint silently replaces the first.
 The per-kind checks above each compare a kind with itself on one table, which is not how
 PostgreSQL scopes names, so since 5.4.0 the Npgsql differ's `ValidateNamesAcrossKinds` runs last
 over everything the target model introduces — complex indexes, exclusion, temporal and temporal
-foreign key constraints — plus EF's own indexes, keys, foreign keys and check constraints. Two
+foreign key constraints — plus EF's own indexes, keys, foreign keys and check constraints, and
+(since 5.5.0) the model's tables, views and sequences. Two
 namespaces: constraint names per **table** (42710; against an exclusion constraint, a silent
 replacement instead, confirmed on PostgreSQL 18: the temporal `UNIQUE` vanished and the migration
 applied clean), and index names per **schema**, where every primary key, unique, exclusion and
-temporal constraint also owns an index (42P07). A collision is reported only when one party is
+temporal constraint also owns an index, and which tables, views and sequences share — the
+relation namespace, `pg_class` (42P07). A collision is reported only when one party is
 this package's; two of EF's own objects are EF's business. It collects into a list, not a set: the
 two same-named declarations it exists to find produce identical entries, and a set merged them.
 
