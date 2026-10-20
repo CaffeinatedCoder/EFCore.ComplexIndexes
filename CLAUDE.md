@@ -262,6 +262,11 @@ not only to its dispatch, or the sweep cannot see it.
   mind that the two `.targets` are redundant, that provider index options do not discriminate which
   differ ran, and that the conditions — cold checkout, pre-built feed, private package cache —
   are the axis the bug hides on.
+- `plain-docs` — the voice for the consumer pages (the root README, the package READMEs, `docs/`):
+  plain, written to "you", example first, edge cases last, every fact as exact as before. Its last
+  section lists what a rewrite must keep: code blocks byte for byte, the headings published
+  changelogs link to, absolute links in packed READMEs, and the API names `DocumentationApiTests`
+  reads. Ported from CodoMetis.ValueRanges and CodoMetis.TypeKit.
 
 ## Architecture
 
