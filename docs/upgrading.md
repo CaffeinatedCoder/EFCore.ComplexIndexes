@@ -155,7 +155,22 @@ characters gives `IX_special_bookings_for_corporate_customer_accounts_xyz_1234_C
 copies are shortened: a default name too long elsewhere still fails at `migrations add`, and an
 explicit name fixes it. Before you apply it, remove the rows in the derived tables that violate a unique index or
 an exclusion constraint. The migration fails on them, with 23505 or 23P01 on PostgreSQL and
-Msg 1505 on SQL Server. The migration runs in a transaction, so nothing of it is applied.
+Msg 1505 on SQL Server. The migration runs in a transaction, so nothing of it is applied, with
+one exception on PostgreSQL.
+
+The copies of an index you declared with `IsCreatedConcurrently()` are created outside the
+migration's transaction, one at a time. When a copy fails, the operations before it stay
+applied, and PostgreSQL keeps the failed copy as an invalid index. The migration is not recorded
+as applied, so running it again fails on an object it already created, such as an index (42P07).
+To recover, remove the rows, then drop what the migration created, the invalid index included, and
+apply the migration again. This query lists the invalid indexes:
+
+```sql
+SELECT indexrelid::regclass AS invalid_index FROM pg_index WHERE NOT indisvalid;
+```
+
+Drop each one with `DROP INDEX CONCURRENTLY`, for example
+`DROP INDEX CONCURRENTLY "IX_special_bookings_Code";`.
 
 Some of these declarations fail at `migrations add` now:
 
@@ -175,21 +190,41 @@ concrete table now, unless it reads a member of a complex property.
 
 ### Substring and Trim render as EF Core's queries
 
-On PostgreSQL, typed expression indexes render `Substring`, `Trim`, `TrimStart` and `TrimEnd` the
-way EF Core's queries do, so a query over the same lambda can use the index:
+On PostgreSQL, typed expression indexes and typed filters render `Substring`, `Trim`, `TrimStart`
+and `TrimEnd` the way EF Core's queries do, so a query over the same lambda can use the index. A
+typed filter is one you pass as a lambda, to an index or to an exclusion constraint:
 
 | Lambda | Was | Is |
 |---|---|---|
 | `x.Code.Substring(1, 3)` | `substr("Code", 2, 3)` | `substring("Code", 2, 3)` |
 | `x.Code.Trim()` | `btrim("Code")` | `btrim("Code", E' \t\n\r')` |
+| `x.Code.TrimStart()` | `ltrim("Code")` | `ltrim("Code", E' \t\n\r')` |
+| `x.Code.TrimEnd()` | `rtrim("Code")` | `rtrim("Code", E' \t\n\r')` |
 
 PostgreSQL treats `substr` and `substring` as different functions, so those indexes applied and
 served no query. `btrim("Code")` trims spaces only, so a unique index on `Trim()` accepted values
 that differ only in a tab or line break at the ends.
 
-The first `migrations add` re-creates each typed expression index over these methods. A unique
-trimmed index may then reject rows that differ only in tabs or line breaks at the ends. Those are
-the duplicates it was declared to reject: clean them up before you apply the migration.
+Trimming tabs and line breaks also changes which rows a typed filter covers. A value of only tabs
+or line breaks now falls outside `x => x.Code.Trim() != ""`, so a unique index or exclusion
+constraint with that filter stops checking it. A value such as `'abc\t'` now falls inside
+`x => x.Code.Trim() == "abc"`, so it is checked for the first time. A filter over `Substring`
+covers the same rows as before.
+
+The first `migrations add` drops and re-creates each typed expression index over these methods, and
+each index and exclusion constraint whose typed filter uses one of them. Before you apply the
+migration, clean up the rows the new SQL rejects:
+
+- **Values that differ only in tabs or line breaks at the ends.** A unique trimmed index rejects
+  them now (23505). Those are the duplicates it was declared to reject.
+- **Rows a typed filter now covers.** A unique index fails on their duplicates (23505), and an
+  exclusion constraint on their overlaps (23P01). To find them, compare the filter's new SQL in the
+  migration's `Up` with the old SQL in its `Down`, for example:
+
+```sql
+SELECT * FROM "docs"
+WHERE (btrim("Code", E' \t\n\r') = 'abc') AND NOT (btrim("Code") = 'abc');
+```
 
 ### Concatenation with a nullable operand
 
