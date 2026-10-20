@@ -563,14 +563,32 @@ Since 5.1.0 each satellite's `IsForwardedIndexAnnotation` also returns true for 
 provider's prefix (`Npgsql:` / `SqlServer:`) — forwarded solely so the same
 `ValidateCreateIndexOperation` rejects it, which keeps one message for both declaration styles.
 
-### Declarations on types with no table
+### Declarations on TPC types and types with no table
 
-An entity type mapped to no table — the abstract base of a TPC hierarchy is the usual one — used to
-be skipped by every descriptor scan (`if (tableName is null) continue;`), so an index or constraint
-declared there produced nothing: no DDL, no error. Since 5.1.0 the scans call
-`ThrowIfDeclaredOnUnmappedType` when such a type carries declarations; the satellites use the same
-helper for exclusion and temporal descriptors. Types mapped to a view, SQL query or function are
-still skipped silently — an index on those is nothing this package could create.
+Every descriptor scan asks `CustomMigrationsModelDiffer.DeclarationTables` where a declaration
+lands: the type's own table and, under TPC, the table of every type derived from it, each resolved
+against that table's entity type — where EF Core puts its own `HasIndex`. Until 5.5.0 the scans used
+the declaring type's table only, so on a concrete TPC base a unique index or exclusion constraint
+held among the base's rows and not among a derived type's, and applied clean (#93). The rule is
+gated on rendering version 3, like any change of answer: a snapshot scaffolded before it resolves
+to the declaring table only, which is what makes the first `migrations add` create the copies. That
+is also why exclusion and temporal declarations mark the version now; a constraint-only model
+carried none. Copies of one declaration share a `TpcDeclaration`, outside descriptor equality, so
+the name checks can say "this explicit name repeats on every table" instead of "two declarations
+collide"; the checks themselves need nothing new, since they iterate descriptors.
+
+Two things refuse rather than copy. EF Core 10 leaves a TPC type's complex properties out of its
+derived tables (on save the value is dropped, a query over the derived type throws), so
+`ThrowIfMissingFromDerivedTable` fails a declaration reading such a member. It has to check
+mappings, not `GetColumnName`: on a derived table a table-split member resolves to its bare
+property name, `Contact.Email` to `"Email"`, which a derived property of that name would answer. And
+a temporal foreign key to a TPC type with derived types fails, since its rows live in several
+tables; EF Core creates no foreign key for such a relationship.
+
+A type whose `DeclarationTables` is empty — mapped to no table, with no derived type that is —
+still fails through `ThrowIfDeclaredOnUnmappedType` (since 5.1.0; before, it produced nothing).
+Types mapped to a view, SQL query or function are still skipped silently — an index on those is
+nothing this package could create.
 
 ### Key extension points
 

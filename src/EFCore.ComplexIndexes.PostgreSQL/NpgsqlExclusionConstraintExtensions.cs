@@ -114,6 +114,7 @@ public static class NpgsqlExclusionConstraintExtensions
         existing.Add(definition);
 
         builder.HasAnnotation(NpgsqlExclusionAnnotations.Constraints, ExclusionConstraintSerializer.Serialize(existing));
+        ComplexIndexStorage.MarkRenderingVersion(builder.Metadata.Model);
         return builder;
     }
 

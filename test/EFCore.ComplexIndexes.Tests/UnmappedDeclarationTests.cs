@@ -7,10 +7,13 @@ namespace EFCore.ComplexIndexes.Tests;
 
 /// <summary>
 /// Every descriptor scan skipped entity types with no table. The abstract base of a TPC hierarchy is
-/// one, so an index or constraint declared on it produced nothing — no DDL, no error. Under EF Core
-/// 10 the base's complex columns are not mapped onto the concrete tables either, so the declaration
-/// cannot be satisfied anywhere; failing at <c>migrations add</c> says so. View- and query-mapped
-/// types keep being skipped: an index on a view is nothing this package could create.
+/// one, so an index or constraint declared on it produced nothing — no DDL, no error. Since 5.5.0 a
+/// declaration there is created on every concrete table, as EF Core creates its own indexes
+/// (<see cref="TpcHierarchyTests"/>), except over a complex member: EF Core 10 maps the base's
+/// complex columns onto none of the concrete tables, so that declaration cannot be satisfied
+/// anywhere, and failing at <c>migrations add</c> says so. A type no table holds the rows of still
+/// fails. View- and query-mapped types keep being skipped: an index on a view is nothing this
+/// package could create.
 /// </summary>
 [TestClass]
 public class UnmappedDeclarationTests
@@ -74,6 +77,39 @@ public class UnmappedDeclarationTests
         }
     }
 
+    private class TpcScalarIndexContext(DbContextOptions<TpcScalarIndexContext> options) : DbContext(options)
+    {
+        protected override void OnModelCreating(ModelBuilder modelBuilder)
+        {
+            modelBuilder.Entity<Animal>(b =>
+            {
+                b.UseTpcMappingStrategy();
+                b.Ignore(x => x.Period);
+                b.Ignore(x => x.Contact);
+                b.HasComplexIndex(x => x.Id, isUnique: true);
+            });
+            modelBuilder.Entity<Cat>().ToTable("cats");
+            modelBuilder.Entity<Dog>().ToTable("dogs");
+        }
+    }
+
+    // The only concrete type maps to a view: no table holds the base's rows.
+    private class TpcViewOnlyContext(DbContextOptions<TpcViewOnlyContext> options) : DbContext(options)
+    {
+        protected override void OnModelCreating(ModelBuilder modelBuilder)
+        {
+            modelBuilder.Entity<Animal>(b =>
+            {
+                b.UseTpcMappingStrategy();
+                b.Ignore(x => x.Period);
+                b.Ignore(x => x.Contact);
+                b.HasComplexIndex(x => x.Id);
+            });
+            modelBuilder.Entity<Cat>().ToView("v_cats");
+            modelBuilder.Ignore<Dog>();
+        }
+    }
+
     private class TpcExclusionContext(DbContextOptions<TpcExclusionContext> options) : DbContext(options)
     {
         protected override void OnModelCreating(ModelBuilder modelBuilder)
@@ -117,36 +153,62 @@ public class UnmappedDeclarationTests
             });
     }
 
-    [TestMethod(DisplayName = "A property-level index on a TPC base fails instead of producing nothing")]
+    [TestMethod(DisplayName = "A property-level index over a complex member of an abstract TPC base fails instead of producing nothing")]
     public void Tpc_property_level_index_throws()
     {
         var target = MigrationHarness.SqliteModel<TpcPropertyLevelContext>();
 
         var exception = Assert.ThrowsExactly<InvalidOperationException>(() => MigrationHarness.CoreDiff(null, target));
 
-        StringAssert.Contains(exception.Message, "Animal");
-        StringAssert.Contains(exception.Message, "not mapped to a table");
+        StringAssert.Contains(exception.Message, "'Animal' declares a complex index over 'Contact.Value'");
+        StringAssert.Contains(exception.Message, "EF Core maps no column for 'Contact.Value' in 'cats'");
         StringAssert.Contains(exception.Message, "TPC");
     }
 
-    [TestMethod(DisplayName = "An entity-level index on a TPC base fails instead of producing nothing")]
+    [TestMethod(DisplayName = "An entity-level index over a complex member of an abstract TPC base fails instead of producing nothing")]
     public void Tpc_entity_level_index_throws()
     {
         var target = MigrationHarness.SqliteModel<TpcEntityLevelContext>();
 
         var exception = Assert.ThrowsExactly<InvalidOperationException>(() => MigrationHarness.CoreDiff(null, target));
 
-        StringAssert.Contains(exception.Message, "complex indexes");
+        StringAssert.Contains(exception.Message, "EF Core maps no column for 'Contact.Value' in 'cats'");
     }
 
-    [TestMethod(DisplayName = "An exclusion constraint on a TPC base fails instead of producing nothing")]
-    public void Tpc_exclusion_constraint_throws()
+    [TestMethod(DisplayName = "An index on an abstract TPC base is created on every concrete table")]
+    public void Tpc_scalar_index_lands_on_every_concrete_table()
     {
-        var target = MigrationHarness.NpgsqlModel<TpcExclusionContext>();
+        var creates = MigrationHarness.CoreDiff(null, MigrationHarness.SqliteModel<TpcScalarIndexContext>())
+                                      .OfType<CreateIndexOperation>()
+                                      .OrderBy(c => c.Table, StringComparer.Ordinal)
+                                      .ToList();
 
-        var exception = Assert.ThrowsExactly<InvalidOperationException>(() => MigrationHarness.NpgsqlDiff(null, target));
+        CollectionAssert.AreEqual(new[] { "cats", "dogs" }, creates.Select(c => c.Table).ToArray());
+        CollectionAssert.AreEqual(new[] { "IX_cats_Id", "IX_dogs_Id" }, creates.Select(c => c.Name).ToArray());
+    }
 
-        StringAssert.Contains(exception.Message, "exclusion constraints");
+    [TestMethod(DisplayName = "An exclusion constraint on an abstract TPC base is added to every concrete table")]
+    public void Tpc_exclusion_constraint_lands_on_every_concrete_table()
+    {
+        var adds = MigrationHarness.NpgsqlDiff(null, MigrationHarness.NpgsqlModel<TpcExclusionContext>())
+                                   .OfType<SqlOperation>()
+                                   .Select(o => o.Sql)
+                                   .Where(s => s.Contains("EXCLUDE"))
+                                   .ToList();
+
+        Assert.HasCount(2, adds);
+        Assert.IsTrue(adds.Any(s => s.Contains("ALTER TABLE \"cats\" ADD CONSTRAINT \"EX_cats_Id_Period\"")));
+        Assert.IsTrue(adds.Any(s => s.Contains("ALTER TABLE \"dogs\" ADD CONSTRAINT \"EX_dogs_Id_Period\"")));
+    }
+
+    [TestMethod(DisplayName = "A declaration on a TPC base whose rows no table holds still fails")]
+    public void Tpc_base_without_a_table_throws()
+    {
+        var target = MigrationHarness.SqliteModel<TpcViewOnlyContext>();
+
+        var exception = Assert.ThrowsExactly<InvalidOperationException>(() => MigrationHarness.CoreDiff(null, target));
+
+        StringAssert.Contains(exception.Message, "'Animal' declares complex indexes but is not mapped to a table");
     }
 
     [TestMethod(DisplayName = "Under TPT the base table carries the index")]

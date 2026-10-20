@@ -112,8 +112,9 @@ Rename one of the two indexes. A snapshot that holds such a pair stays diffable.
 ## Changed answers in 5.5.0
 
 Most of these make the first `migrations add` after the upgrade drop and re-create some indexes or
-constraints. On every provider the model's `CustomIndex:RenderingVersion` becomes 3, so that
-migration also rewrites the snapshot; no other index changes.
+constraints. On every provider the model's `CustomIndex:RenderingVersion` becomes 3, and a model
+that declares only PostgreSQL constraints gets the key for the first time, so that migration also
+rewrites the snapshot; no other index changes.
 
 ### Unique indexes over nullable columns on SQL Server
 
@@ -125,6 +126,37 @@ admitted one row without a registration and refused the second with a duplicate 
 The filter covers the nullable key columns only. It is not added to a clustered index or to one
 declared with a filter. The first `migrations add` drops and re-creates each such index with the
 filter.
+
+### Declarations on a TPC type cover every table of the hierarchy
+
+A complex index, exclusion constraint, temporal constraint or temporal foreign key declared on an
+entity type mapped with TPC is created on the table of every type derived from it, as EF Core
+creates its own `HasIndex` there. It used to land on the declaring type's table only. On a concrete
+base, a unique index or exclusion constraint held among the base's rows and not among a derived
+type's: PostgreSQL 18 refused an overlapping booking in `bookings` and accepted it in
+`special_bookings`. Each table enforces its own rows, as EF Core's indexes do; nothing spans the
+tables.
+
+The first `migrations add` creates the copies on the derived tables, each under the default name
+for its table, such as `IX_special_bookings_Code`, and changes nothing on the declaring type's
+table. Before you apply it, remove the rows in the derived tables that violate a unique index or
+an exclusion constraint. The migration fails on them, with 23505 or 23P01 on PostgreSQL and
+Msg 1505 on SQL Server, and in its transaction applies nothing.
+
+Some of these declarations fail at `migrations add` now:
+
+- One with an explicit name, where index names are unique per schema or database: on PostgreSQL
+  for every kind but the temporal foreign key, and on SQLite. The name would repeat on each table.
+  Leave it out. SQL Server keeps index names per table and takes the name on each, as EF Core does.
+- One that reads a member of a complex property. EF Core 10 keeps a TPC type's complex properties
+  in that type's own table, so a derived table has no column for it. Map the member as a regular
+  property, or remove the declaration.
+- A temporal foreign key to a TPC type with derived types. Its rows live in several tables and a
+  foreign key references one, so it refused every row of a derived type. EF Core creates no
+  foreign key for such a relationship either. Reference a type with no derived types.
+
+A declaration on the abstract base of a TPC hierarchy, refused since 5.1.0, is created on every
+concrete table now, unless it reads a member of a complex property.
 
 ### Substring and Trim render as EF Core's queries
 

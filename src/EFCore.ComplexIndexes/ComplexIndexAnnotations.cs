@@ -44,7 +44,9 @@ public static class ComplexIndexAnnotations
     /// Version 2 (5.4.0) renders JSON members the way the provider's query translation does, so that
     /// the database can use the index for EF Core's own queries. Version 3 (5.5.0) gives a unique
     /// SQL Server index over nullable columns the <c>IS NOT NULL</c> filter EF Core's convention gives
-    /// its own, so that the index admits more than one row without a value.
+    /// its own, so that the index admits more than one row without a value, and creates an index or
+    /// constraint declared on a TPC type on the table of every type derived from it, as EF Core does
+    /// with its own indexes.
     /// </remarks>
     public const string RenderingVersion = "CustomIndex:RenderingVersion";
 }
