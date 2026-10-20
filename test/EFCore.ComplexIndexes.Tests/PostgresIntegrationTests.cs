@@ -313,6 +313,70 @@ public class PostgresIntegrationTests
         AssertRejected("INSERT INTO ig_bookings (\"Id\", room_id, booked_during) VALUES (3, 7, '[2024-01-15,2024-02-15)')");
     }
 
+    // ── Temporal foreign key: dropping both tables, the Down() of the migration that created them ──
+
+    private class Room
+    {
+        public int                   Id          { get; set; }
+        public int                   RoomId      { get; set; }
+        public NpgsqlRange<DateOnly> ValidDuring { get; set; }
+    }
+
+    private class RoomReservation
+    {
+        public int                   Id           { get; set; }
+        public int                   RoomId       { get; set; }
+        public NpgsqlRange<DateOnly> BookedDuring { get; set; }
+    }
+
+    // The principal's table sorts first, so EF drops it before the dependent's.
+    private class RoomReservationContext(DbContextOptions<RoomReservationContext> options) : DbContext(options)
+    {
+        public DbSet<Room>            Rooms        => Set<Room>();
+        public DbSet<RoomReservation> Reservations => Set<RoomReservation>();
+
+        protected override void OnModelCreating(ModelBuilder modelBuilder)
+        {
+            modelBuilder.Entity<Room>(b =>
+            {
+                b.ToTable("ig_a_rooms");
+                b.HasKey(x => x.Id);
+                b.Property(x => x.RoomId).HasColumnName("room_id");
+                b.Property(x => x.ValidDuring).HasColumnName("valid_during");
+                b.HasTemporalConstraint(x => x.RoomId, x => x.ValidDuring);
+            });
+
+            modelBuilder.Entity<RoomReservation>(b =>
+            {
+                b.ToTable("ig_b_reservations");
+                b.HasKey(x => x.Id);
+                b.Property(x => x.RoomId).HasColumnName("room_id");
+                b.Property(x => x.BookedDuring).HasColumnName("booked_during");
+                b.HasTemporalForeignKey<RoomReservation, Room>(
+                    x => x.RoomId, x => x.BookedDuring,
+                    x => x.RoomId, x => x.ValidDuring);
+            });
+        }
+    }
+
+    [TestMethod(DisplayName = "Dropping both tables of a temporal foreign key applies when the principal sorts first")]
+    public void Temporal_foreign_key_tables_drop_together()
+    {
+        MigrateWithoutRuntimeWiring<RoomReservationContext>();
+        Sql("INSERT INTO ig_a_rooms (\"Id\", room_id, valid_during) VALUES (1, 7, '[2024-01-01,2025-01-01)')");
+        Sql("INSERT INTO ig_b_reservations (\"Id\", room_id, booked_during) VALUES (1, 7, '[2024-03-01,2024-04-01)')");
+
+        // Failed with 2BP01 (other objects depend on ig_a_rooms) while the foreign key was left to
+        // go with its dependent table.
+        Apply(GetDifferences(source: BuildRelationalModel<RoomReservationContext>(), target: null), wireUpGenerator: false);
+
+        using var connection = new NpgsqlConnection(ConnectionString);
+        connection.Open();
+        using var cmd = new NpgsqlCommand(
+            "SELECT count(*) FROM pg_tables WHERE tablename IN ('ig_a_rooms', 'ig_b_reservations')", connection);
+        Assert.AreEqual(0L, cmd.ExecuteScalar());
+    }
+
     // ── Expression index: renders, applies, and enforces case-insensitive uniqueness ──
 
     private class Person
