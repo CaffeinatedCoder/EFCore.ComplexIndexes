@@ -23,8 +23,10 @@ dotnet pack src/EFCore.ComplexIndexes/EFCore.ComplexIndexes.csproj
 
 Tests run in parallel at the method level (`Scope = ExecutionScope.MethodLevel`). The
 `PostgresIntegrationTests` class (`[TestCategory("Integration")]`, `[DoNotParallelize]`) spins up a
-PostgreSQL 18 Testcontainer and applies generated DDL for real; without Docker it needs excluding
-via `--filter "TestCategory!=Integration"`.
+PostgreSQL 18 Testcontainer and applies generated DDL for real; `Postgres16IntegrationTests` does
+the same on PostgreSQL 16, one fresh database per test, so an extension an earlier test installed
+cannot hide a migration that would not install it. Without Docker they need excluding via
+`--filter "TestCategory!=Integration"`.
 
 Locally, no Docker means those tests go **inconclusive**. When the `CI` environment variable is set
 they **fail** instead — an unreachable container must not quietly retire the end-to-end layer while
@@ -499,7 +501,9 @@ if a constraint nevertheless re-emits on every `migrations add` in a consuming a
 snapshot is stale (`--no-build`, stale migrations assembly), not a differ bug. The
 `btree_gist` auto-injection is shared with temporal constraints (single `CREATE EXTENSION`, same
 `UseBtreeGist()` / `SuppressTemporalExtensionAutoInjection()` switches) and triggers when a gist
-constraint has an `=` element.
+constraint (method compared case-insensitively) has a column element whose store type has no GiST
+operator class of its own, or an expression element under a B-tree operator — whatever the
+operator: `<>` on an integer needs it as much as `=` does.
 
 ### Provider validation is scoped, never a list sweep
 

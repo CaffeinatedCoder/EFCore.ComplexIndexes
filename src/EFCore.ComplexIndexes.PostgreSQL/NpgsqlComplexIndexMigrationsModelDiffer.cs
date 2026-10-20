@@ -792,8 +792,7 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
         {
             adds.Add(new SqlOperation { Sql = BuildAddExclusionSql(tgt) });
 
-            // Scalar equality elements under gist need the btree_gist operator classes.
-            if (tgt.Method == "gist" && tgt.Parts.Any(p => p.Operator == "="))
+            if (NeedsBtreeGist(tgt))
                 needsBtreeGist = true;
         }
 
@@ -801,6 +800,41 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
             return operations;
 
         return [.. drops, .. operations, .. renames, .. adds];
+    }
+
+    // Store types with a default GiST operator class of their own: the geometric and full-text
+    // search types in core, and the types of the extensions that define them. Ranges and
+    // multiranges are matched by suffix.
+    private static readonly HashSet<string> NativeGistTypes = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "box", "circle", "point", "polygon", "tsvector", "tsquery",
+        "geometry", "geography", "box2d", "box3d", "ltree", "cube", "hstore", "seg"
+    };
+
+    private static readonly HashSet<string> BtreeOperators = ["=", "<>", "!=", "<", "<=", ">", ">="];
+
+    // Under gist, every element needs a default GiST operator class for its type, whatever its
+    // operator: a scalar column has one only through btree_gist, and PostgreSQL rejects the
+    // constraint without it ("data type integer has no default operator class for access method
+    // gist"). A column is checked by its store type; an expression's type is unknown here, so it
+    // counts when it is compared with a B-tree operator. The method is compared case-insensitively,
+    // as PostgreSQL reads it: UseMethod("GiST") is gist.
+    private static bool NeedsBtreeGist(ExclusionDescriptor constraint)
+        => string.Equals(constraint.Method, "gist", StringComparison.OrdinalIgnoreCase)
+        && constraint.Parts.Any(p => p.IsExpression
+                                         ? BtreeOperators.Contains(p.Operator)
+                                         : !HasNativeGistOperatorClass(p.StoreType));
+
+    private static bool HasNativeGistOperatorClass(string? storeType)
+    {
+        if (storeType is null)
+            return false;
+
+        var parenthesis = storeType.IndexOf('(');
+        var baseType    = (parenthesis < 0 ? storeType : storeType[..parenthesis]).Trim();
+
+        return !baseType.EndsWith("[]", StringComparison.Ordinal)
+            && (baseType.EndsWith("range", StringComparison.OrdinalIgnoreCase) || NativeGistTypes.Contains(baseType));
     }
 
     /// <summary>
@@ -885,7 +919,7 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
                               ?? throw new InvalidOperationException(
                                      $"Exclusion constraint property '{part.PropertyPath}' on entity '{entityType.Name}' has no column mapping for table '{table}'.");
 
-                    parts.Add(new ResolvedExclusionPart(false, column, part.Operator));
+                    parts.Add(new ResolvedExclusionPart(false, column, part.Operator) { StoreType = property.GetColumnType(storeObject) });
                 }
 
                 var name = def.Name ?? $"EX_{table}_{string.Join("_", parts.Select(ExclusionPartToken))}";
@@ -1281,7 +1315,20 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
         }
     }
 
-    private sealed record ResolvedExclusionPart(bool IsExpression, string Value, string Operator);
+    private sealed record ResolvedExclusionPart(bool IsExpression, string Value, string Operator)
+    {
+        // Decides btree_gist only. Kept out of equality: a column type change is the base
+        // operations' business, and PostgreSQL rebuilds the constraint's index with the column.
+        public string? StoreType { get; init; }
+
+        public bool Equals(ResolvedExclusionPart? other) =>
+            other is not null
+         && IsExpression == other.IsExpression
+         && Value        == other.Value
+         && Operator     == other.Operator;
+
+        public override int GetHashCode() => HashCode.Combine(IsExpression, Value, Operator);
+    }
 
     private sealed record ExclusionDescriptor(
         string                               Table,

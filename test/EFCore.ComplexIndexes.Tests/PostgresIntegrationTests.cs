@@ -48,25 +48,28 @@ public class PostgresIntegrationTests
             await _container.DisposeAsync();
     }
 
-    private static string ConnectionString
+    private static string ConnectionString => RequireDatabase(_connectionString, _unavailableReason);
+
+    /// <summary>
+    /// The connection string, or — when the container did not start — inconclusive locally and a
+    /// failure on CI. Shared with <see cref="Postgres16IntegrationTests"/>.
+    /// </summary>
+    internal static string RequireDatabase(string? connectionString, string? unavailableReason)
     {
-        get
-        {
-            if (_connectionString is not null)
-                return _connectionString;
+        if (connectionString is not null)
+            return connectionString;
 
-            var reason = _unavailableReason ?? "Container not started.";
+        var reason = unavailableReason ?? "Container not started.";
 
-            // Locally, no Docker means "skip" — that is a reasonable default for a laptop. On CI it
-            // must be a hard failure: going inconclusive there lets a broken Docker setup quietly
-            // retire the entire end-to-end layer while the build stays green, which is the exact
-            // silent pass this suite exists to prevent.
-            if (RunningOnCi)
-                Assert.Fail($"Integration tests are mandatory on CI, but the database was unavailable. {reason}");
+        // Locally, no Docker means "skip" — that is a reasonable default for a laptop. On CI it
+        // must be a hard failure: going inconclusive there lets a broken Docker setup quietly
+        // retire the entire end-to-end layer while the build stays green, which is the exact
+        // silent pass this suite exists to prevent.
+        if (RunningOnCi)
+            Assert.Fail($"Integration tests are mandatory on CI, but the database was unavailable. {reason}");
 
-            Assert.Inconclusive(reason);
-            return null!; // unreachable — Assert.Inconclusive throws
-        }
+        Assert.Inconclusive(reason);
+        return null!; // unreachable — Assert.Inconclusive throws
     }
 
     private static bool RunningOnCi =>
