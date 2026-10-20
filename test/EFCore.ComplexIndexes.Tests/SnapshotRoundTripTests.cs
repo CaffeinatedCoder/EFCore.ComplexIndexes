@@ -211,9 +211,9 @@ public class SnapshotRoundTripTests
         var sawKey = false;
         var source = BuildModelViaSnapshot<RoundTripJsonContext>(code =>
         {
-            sawKey = code.Contains($"\"{ComplexIndexAnnotations.RenderingVersion}\", 2");
+            sawKey = code.Contains($"\"{ComplexIndexAnnotations.RenderingVersion}\", {ComplexIndexStorage.CurrentRenderingVersion}");
             return System.Text.RegularExpressions.Regex.Replace(
-                code, $@"\s*\.HasAnnotation\(""{ComplexIndexAnnotations.RenderingVersion}"", 2\)", "");
+                code, $@"\s*\.HasAnnotation\(""{ComplexIndexAnnotations.RenderingVersion}"", {ComplexIndexStorage.CurrentRenderingVersion}\)", "");
         });
 
         Assert.IsTrue(sawKey, "The rendering version must be written into the snapshot.");

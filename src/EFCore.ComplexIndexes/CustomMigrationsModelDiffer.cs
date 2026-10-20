@@ -52,6 +52,11 @@ public class CustomMigrationsModelDiffer(
     /// </summary>
     public const string RuntimeWiringSentinel = "__requires_UseNpgsqlComplexIndexes__";
 
+    // Read from the type mapping source because the differ has no other view of the provider; the
+    // core serves SQLite without a satellite.
+    private readonly bool _rebuildsTablesLikeSqlite =
+        typeMappingSource.GetType().Namespace?.StartsWith("Microsoft.EntityFrameworkCore.Sqlite", StringComparison.Ordinal) == true;
+
     /// <summary>
     /// Runs EF Core's own diff, then adds the operations for complex-type indexes.
     /// </summary>
@@ -82,6 +87,9 @@ public class CustomMigrationsModelDiffer(
 
         if (sourceIndexes.Count == 0 && targetIndexes.Count == 0)
             return operations;
+
+        if (_rebuildsTablesLikeSqlite)
+            ThrowIfSqliteRebuildDropsIndexes(operations, targetIndexes);
 
         var droppedTables = operations
                            .OfType<DropTableOperation>()
@@ -224,6 +232,84 @@ public class CustomMigrationsModelDiffer(
     }
 
     /// <summary>
+    /// Fails when SQLite would rebuild a table that carries a complex index.
+    /// </summary>
+    /// <remarks>
+    /// SQLite runs an <c>ALTER COLUMN</c>, a <c>DROP COLUMN</c> and every key, foreign key, unique or
+    /// check constraint change by rebuilding the table (<c>CREATE TABLE "ef_temp_…"</c>, copy, drop,
+    /// rename), and EF Core re-creates only the indexes in its own model. Every complex index on the
+    /// table vanished, unique ones included, the migration applied cleanly, and the snapshot still
+    /// listed the index. Dropping it before and creating it after does not help here:
+    /// <c>SqliteMigrationsSqlGenerator</c> emits every rebuild after all other operations of the
+    /// migration, so any <c>CREATE INDEX</c> from this differ runs first and goes down with the old
+    /// table. The list mirrors that generator's <c>RewriteOperations</c> (EF Core 10).
+    /// </remarks>
+    private static void ThrowIfSqliteRebuildDropsIndexes(
+        IReadOnlyList<MigrationOperation> operations, HashSet<IndexDescriptor> targetIndexes)
+    {
+        var created = operations.OfType<CreateTableOperation>().Select(o => (o.Name, o.Schema)).ToHashSet();
+
+        // Operations before a RenameTable name the old table; the rebuild runs under the new name.
+        var renamed = new Dictionary<(string Name, string? Schema), (string Name, string? Schema)>();
+        var rebuilt = new Dictionary<(string Name, string? Schema), MigrationOperation>();
+
+        foreach (var operation in operations)
+        {
+            if (operation is RenameTableOperation rename)
+            {
+                var to = (rename.NewName ?? rename.Name, rename.NewSchema);
+                foreach (var key in renamed.Where(r => r.Value == (rename.Name, rename.Schema)).Select(r => r.Key).ToList())
+                    renamed[key] = to;
+                renamed[(rename.Name, rename.Schema)] = to;
+                if (rebuilt.Remove((rename.Name, rename.Schema), out var trigger))
+                    rebuilt[to] = trigger;
+                continue;
+            }
+
+            var rebuilds = operation switch
+            {
+                AddForeignKeyOperation foreignKey => !created.Contains((foreignKey.Table, foreignKey.Schema)),
+                AddColumnOperation addColumn      => addColumn.Comment is not null,
+                AlterColumnOperation or DropColumnOperation or AlterTableOperation
+                    or AddPrimaryKeyOperation or DropPrimaryKeyOperation
+                    or AddUniqueConstraintOperation or DropUniqueConstraintOperation
+                    or AddCheckConstraintOperation or DropCheckConstraintOperation
+                    or DropForeignKeyOperation => true,
+                _ => false,
+            };
+
+            if (rebuilds && operation is ITableMigrationOperation table)
+                rebuilt.TryAdd((table.Table, table.Schema), operation);
+            else if (rebuilds && operation is AlterTableOperation alterTable)
+                rebuilt.TryAdd((alterTable.Name, alterTable.Schema), operation);
+        }
+
+        foreach (var ((table, schema), trigger) in rebuilt)
+        {
+            var lost = targetIndexes.Where(i => i.TableName == table && i.Schema == schema)
+                                    .Select(i => $"'{i.IndexName}'")
+                                    .ToList();
+            if (lost.Count == 0)
+                continue;
+
+            var what = trigger switch
+            {
+                AlterColumnOperation alter => $"altering column '{alter.Name}'",
+                DropColumnOperation drop   => $"dropping column '{drop.Name}'",
+                _                          => $"a {trigger.GetType().Name.Replace("Operation", "")}",
+            };
+
+            throw new InvalidOperationException(
+                $"SQLite rebuilds table '{table}' for this migration ({what}) and re-creates only the indexes EF Core "
+              + $"knows, so the complex index{(lost.Count == 1 ? "" : "es")} {string.Join(", ", lost)} on it would be dropped "
+              + "and not created again, while the migration applies cleanly. No operation in the same migration can "
+              + "re-create it: EF Core's SQLite generator runs every table rebuild after all other operations. Split the "
+              + $"change into three migrations: remove the complex index declarations on '{table}' and add a migration; "
+              + "make this change and add a migration; declare the indexes again and add a migration.");
+        }
+    }
+
+    /// <summary>
     /// Reports whether the two models differ, including in the declarations this package owns.
     /// </summary>
     /// <remarks>
@@ -349,6 +435,29 @@ public class CustomMigrationsModelDiffer(
     /// Comparison happens on the stored key, so the mapping never affects diffing.
     /// </remarks>
     protected virtual string ToOperationAnnotationName(string annotationName) => annotationName;
+
+    /// <summary>
+    /// The filter a provider gives an index declared without one, the way EF Core's conventions give
+    /// it to the provider's own indexes. Null in the core.
+    /// </summary>
+    /// <remarks>
+    /// Resolved on both sides of the diff, like every other part of the descriptor, so a provider that
+    /// starts adding one must gate it on <see cref="ComplexIndexAnnotations.RenderingVersion"/>:
+    /// otherwise the source would resolve alike and an existing index would never change.
+    /// </remarks>
+    /// <param name="entityType">The entity type that declares the index.</param>
+    /// <param name="storeObject">The index's table.</param>
+    /// <param name="columns">The index's key columns, expression parts left out.</param>
+    /// <param name="isUnique">Whether the index is unique.</param>
+    /// <param name="providerAnnotations">The index's forwarded provider options.</param>
+    /// <returns>The filter, or null for none.</returns>
+    protected virtual string? ImplicitFilter(
+        IEntityType                           entityType,
+        StoreObjectIdentifier                 storeObject,
+        IReadOnlyList<string>                 columns,
+        bool                                  isUnique,
+        IReadOnlyDictionary<string, object?>  providerAnnotations
+    ) => null;
 
     /// <summary>
     /// Transforms a forwarded provider-annotation value before it is compared and stamped onto the
@@ -855,7 +964,10 @@ public class CustomMigrationsModelDiffer(
                 providerAnnotations[annotation.Name] = TransformIndexAnnotation(entityType, annotation.Name, annotation.Value, storeObject);
         }
 
-        return new IndexDescriptor(tableName, schema, [part], indexName, declaration.IsUnique, ResolveFilter(entityType, declaration.Filter, storeObject), providerAnnotations);
+        var filter = ResolveFilter(entityType, declaration.Filter, storeObject)
+                  ?? ImplicitFilter(entityType, storeObject, part.IsExpression ? [] : [part.Value], declaration.IsUnique, providerAnnotations);
+
+        return new IndexDescriptor(tableName, schema, [part], indexName, declaration.IsUnique, filter, providerAnnotations);
     }
 
     private IndexDescriptor ResolveEntityLevelIndex(
@@ -904,7 +1016,10 @@ public class CustomMigrationsModelDiffer(
         foreach (var (key, value) in declaration.ProviderAnnotations)
             providerAnnotations[key] = TransformIndexAnnotation(entityType, key, value, storeObject);
 
-        return new IndexDescriptor(tableName, schema, parts, indexName, declaration.IsUnique, ResolveFilter(entityType, declaration.Filter, storeObject), providerAnnotations);
+        var filter = ResolveFilter(entityType, declaration.Filter, storeObject)
+                  ?? ImplicitFilter(entityType, storeObject, [.. parts.Where(p => !p.IsExpression).Select(p => p.Value)], declaration.IsUnique, providerAnnotations);
+
+        return new IndexDescriptor(tableName, schema, parts, indexName, declaration.IsUnique, filter, providerAnnotations);
     }
 
     // Builds a default index-name token for a part: column names pass through; expressions are

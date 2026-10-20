@@ -6,6 +6,12 @@ covers all three packages.
 
 ## 5.5.0
 
+### Changed answers
+
+- [#88](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/issues/88): on SQL Server, a unique complex index over nullable columns gets the `WHERE [c] IS NOT NULL` filter EF Core's convention gives its own unique indexes. SQL Server treats NULLs as equal in a unique index, so `HasComplexIndex(x => x.Registration!.Vin, isUnique: true)` on an optional complex property admitted one row without a registration and refused the second with a duplicate key. The filter covers the nullable key columns only, and is not added to a clustered index or one declared with a filter. **Upgrading:** the first `migrations add` drops and re-creates each such index with the filter. On every provider the model's `CustomIndex:RenderingVersion` becomes 3, so that migration also rewrites the snapshot; no other index changes.
+
+### Changed
+
 - **Changed:** `UseSqlServerComplexIndexes()`, `AddSqlServerComplexIndexes()` and
   the design-time registration throw `InvalidOperationException` when the EF Core
   they run on is not version 10, naming `CodoMetis.EFCore.SchemaKit` as the package for EF Core 11.
