@@ -101,7 +101,7 @@ modelBuilder.Entity<Subscription>(b =>
 
 modelBuilder.Entity<SubscriptionAddOn>(b =>
 {
-    b.HasTemporalForeignKey<Subscription>(
+    b.HasTemporalForeignKey<SubscriptionAddOn, Subscription>(
         dependentKeyColumns: x => x.SubscriptionId,
         dependentPeriod:     x => x.ActiveDuring,
         principalKeyColumns: x => x.SubscriptionId,
@@ -123,7 +123,7 @@ ALTER TABLE subscription_addons
 Composite keys use anonymous types on both sides:
 
 ```csharp
-b.HasTemporalForeignKey<Subscription>(
+b.HasTemporalForeignKey<SubscriptionAddOn, Subscription>(
     dependentKeyColumns: x => new { x.TenantId, x.SubscriptionId },
     dependentPeriod:     x => x.ActiveDuring,
     principalKeyColumns: x => new { x.TenantId, x.SubscriptionId },
