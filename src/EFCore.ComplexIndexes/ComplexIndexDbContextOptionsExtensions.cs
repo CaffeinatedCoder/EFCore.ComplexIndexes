@@ -19,8 +19,9 @@ namespace EFCore.ComplexIndexes;
 /// <para>
 /// With a provider satellite installed, call that package's method instead
 /// (<c>UseNpgsqlComplexIndexes()</c>, <c>UseSqlServerComplexIndexes()</c>): the core differ registered
-/// here would give <c>EnsureCreated()</c> a schema without the satellite's features, such as
-/// exclusion constraints, and it refuses a complex index that carries the provider's index options.
+/// here does not render the satellite's features, so it refuses a model that declares one — the
+/// provider's index options, PostgreSQL's exclusion and temporal constraints, or a unique index over
+/// nullable columns on SQL Server — rather than give <c>EnsureCreated()</c> a schema without them.
 /// </para>
 /// <para>
 /// On SQLite the registration also wraps the provider's migrations SQL generator, which is why it

@@ -40,6 +40,12 @@ public class SqlServerComplexIndexMigrationsModelDiffer(
     ];
 
     /// <summary>
+    /// This differ renders what only the satellite does — its index options and the <c>IS NOT NULL</c> filter of a unique index — so the core's refusal of them
+    /// (<c>UseComplexIndexes()</c> where this satellite's registration belongs) does not apply.
+    /// </summary>
+    internal override bool IsSatelliteDiffer => true;
+
+    /// <summary>
     /// Forwards exactly the SQL Server index-option annotations the provider's SQL generator renders —
     /// and every <c>Npgsql:*</c> key, which is forwarded only so that
     /// <see cref="ValidateCreateIndexOperation"/> rejects it. A property-level <c>.UseGin()</c> on a

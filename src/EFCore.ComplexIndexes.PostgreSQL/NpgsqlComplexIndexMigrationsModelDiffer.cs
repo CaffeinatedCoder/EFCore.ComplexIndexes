@@ -67,6 +67,12 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
     ];
 
     /// <summary>
+    /// This differ renders what only the satellite does — its index options, exclusion constraints, temporal constraints and temporal foreign keys — so the core's refusal of them
+    /// (<c>UseComplexIndexes()</c> where this satellite's registration belongs) does not apply.
+    /// </summary>
+    internal override bool IsSatelliteDiffer => true;
+
+    /// <summary>
     /// Forwards exactly the Npgsql index-option annotations Npgsql's SQL generator renders: the
     /// whitelisted keys plus every <c>Npgsql:StorageParameter:*</c> key, which is per-parameter. Every
     /// <c>SqlServer:*</c> key is forwarded too, only so that <see cref="ValidateCreateIndexOperation"/>
