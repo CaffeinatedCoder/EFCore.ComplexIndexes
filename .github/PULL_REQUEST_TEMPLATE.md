@@ -5,7 +5,8 @@ Give this PR the same labels and milestone as the issue it closes: one type (bug
 documentation, tests, chore), the package/* and area/* it touches, severity/* on a bug, and
 silent, breaking or stacked where they apply. The legend is in the pinned Roadmap issue.
 CI fails a PR with no type label, a bug with no severity, or no closing reference; a `silent`
-PR into a minor also needs its issue's row under "### Changed answers" in CHANGELOG.md.
+PR into a minor also needs its issue's row under "### Changed answers" in CHANGELOG.md, linking
+the issue and its entry in docs/upgrading.md. Changelog lines follow CONTRIBUTING.md#changelog.
 -->
 
 ## Problem

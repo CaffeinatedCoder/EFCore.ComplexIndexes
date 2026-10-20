@@ -92,10 +92,10 @@ It runs again when labels or the description change, so fixing it needs no new c
   the change, and what proves it. Give the PR the issue's labels and milestone.
 - One concern per PR, with the reasoning in the description rather than only the diff.
 - Full suite green, including integration if you have Docker.
-- User-visible changes get a changelog entry in the root [CHANGELOG.md](CHANGELOG.md) *and* in the
-  affected packages' `CHANGELOG.md` under `src/`. `ChangelogConsistencyTests` enforces that the
-  version being shipped is documented, and that the heading style stays the one `release.yml` reads
-  to build the release notes.
+- User-visible changes get a changelog line in the root [CHANGELOG.md](CHANGELOG.md) *and* in the
+  affected packages' `CHANGELOG.md` under `src/`, in the form [below](#changelog).
+  `ChangelogConsistencyTests` holds the form, and the heading style `release.yml` reads to build
+  the release notes.
 - Provider-specific documentation belongs under [docs/](docs), not in the root README — it is the
   landing page. The packed READMEs under `src/` must link out with **absolute** GitHub URLs, since
   nuget.org cannot resolve a relative path; `DocumentationLinkTests` enforces both.
@@ -117,7 +117,7 @@ Two lines are supported at once, one per EF Core major (decided 2026-10-19, #36)
 Each line has a branch, a `Version` in its own `Directory.Build.props`, and the same CI
 (`dotnet.yml` and `pr-hygiene.yml` run on `main` and `release/**`), and a release is a `v*` tag on
 the branch it ships from. `release.yml` checks the tag against that `Version` and takes the release
-notes from the `## <version>` section of the root `CHANGELOG.md`, so a mistyped tag or an
+notes from the `## [<version>] — <date>` section of the root `CHANGELOG.md`, so a mistyped tag or an
 undocumented version stops before anything is published.
 
 ### Until the `v5.5.0` tag
@@ -150,15 +150,16 @@ first), so a silent fix has no major to wait for on the LTS line. From 5.5.0 on 
 minor on every line that has the code, never a patch, and that minor says so:
 
 - **Its changelog entry opens with `### Changed answers`**, directly after the entry's
-  introduction and before any other change: one row per changed answer, each linking its issue
-  (`https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/issues/n`) and saying what the
-  first `migrations add` after upgrading produces, as the 5.4.0 entry's **Upgrading** notes do.
-  The entry's other changes follow under a heading of their own (`### Fixed`, `### New`,
-  `### Changed`), so the rows end where the next heading begins.
+  introduction and before any other section: one row per changed answer, each linking its issue
+  (`https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/issues/n`) and its entry under
+  "Changed answers in x.y.0" in [docs/upgrading.md](docs/upgrading.md), which says what the first
+  `migrations add` after upgrading re-creates and what to clean up first. The entry's other
+  changes follow under their own sections ([below](#changelog)).
 
 `ChangelogConsistencyTests` holds the form:
-`### Changed answers` appears only in a minor, sits before every other change of its entry, and
-each row links an issue. That test reads the file, not the label. The label half is
+`### Changed answers` appears only in a minor, sits before every other section of its entry, and
+each row links its issue and an upgrading entry that exists. After 5.4.1, a change worded as a
+former value ("where it rendered …") anywhere else in the entry fails it too. That test reads the file, not the label. The label half is
 `.github/scripts/pr-hygiene.sh`: a PR labelled `silent` into a minor fails until its closing
 issue has a row there, and into a patch it fails outright.
 
@@ -169,7 +170,7 @@ issue has a row there, and into a patch it fails outright.
 - **Changelog:** a change goes under the version it ships in on each branch, never under the next
   major too. `main`'s changelog keeps every release's section, of both lines, so it stays the full
   history; a cherry-pick brings its 5.x entry with it. A preview has its own
-  `## 11.0.0-preview.N` section, which `release.yml` publishes as its notes, marked as a
+  `## [11.0.0-preview.N] — <date>` section, which `release.yml` publishes as its notes, marked as a
   prerelease. The package changelogs under `src/` follow the root, as they do today.
 - **GitHub's Latest release** stays on the newest stable version of the newest line.
   `release.yml` publishes a preview with `--prerelease --latest=false`, and a stable tag with
@@ -190,14 +191,46 @@ issue has a row there, and into a patch it fails outright.
 ## Changelog
 
 A version's section of the root `CHANGELOG.md` is the GitHub release's notes, word for word, so it
-is written for someone deciding what to change before they upgrade. The heading is `## x.y.z`
-(`## 11.0.0-preview.N` for a preview); `release.yml` matches it literally. A short introduction
-says what the release is about, then one bullet per change, leading with **Fixed:**, **New:** or
-**Changed:** and ending, where the first `migrations add` after upgrading does something, with an
-**Upgrading:** note. In a minor that changes an answer, `### Changed answers` comes between the
-introduction and the bullets, and the remaining bullets go under a heading of their own
-([above](#a-fix-that-changes-an-answer)). Links are absolute, because the release page cannot
-resolve a relative one.
+is written for someone deciding what to change before they upgrade. The package changelogs use the
+same form, with the lines that affect that package. The form is CodoMetis.ValueRanges'.
+
+- **The heading** is `## [x.y.z] — yyyy-mm-dd` (`## [11.0.0-preview.N] — yyyy-mm-dd` for a
+  preview), and the root changelog ends with a `[x.y.z]: …/releases/tag/vx.y.z` definition per
+  version. Write entries under the version being prepared, never under `Unreleased`. The date is
+  the tag's: set it in all four changelogs in the commit that gets tagged, because no test or
+  workflow checks it.
+- **One optional line first**: what the release is about and, where something changes for an
+  existing model, a link to its section of [docs/upgrading.md](docs/upgrading.md).
+- **Then the sections, in this order:** `### Changed answers` (a minor only, see
+  [above](#a-fix-that-changes-an-answer)), `### Breaking`, `### Added`, `### Changed`,
+  `### Fixed`. Leave out the ones you don't need. A version with nothing for a package says so in
+  one line: "No change in this package."
+- **Breaking** holds everything that can break an existing model or database, in a major or not: a
+  declaration that now fails at `migrations add` or at registration, an API removed or renamed.
+  Each line says what to do about it.
+- **One change per line, on one line.** Say what happens now and, for a fix, what happened before:
+  "… applies, where it failed with Msg 5074". A "before" that was a migration which applied ("where
+  it rendered …") is a changed answer and goes under `### Changed answers`. Start with the area,
+  and name the provider in the line when the change is provider-specific ("Indexes: on SQL Server,
+  …"). In `Added`, lead with the new member in bold.
+- **Keep each section in area order:** `Registration`, `Indexes`, `Expression indexes`, `Filters`,
+  `Constraints`, `Migrations`, `Packaging`, `Docs`. The areas follow the `area/*` labels, with
+  typed and string filters, registration and packaging split out because a reader looks for them
+  apart. Use no headings below the sections.
+- **End with a link** to the guide that explains it, where one does. Links are absolute
+  (`https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/docs/…`), because the
+  release page can't resolve a relative one; `DocumentationLinkTests` checks that they resolve.
+- **Leave out** the reasoning, the measurements and the history of how it was found, test names,
+  internal refactoring with no effect you can observe, and fixes to something new in the same
+  release. What the first `migrations add` after upgrading does goes in
+  [docs/upgrading.md](docs/upgrading.md), the reasoning in the guide, the history in the commit and
+  the issue.
+- **Write in the plain voice of the guides:** short sentences, active voice, no emphasis markers or
+  emoji.
+
+`ChangelogConsistencyTests` holds the form: the heading, known sections in order, one line per
+change, at most 60 words a change and 40 for the introduction, absolute links, and the
+`Changed answers` rules.
 
 ## AI-assisted development
 

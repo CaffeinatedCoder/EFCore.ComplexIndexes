@@ -50,17 +50,17 @@ if grep -qx silent <<<"$labels"; then
     if (( patch != 0 )); then
       problems+=("A silent fix ships in a minor, not a patch, but Directory.Build.props prepares $version. Bump the minor and add a '### Changed answers' row.")
     elif (( minor != 0 )); then
-      # The version's section ("## x.y.0", the heading release.yml matches literally), then its
+      # The version's section ("## [x.y.0] — date", the heading release.yml matches), then its
       # "### Changed answers" subsection.
-      changed=$(awk -v heading="## $version" '
-        $0 == heading { found = 1; next }
+      changed=$(awk -v heading="## [$version] " '
+        index($0, heading) == 1 { found = 1; next }
         found && /^## / { exit }
         found && /^### / { inside = ($0 ~ /^### Changed answers[[:space:]]*$/); next }
         found && inside { print }
       ' "$root/CHANGELOG.md")
       for issue in $(grep -oiE "$closing" <<<"$body" | grep -oE '[0-9]+$' | sort -u); do
         if ! grep -qE "/issues/$issue\)" <<<"$changed"; then
-          problems+=("This PR is labelled silent and closes #$issue, but CHANGELOG.md's $version section has no '### Changed answers' row linking that issue (CONTRIBUTING.md#branches-and-releases).")
+          problems+=("This PR is labelled silent and closes #$issue, but CHANGELOG.md's [$version] section has no '### Changed answers' row linking that issue (CONTRIBUTING.md#branches-and-releases).")
         fi
       done
     fi

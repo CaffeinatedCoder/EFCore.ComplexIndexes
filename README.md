@@ -263,6 +263,9 @@ shows package-specific history:
 [PostgreSQL](src/EFCore.ComplexIndexes.PostgreSQL/CHANGELOG.md),
 [SQL Server](src/EFCore.ComplexIndexes.SqlServer/CHANGELOG.md).
 
+Before you upgrade, [docs/upgrading.md](docs/upgrading.md) says what the first
+`dotnet ef migrations add` after it scaffolds, and which models now fail where they passed.
+
 ---
 
 ## Contributing and project practices

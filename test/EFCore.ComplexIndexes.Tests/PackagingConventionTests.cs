@@ -347,10 +347,9 @@ public class PackagingConventionTests
           + "since the old baseline goes unvalidated.");
     }
 
-    // The root CHANGELOG.md's "## x.y.z" headings — the same source ChangelogConsistencyTests reads.
+    // The root CHANGELOG.md's "## [x.y.z] — date" headings, read as ChangelogConsistencyTests reads them.
     private static IEnumerable<ReleaseVersion> ChangelogVersions() =>
-        Regex.Matches(File.ReadAllText(RepositoryLayout.RootChangelog), $@"^## ({ReleaseVersion.Pattern})\s*$", RegexOptions.Multiline)
-             .Select(match => ReleaseVersion.Parse(match.Groups[1].Value));
+        ChangelogConsistencyTests.DocumentedVersions(RepositoryLayout.RootChangelog);
 
     private static string ReleaseWorkflow =>
         Path.Combine(RepositoryLayout.Root, ".github", "workflows", "release.yml");

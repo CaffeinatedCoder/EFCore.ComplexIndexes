@@ -1,170 +1,128 @@
 # EFCore.ComplexIndexes — changelog
 
-Changes to the core package, newest first. The
+The changes that affect the core package, newest first. The
 [root changelog](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/CHANGELOG.md)
-covers all three packages.
+covers all three packages, which share one version number and release together.
 
-## 5.5.0
+## [5.5.0] — 2026-10-20
+
+The last 5.x minor with a change of its own: the line refuses EF Core 11, whose successor is `CodoMetis.EFCore.SchemaKit`.
 
 ### Changed answers
 
-- [#86](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/issues/86): on SQLite, `dotnet ef migrations add` refuses a migration that rebuilds a table carrying a complex index, instead of scaffolding one that silently drops it. SQLite runs an `ALTER COLUMN`, a `DROP COLUMN`, a key, foreign key, unique or check constraint change, and a table rename (EF renames the primary key with it) by rebuilding the table, and EF Core re-creates only its own indexes, so every complex index on the table vanished, unique ones included, while the migration applied cleanly and the snapshot still listed them. No operation in the same migration can re-create them, because EF's SQLite generator runs every rebuild last; the error names the indexes and the way out, three migrations: remove the declarations on the table, make the change, declare them again. **Upgrading:** a SQLite database that went through such a migration before is missing those indexes while its snapshot lists them. Check with `SELECT name FROM sqlite_master WHERE type = 'index'` and re-create any missing one with `migrationBuilder.Sql(…)` in a new migration.
+- Migrations: on SQLite, `migrations add` refuses a migration that rebuilds a table with a complex index, naming the indexes and the way out. It scaffolded a migration that applied cleanly and dropped every complex index on the table ([#86](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/issues/86), [Upgrading](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/docs/upgrading.md#sqlite-refuses-a-table-rebuild-that-would-drop-complex-indexes)).
+
+### Breaking
+
+- Registration: `UseComplexIndexes()`, `AddComplexIndexes()` and the design-time registration `dotnet ef` runs throw `InvalidOperationException` on an EF Core major other than 10, naming `CodoMetis.EFCore.SchemaKit` for EF Core 11. EF Core 10 on .NET 11 keeps working ([Upgrading](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/docs/upgrading.md#ef-core-11-is-refused-at-registration)).
+
+### Added
+
+- **`CustomMigrationsModelDiffer.RequiresIndexRecreation`**, a protected hook through which a provider's differ drops an unchanged complex index before a base operation that cannot run while it exists, and creates it after.
+- **`CustomMigrationsModelDiffer.ImplicitFilter`**, a protected hook through which a provider's differ gives an index declared without a filter the one its EF Core convention would give it.
+
+## [5.4.1] — 2026-09-22
+
+### Breaking
+
+- Indexes: on a provider without a satellite that keeps index names per table, such as MySQL, a complex index name reused across tables fails at `migrations add`; rename one ([Upgrading](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/docs/upgrading.md#upgrading-to-541)).
+
+### Added
+
+- **`IndexNameScope`** and the protected `CustomMigrationsModelDiffer.IndexNameScope`, through which a provider's differ says where its index names must be unique: per table, per schema or, the default, per database.
+
+### Fixed
+
+- Indexes: on SQLite, a complex index name is checked across the whole database at `migrations add`, where a name reused on another table failed at apply ([Index names](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/README.md#single-column-index-on-a-complex-property)).
+
+## [5.4.0] — 2026-09-22
+
+### Added
+
+- **`ComplexIndexAnnotations.RenderingVersion`**, which every declaration writes onto the model, so a change in how parts render reaches databases built by earlier versions ([Upgrading](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/docs/upgrading.md#upgrading-to-540)).
 
 ### Changed
 
-- **Changed:** `UseComplexIndexes()`, `AddComplexIndexes()` and the design-time
-  registration throw `InvalidOperationException` when the EF Core
-  they run on is not version 10, naming `CodoMetis.EFCore.SchemaKit` as the package for EF Core 11.
-  The `[10.0.0, 11.0.0)` dependency ranges did not keep EF Core 11 out: an EF Core 11 prerelease
-  sorts below 11.0.0 and falls inside them, and a direct reference to a release overrides them with
-  only warning NU1608. The check reads EF Core's version, not the runtime's, so
-  EF Core 10 on .NET 11 keeps working.
-- **New:** the protected `CustomMigrationsModelDiffer.RequiresIndexRecreation`, through which a
-  provider's differ asks for an unchanged complex index to be dropped before a base operation that
-  cannot run while it exists, and created after it. Off by default.
-- **New:** the protected `CustomMigrationsModelDiffer.ImplicitFilter`, through which a provider's
-  differ gives an index declared without a filter the one its EF Core convention would give it; the
-  SQL Server satellite uses it for unique indexes over nullable columns. The model's rendering
-  version becomes 3, so the first `migrations add` after upgrading rewrites the snapshot.
+- Indexes: the default names of expression parts are built from the property path, not the rendered SQL, so a rendering change never renames an index. Every name 5.3.0 produced stays the same.
 
-## 5.4.1
+## [5.3.0] — 2026-09-05
 
-- **Fixed:** complex index names are checked where the provider keeps them unique, not always
-  per table. The core's scope is the whole database — SQLite's rule: it rejects a second
-  `CREATE INDEX` under a name used on any other table and ignores configured schemas — so two tables
-  sharing an index name no longer scaffold cleanly and fail when applied. On a provider without a
-  satellite that scopes names per table (MySQL), the check asks for a rename the database would not
-  have needed.
-- **New:** the `IndexNameScope` enum and the protected `CustomMigrationsModelDiffer.IndexNameScope`
-  property, through which a provider's differ declares where its index names must be unique
-  (`Table`, `Schema` or `Database`, the default).
+### Fixed
 
-## 5.4.0
+- Indexes: a property path through a value converter, such as `x => x.Email.Value`, resolves against a model snapshot. Every diff after the first `migrations add` threw `Could not resolve property path 'Email.Value'`, `has-pending-model-changes` and `Migrate()` included ([Converter paths](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/README.md#single-column-index-on-a-complex-property)).
 
-- **New:** `ComplexIndexAnnotations.RenderingVersion`, written onto the model by every index
-  declaration. It records which rules the differ renders the model's parts with. Parts are resolved
-  at diff time on both sides, so without it a rendering change would never produce a migration; a
-  snapshot scaffolded before 5.4.0 carries none and is rendered by the original rules, and the
-  change reaches an existing database as one drop-and-create per affected index. The next
-  `migrations add` adds one `HasAnnotation` line to the snapshot, which on its own changes no DDL.
-- **Changed:** default names of expression parts are built from the property path rather than the
-  rendered SQL, so a change in how a part renders never renames an index. Every name 5.3.0
-  produced stays the same.
+## [5.2.0] — 2026-09-05
 
-## 5.3.0
+### Breaking
 
-- **Fixed:** a converter-member path (`x => x.Email.Value`) resolves against a model snapshot. The
-  snapshot persists the property as its provider type on a property-bag type and drops the
-  converter, so every diff whose source was the snapshot — the next `migrations add`,
-  `has-pending-model-changes`, `Migrate()`'s pending-model-changes check — threw
-  `Could not resolve property path 'Email.Value'`; only the first `migrations add` succeeded. On a
-  property-bag type the persisted scalar is accepted for a path the configured model already
-  validated; against a configured model the provider-type check is unchanged.
+- Indexes: a complex index name longer than the provider's identifier limit is refused at `migrations add`, default names included. A provider without a limit is left alone ([Upgrading](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/docs/upgrading.md#upgrading-to-520)).
 
-## 5.2.0
+### Added
 
-- **Changed:** a complex index name longer than the provider's identifier limit
-  (`GetMaxIdentifierLength`, 63 on PostgreSQL, 128 on SQL Server) is rejected at `migrations add`.
-  Default names are checked too — this package never truncates them, unlike EF Core's own — and a
-  provider without a limit is left alone.
+- **`GetComplexIndexes()` and `FindComplexIndex(name)`**, which read back every declaration this package holds, on the mutable model inside `OnModelCreating` too ([Reading declarations back](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/README.md#reading-declarations-back)).
+- **`{Property.Path}` placeholders in filters**, resolved to the mapped column at `migrations add` and quoted through the new protected `QuoteIdentifier` seam. A brace pair that holds no dotted identifier path, such as `'{urgent}'`, stays literal ([Filters](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/README.md#single-column-index-on-a-complex-property)).
+- **Property paths through a value converter**: `x => x.Email.Value` resolves to the converted column when the member's type is the converter's provider type ([Converter paths](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/README.md#single-column-index-on-a-complex-property)).
+- **`AddComplexIndexFilter(predicate, where)` and `AddComplexIndex(definition)`** on `IMutableEntityType`, which amend declarations from a shared convention. Repeating a call is safe ([Amending declarations](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/README.md#amending-declarations)).
 
-- **New:** `GetComplexIndexes()` / `GetDeclaredComplexIndexes()` on `IReadOnlyEntityType`,
-  `GetComplexIndexes()` and `FindComplexIndex(name)` on `IReadOnlyModel` — the declarations read
-  back as `ComplexIndexDeclaration`s (parts as property paths, `IsUnique`, `Filter`, explicit `Name`,
-  provider options of entity-level declarations), from the mutable model in `OnModelCreating` too.
-  The differ reads the model through the same code.
+## [5.1.0] — 2026-09-05
 
-- **New:** filters resolve `{Property.Path}` placeholders to the mapped column at `migrations add`,
-  quoted through the new `QuoteIdentifier` seam (ANSI by default); the resolved text is baked into
-  the migration and compared against the snapshot. Only a dotted identifier path in braces outside
-  a single-quoted literal is a placeholder; an unknown one throws. Template resolution moved into
-  the core differ on the same seam.
-- **New:** a property path may end at a member of a converter-mapped value object
-  (`x => x.Email.Value`), which resolves to the converted column when the member's type is the
-  converter's provider type.
+### Breaking
 
-- **New:** `AddComplexIndexFilter(predicate, where)` and `AddComplexIndex(definition)` on
-  `IMutableEntityType` — install a filter on every selected declaration (AND-ed onto an existing
-  one, idempotent) or add a declaration with the fluent API's identity rules, from `OnModelCreating`.
+- Indexes: a complex index declared on an entity type mapped to no table, typically the abstract base of a TPC hierarchy, fails at `migrations add`, where it produced nothing. View-mapped and query-mapped types are still skipped ([Upgrading](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/docs/upgrading.md#upgrading-to-510)).
 
-## 5.1.0
+### Added
 
-- **Fixed:** `HasDifferences` now reports changes to complex indexes (and, through the satellites'
-  overrides, exclusion and temporal constraints). EF Core's base implementation bypasses
-  `GetDifferences`, so `dotnet ef migrations has-pending-model-changes`, the pending-model-changes
-  warning `Migrate()` raises, and the snapshot check in `migrations remove` all reported "no changes"
-  when only a declaration from this package had changed.
-- **New:** `UseComplexIndexes()` / `AddComplexIndexes()` register the differ at runtime, for providers
-  without a satellite package. `EnsureCreated()`, `GenerateCreateScript()` and `Migrate()`'s
-  pending-model-changes check run the runtime differ, which the design-time wiring never reaches —
-  without this, `EnsureCreated()` created the tables and silently none of the complex indexes.
-- **Fixed:** a complex index named like a native `HasIndex` on the same table is rejected at
-  `migrations add` instead of scaffolding two `CREATE INDEX` statements under one name that fail when
-  applied. An index moving between a native and a complex declaration under one name still diffs.
-- **New:** the property-level `HasComplexIndex` overloads also exist on the non-generic
-  `ComplexTypePropertyBuilder` (`c.Property("Value").HasComplexIndex()`).
-- **Changed:** a complex index declared on an entity type mapped to no table — typically the abstract
-  base of a TPC hierarchy — fails at `migrations add` instead of producing nothing. View-mapped and
-  query-mapped types are still skipped.
+- **`UseComplexIndexes()` and `AddComplexIndexes()`**, which register the differ at runtime for providers without a satellite, so `EnsureCreated()` and `GenerateCreateScript()` include complex indexes ([Runtime wiring](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/README.md#ensurecreated-generatecreatescript-and-the-pending-changes-check)).
+- **`HasComplexIndex` on the non-generic `ComplexTypePropertyBuilder`**, for a property configured by name or by type.
 
-## 5.0.3
+### Fixed
 
-- **Changed:** the `Microsoft.EntityFrameworkCore.Abstractions` dependency is now `[10.0.0, 11.0.0)`.
-  This package subclasses `MigrationsModelDiffer` and calls internals EF marks as changeable without
-  notice in any release, so an open-ended floor let NuGet resolve a future major where the differ can
-  break — in your `dotnet ef` run, not anywhere visible from here. Nothing changes if you are on EF
-  Core 10: NuGet resolves the lowest version in a range, so restore still picks 10.0.0.
-- **New:** the public API is fully documented. The shipped `.xml` had 64 gaps, so IntelliSense came up
-  empty on parts of the fluent API, the annotation keys, `CompositeIndexDefinition` and
-  `IndexPartDefinition`.
-- **Tests:** a consumer smoke test packs the packages, installs them into a throwaway project outside
-  the repository, and runs a real `dotnet ef migrations add`, asserting on the scaffolded content —
-  the delivery chain (restore, `.targets` injection, design-time discovery, differ selection) was
-  previously only ever verified in pieces.
+- Indexes: a complex index named like a native `HasIndex` on the same table is refused at `migrations add`, where the migration failed at apply with 42P07.
+- Migrations: `HasDifferences` reports changes to complex indexes, so `has-pending-model-changes`, `Migrate()`'s pending-changes warning and `migrations remove` see them. A CI gate on `has-pending-model-changes` may now fail; that is the gate working ([Upgrading](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/docs/upgrading.md#upgrading-to-510)).
 
-## 5.0.2
+## [5.0.3] — 2026-08-15
 
-- **Fixed:** the design-time migration differ is now selected deterministically when a provider
-  satellite is installed. This package's design-time attribute rides along transitively next to the
-  satellite's, and EF Core resolves last-registration-wins, so NuGet's restore order decided which
-  differ ran — and this one winning silently drops every provider-specific feature.
-- **Fixed:** duplicate index names are rejected instead of producing a migration that fails at apply
-  time. Reusing an explicit name throws at the declaration; collisions between default names —
-  including a property-level and an entity-level index over the same column — throw during
-  `dotnet ef migrations add`.
-- **Fixed:** selectors that read a captured variable or static member instead of the lambda
-  parameter (`x => captured.Name`) throw at the declaration, naming the offending selector.
-  Previously they produced an unmatchable property path that failed much later with an opaque
-  resolution error.
-- **Fixed:** `DbOrder.Asc` now marks a column ascending, and combining it with `DbOrder.Desc` (or
-  `NullsFirst` with `NullsLast`) throws rather than silently picking one. Repeating a marker is fine.
-- **Fixed:** provider validation runs through a scoped extension point instead of sweeping the
-  finished operation list, so satellites can no longer reject index operations this package did not
-  create.
-- **Fixed:** array-valued provider annotations (operator classes, `INCLUDE` lists) compare by
-  content rather than by reference in `CompositeIndexDefinition`.
+### Added
 
-## 5.0.1
+- **XML documentation for the whole public API**, so IntelliSense shows the fluent API, the annotation keys, `CompositeIndexDefinition` and `IndexPartDefinition`, where the shipped `.xml` had 64 gaps.
 
-- **Tests:** the differ is now exercised against *real* model snapshots — generated as C#, compiled
-  in-memory, and rebuilt exactly as `dotnet ef migrations add` does — guarding the whole feature set
-  against snapshot round-trip churn.
+### Changed
 
-## 5.0.0
+- Packaging: the `Microsoft.EntityFrameworkCore.Abstractions` dependency has an upper bound, `[10.0.0, 11.0.0)`. Restore still picks 10.0.0.
 
-- **Fixed:** custom `DROP INDEX` operations are ordered *before* the base migration operations.
-  Moving an index between a native `HasIndex` and a complex-index declaration previously scaffolded
-  a migration that created the new index before dropping the same-named old one.
-- **Fixed:** integral provider-annotation values (e.g. fill factor) survive snapshot round-trips as
-  `int` instead of degrading to `double`, which made generators drop them.
-- **Changed:** property annotations reach index operations through a provider **whitelist** instead
-  of a blacklist. Column facets such as `Relational:ColumnName` no longer leak into scaffolded
-  migrations, closing a class of phantom drop/create churn.
-- **Changed:** an indexed property that resolves to no column throws at `migrations add` instead of
-  silently dropping the index.
-- **Changed:** two indexes over the same columns may coexist when their filters differ (both must be
-  named); re-declaring with the same filter updates in place.
-- **Changed:** a name-only index change emits `RenameIndexOperation` on providers that can rename
-  standalone; renaming a table no longer drops and recreates the complex indexes it carries.
-- **New:** entity-level `HasComplexIndex(x => x.Complex.Prop, …)` for single-column indexes.
-- **New:** per-column `ASC`/`DESC` via `DbOrder.Asc`/`DbOrder.Desc`.
+## [5.0.2] — 2026-08-15
+
+### Fixed
+
+- Registration: the core package's design-time registration steps back when a satellite is installed. Restore order decided which differ ran, and this one drops every provider-specific option.
+- Indexes: a reused index name is refused at the declaration or at `migrations add`, where the migration failed at apply.
+- Indexes: a selector that reads a captured variable or a static member, such as `x => captured.Name`, throws at the declaration and names the selector. It failed later with an opaque resolution error.
+- Indexes: `DbOrder.Asc` marks a column ascending, and combining it with `DbOrder.Desc`, or `NullsFirst` with `NullsLast`, throws.
+- Indexes: `CompositeIndexDefinition` compares array-valued provider annotations, such as operator classes and `INCLUDE` lists, by content.
+- Indexes: provider validation runs through a scoped extension point, so a satellite can no longer reject index operations this package did not create.
+
+## [5.0.1] — 2026-08-10
+
+No change in this package.
+
+## [5.0.0] — 2026-08-10
+
+### Breaking
+
+- Indexes: an indexed property that resolves to no column throws at `migrations add` instead of dropping the index.
+
+### Added
+
+- **Entity-level `HasComplexIndex(x => x.Complex.Prop, …)`** for single-column indexes, so a column can carry several filtered indexes.
+- **`DbOrder.Asc` and `DbOrder.Desc`**, per-column sort direction on every relational provider ([Per-column sort direction](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/README.md#per-column-sort-direction)).
+
+### Changed
+
+- Indexes: provider annotations reach index operations through a whitelist, so column facets such as `Relational:ColumnName` no longer leak into migrations as drop-and-create churn.
+- Indexes: two indexes over the same columns coexist when their filters differ, both named. Declaring one again with the same filter updates it in place.
+- Migrations: a name-only index change emits `RenameIndexOperation` on providers that can rename an index alone, and renaming a table no longer re-creates its complex indexes.
+
+### Fixed
+
+- Indexes: integral provider annotations such as fill factor survive the snapshot as `int`. They became `double`, and the generator dropped them.
+- Migrations: the drops of complex indexes run before the base operations, so moving an index between `HasIndex` and a complex declaration under one name applies.

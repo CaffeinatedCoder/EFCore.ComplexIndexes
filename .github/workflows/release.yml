@@ -309,15 +309,19 @@ jobs:
             exit 1
           fi
 
-          # The section for this version: from its heading up to, not including, the next H2.
-          notes="$(awk -v heading="## $VERSION" '
-            $0 == heading { found = 1; print; next }
+          # The section for this version: the lines after its `## [x.y.z] — date` heading up to,
+          # not including, the next H2, from the first line with text. The heading is left out, as
+          # in CodoMetis.ValueRanges: the release's title already names the version. The section is
+          # terse by construction (CONTRIBUTING.md, Changelog; ChangelogConsistencyTests). index()
+          # rather than a regex, so the dots in the version match only dots.
+          notes="$(awk -v heading="## [$VERSION] " '
+            index($0, heading) == 1 { found = 1; next }
             found && /^## / { exit }
-            found { print }
+            found && (started || NF) { started = 1; print }
           ' CHANGELOG.md)"
 
           if [[ -z "$notes" ]]; then
-            echo "::error::CHANGELOG.md has no '## $VERSION' section to use as release notes."
+            echo "::error::CHANGELOG.md has no '## [$VERSION] — yyyy-mm-dd' section to use as release notes."
             exit 1
           fi
 

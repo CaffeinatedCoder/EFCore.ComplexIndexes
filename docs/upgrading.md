@@ -1,0 +1,177 @@
+# Upgrading
+
+This page says what to check when you move to a new version: what the first
+`dotnet ef migrations add` after the upgrade scaffolds, and which models now fail where they passed.
+Versions with nothing to check are left out. The [changelog](../CHANGELOG.md) lists every change.
+
+From 5.5.0 on, a minor can change what an existing model scaffolds: a fix for a migration that
+applied cleanly while the database ended up different from the model. Such a minor opens its
+changelog entry with "Changed answers", and has a section here, "Changed answers in x.y.0".
+
+The sections run from the oldest version to the newest, so read from the one after yours down.
+
+## Upgrading to 5.1.0
+
+### Check CI gates on `has-pending-model-changes`
+
+`HasDifferences` now sees changes to complex indexes and to exclusion and temporal constraints.
+`dotnet ef migrations has-pending-model-changes`, the warning `Migrate()` raises and the snapshot
+check in `migrations remove` reported "no changes" when only a declaration from this package had
+changed. A CI gate built on `has-pending-model-changes` may now fail where it passed. Scaffold the
+migration it asks for.
+
+### Move declarations off the abstract base of a TPC hierarchy
+
+A complex index, exclusion constraint or temporal constraint declared on an entity type mapped to
+no table now fails at `migrations add`. It used to produce nothing, so the index or constraint you
+declared never existed. Declare it on each concrete type instead. Declarations on view-mapped and
+query-mapped types are still skipped.
+
+## Upgrading to 5.2.0
+
+### Name long indexes and constraints yourself
+
+An index or constraint name longer than the provider's identifier limit fails at
+`migrations add`: 63 bytes on PostgreSQL, 128 characters on SQL Server. PostgreSQL used to
+truncate the name with a NOTICE and apply the migration, so the object existed under a name that
+neither the declaration nor a constraint-violation error reported. SQL Server failed at apply.
+
+The names this package derives are never truncated, so a long table name plus a long column path
+reaches the limit. A default temporal foreign key name, built from two table names, is the first to.
+Give the declaration a `name`. A change of name alone renames the index or constraint in place.
+
+## Upgrading to 5.4.0
+
+### Expect one re-create of each index on a typed or nested JSON member
+
+On PostgreSQL, indexes on members of a `ToJson()` complex property are written the way Npgsql's
+queries read the member. Every member used to be extracted as `"doc" -> 'A' ->> 'B'` text with no
+cast, which matched a query only for a top-level string. An index on a nested or typed member
+applied, enforced uniqueness, and served no query.
+
+The first `migrations add` drops and re-creates each affected index under its existing name, in
+index parts, typed expression indexes and index filters. Indexes on top-level string members are
+untouched, and exclusion constraint filters keep their rendering. Until that migration exists,
+`has-pending-model-changes` reports changes and `Migrate()` raises EF Core's pending-model-changes
+error. The re-create blocks writes while it builds, so on a large table declare the index with
+`IsCreatedConcurrently()` first.
+
+The snapshot gains one `CustomIndex:RenderingVersion` annotation. It records the rules the model
+was declared under, which is how a rendering change reaches databases built by earlier versions.
+
+### Drop non-unique indexes that start with a date or time JSON member
+
+A non-unique index whose first part is a `DateTime`, `DateTimeOffset`, `DateOnly` or `TimeOnly`
+JSON member fails at `migrations add`. EF Core's queries cast such a member to `timestamptz`,
+`date` or `time`, and PostgreSQL can't index those casts, so no query could use the index. A unique
+one is still allowed and enforces uniqueness on the stored text. A date member in a later position
+is fine.
+
+## Upgrading to 5.4.1
+
+### Rename a complex index name you reuse across tables on SQLite
+
+On SQLite, a complex index name is checked across the whole database at `migrations add`. SQLite
+refuses a second `CREATE INDEX` under a name used on any other table, and ignores the schemas a
+model configures, so such a model used to fail when the migration was applied. Rename one of the
+two indexes.
+
+On a provider without a satellite that keeps index names per table, such as MySQL, the same check
+asks for a rename the database would not have needed. With the differ registered at runtime
+(`UseComplexIndexes()`), `Migrate()` raises the same error until you rename. A snapshot that holds
+such a name stays diffable.
+
+## Upgrading to 5.5.0
+
+### EF Core 11 is refused at registration
+
+Every registration entry point throws `InvalidOperationException` when the EF Core it runs on is
+not version 10: `UseComplexIndexes()`, `UseNpgsqlComplexIndexes()`, `UseSqlServerComplexIndexes()`,
+their `Add…` counterparts, and the design-time registration `dotnet ef` runs. The
+message names `CodoMetis.EFCore.SchemaKit`, the package for EF Core 11.
+
+Nothing changes on EF Core 10, and EF Core 10 on .NET 11 keeps working: the check reads EF Core's
+version, not the runtime's. An application on EF Core 11 now fails at startup or at
+`migrations add`. During the EF Core 11 release candidates its restore shows no warning, because a
+prerelease sorts below 11.0.0 and falls inside the `[10.0.0, 11.0.0)` ranges, so this message may
+be the first sign it was running on a version this package never supported.
+
+## Changed answers in 5.5.0
+
+Each of these makes the first `migrations add` after the upgrade drop and re-create some indexes or
+constraints. On every provider the model's `CustomIndex:RenderingVersion` becomes 3, so that
+migration also rewrites the snapshot; no other index changes.
+
+### Unique indexes over nullable columns on SQL Server
+
+A unique complex index over nullable columns gets the `WHERE [c] IS NOT NULL` filter EF Core's
+convention gives its own unique indexes. SQL Server treats NULLs as equal in a unique index, so
+`HasComplexIndex(x => x.Registration!.Vin, isUnique: true)` on an optional complex property
+admitted one row without a registration and refused the second with a duplicate key.
+
+The filter covers the nullable key columns only. It is not added to a clustered index or to one
+declared with a filter. The first `migrations add` drops and re-creates each such index with the
+filter.
+
+### Substring and Trim render as EF Core's queries
+
+On PostgreSQL, typed expression indexes render `Substring`, `Trim`, `TrimStart` and `TrimEnd` the
+way EF Core's queries do, so a query over the same lambda can use the index:
+
+| Lambda | Was | Is |
+|---|---|---|
+| `x.Code.Substring(1, 3)` | `substr("Code", 2, 3)` | `substring("Code", 2, 3)` |
+| `x.Code.Trim()` | `btrim("Code")` | `btrim("Code", E' \t\n\r')` |
+
+PostgreSQL treats `substr` and `substring` as different functions, so those indexes applied and
+served no query. `btrim("Code")` trims spaces only, so a unique index on `Trim()` accepted values
+that differ only in a tab or line break at the ends.
+
+The first `migrations add` re-creates each typed expression index over these methods. A unique
+trimmed index may then refuse rows that differ only in tabs or line breaks at the ends. Those are
+the duplicates it was declared to refuse: clean them up before you apply the migration.
+
+### Typed filters keep C#'s answer for null operands
+
+On PostgreSQL, a typed filter whose comparison has an operand that can be null keeps C#'s answer
+for the rows where it is null, written the way EF Core writes the same lambda in a query.
+`x => x.Kind != "federated"` on a `string?` scaffolded `"Kind" <> 'federated'`, which is NULL for a
+null `Kind`, so those rows fell out of the partial index and a unique index did not enforce on
+them. It is now `("Kind" <> 'federated' OR "Kind" IS NULL)`.
+
+A negation over such a comparison is pushed down to it: `!(x.Maybe > 5)` is
+`("Maybe" <= 5 OR "Maybe" IS NULL)`. A captured variable holding null compares with `IS NULL` or
+`IS NOT NULL` instead of `= NULL`, which matched no row. Operands that can't be null, a
+non-nullable value type or a reference type annotated non-nullable, translate as before.
+
+This covers every typed filter: `HasComplexIndex`, `HasComplexCompositeIndex` and
+`HasExpressionIndex` with a predicate, `HasFilter`, `AddComplexIndexFilter`, and exclusion
+constraint filters. The first `migrations add` drops and re-creates each index and exclusion
+constraint whose typed filter changed. A unique index now covers rows it left out, so re-creating
+it fails if those rows hold duplicates. Those are duplicates it should have refused.
+
+### Typed filters keep braces in string literals
+
+On PostgreSQL, a brace in a string literal of a typed filter is compared as written.
+`x => x.Code != "{draft}"` scaffolded `"Code" <> '{{draft}}'`, a different value, so rows whose
+code is `{draft}` were indexed, and constrained if the index is unique, although the filter excludes
+them. It is now `"Code" <> '{draft}'`. Typed expression indexes were not affected.
+
+The first `migrations add` re-creates each index and exclusion constraint whose typed filter has a
+brace in a string literal.
+
+### SQLite refuses a table rebuild that would drop complex indexes
+
+On SQLite, `dotnet ef migrations add` refuses a migration that rebuilds a table carrying a complex
+index. SQLite runs an `ALTER COLUMN`, a `DROP COLUMN`, a change to a key, foreign key, unique or
+check constraint, and a table rename by rebuilding the table, and EF Core re-creates only its own
+indexes. Every complex index on the table vanished, unique ones included, while the migration
+applied cleanly and the snapshot still listed them.
+
+No operation in the same migration can re-create them, because EF Core's SQLite generator runs
+every rebuild last. The error names the indexes and the way out, three migrations: remove the
+declarations on the table, make the change, then declare them again.
+
+A SQLite database that went through such a migration before is missing those indexes while its
+snapshot lists them. Check with `SELECT name FROM sqlite_master WHERE type = 'index'`, and re-create
+any missing one with `migrationBuilder.Sql(…)` in a new migration.
