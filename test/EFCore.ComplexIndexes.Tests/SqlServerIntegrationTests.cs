@@ -414,6 +414,9 @@ public class SqlServerIntegrationTests
 
     private class AlterV1Context(DbContextOptions options) : CustomerContext(options)
     {
+        protected override int PhoneLength => 64;
+        protected override int EmailLength => 320;
+
         protected override void Declare(EntityTypeBuilder<Customer> b)
         {
             b.HasComplexIndex(x => x.Contact.Phone, isUnique: true, indexName: "ux_phone");
@@ -421,11 +424,13 @@ public class SqlServerIntegrationTests
         }
     }
 
-    // The key column of one index and the included column of the other change their length.
+    // The key column of one index and the included column of the other shrink. Widening an
+    // nvarchar under an index is one ALTER COLUMN SQL Server allows (a metadata-only change), so it
+    // cannot show #84; shrinking it, like a change of type or nullability, is refused with Msg 5074.
     private class AlterV2Context(DbContextOptions<AlterV2Context> options) : AlterV1Context(options)
     {
-        protected override int PhoneLength => 64;
-        protected override int EmailLength => 320;
+        protected override int PhoneLength => 32;
+        protected override int EmailLength => 256;
     }
 
     [TestMethod(DisplayName = "ALTER COLUMN under a complex index applies (#84)")]
