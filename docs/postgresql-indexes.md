@@ -141,7 +141,7 @@ builder.HasExpressionIndex(x => (x.Nickname ?? x.FirstName) + " " + x.LastName);
 // CREATE INDEX ... ON people (((coalesce("nickname", "first_name") || ' ') || "last_name"));
 ```
 
-The supported subset is deliberately small and fails loudly: `ToLower`/`ToUpper`, `Trim`/`TrimStart`/`TrimEnd`, `Substring` (1-based conversion handled), `Replace`, `string.Length`, `.Value` and `.HasValue` on a nullable, string concatenation (`+`), null coalescing (`??`), and constants (captured variables are evaluated and inlined invariant-culture). Any other member of a scalar type, such as `CreatedAt.Year`, is not a mapped property and is refused with the rest. Anything else throws `NotSupportedException` **at declaration time** with a pointer to the raw-SQL overload.
+The supported subset is deliberately small and fails loudly: `ToLower`/`ToUpper`, `Trim`/`TrimStart`/`TrimEnd`, `Substring` (1-based conversion handled), `Replace`, `string.Length`, `.Value` and `.HasValue` on a nullable, string concatenation (`+`, an operand that can be null coalesced to `''` as C# and EF Core's queries treat it), null coalescing (`??`), and constants (captured variables are evaluated and inlined invariant-culture). Any other member of a scalar type, such as `CreatedAt.Year`, is not a mapped property and is refused with the rest. Anything else throws `NotSupportedException` **at declaration time** with a pointer to the raw-SQL overload.
 
 Paths see through a value converter as well: when `Email` is a value object mapped as one column,
 `x => x.Email.Value.ToLower()` resolves `Email.Value` to that column — provided `Value` has the

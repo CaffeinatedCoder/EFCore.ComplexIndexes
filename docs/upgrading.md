@@ -132,6 +132,20 @@ The first `migrations add` re-creates each typed expression index over these met
 trimmed index may then refuse rows that differ only in tabs or line breaks at the ends. Those are
 the duplicates it was declared to refuse: clean them up before you apply the migration.
 
+### Concatenation with a nullable operand
+
+On PostgreSQL, a typed expression index or typed filter that concatenates an operand that can be
+null wraps it in a `COALESCE` with an empty string, as EF Core's queries do. C# concatenates null as an empty
+string, while PostgreSQL's `||` returns NULL: `x => x.Code + x.Suffix` on a `string? Suffix`
+scaffolded `("Code" || "Suffix")`, which is NULL for every row without a suffix. The index served
+no query over the lambda, and a unique one checked none of those rows. It is now
+`("Code" || coalesce("Suffix", ''))`.
+
+The first `migrations add` re-creates each typed expression index, and each index and exclusion
+constraint with a typed filter, whose lambda concatenates an operand that can be null. A unique
+index may then refuse rows it let in, such as two rows with code `A` and no suffix. Those are the
+duplicates it was declared to refuse: clean them up before you apply the migration.
+
 ### Typed filters keep C#'s answer for null operands
 
 On PostgreSQL, a typed filter whose comparison has an operand that can be null keeps C#'s answer

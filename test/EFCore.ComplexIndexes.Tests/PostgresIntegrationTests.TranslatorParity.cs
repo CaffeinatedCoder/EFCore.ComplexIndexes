@@ -1,3 +1,4 @@
+using EFCore.ComplexIndexes.PostgreSQL;
 using EFCore.ComplexIndexes.Tests.TranslatorParity;
 using Microsoft.EntityFrameworkCore;
 using Npgsql;
@@ -80,6 +81,37 @@ public partial class PostgresIntegrationTests
         }
 
         Assert.IsEmpty(failures, $"{failures.Count} of {claimed.Count} rows answer differently on PostgreSQL:\n\n" + string.Join("\n\n", failures));
+    }
+
+    // ── Typed concatenation over a nullable operand (#94) ──
+
+    private class Badge
+    {
+        public int     Id     { get; set; }
+        public string  Code   { get; set; } = "";
+        public string? Suffix { get; set; }
+    }
+
+    private class BadgeContext(DbContextOptions<BadgeContext> options) : DbContext(options)
+    {
+        protected override void OnModelCreating(ModelBuilder modelBuilder) =>
+            modelBuilder.Entity<Badge>(b =>
+            {
+                b.ToTable("ig_badges");
+                b.HasKey(x => x.Id);
+                b.HasExpressionIndex(x => x.Code + x.Suffix, isUnique: true, indexName: "ux_ig_badges_label");
+            });
+    }
+
+    [TestMethod(DisplayName = "A unique typed concatenation over a nullable operand refuses duplicates where it is null")]
+    public void Typed_concatenation_coalesces_a_nullable_operand()
+    {
+        Migrate<BadgeContext>();
+
+        // "Code" || "Suffix" was NULL for a null Suffix, and a unique index ignores NULL keys, so
+        // both rows went in although Code + Suffix is "A" for each.
+        Sql("INSERT INTO ig_badges (\"Id\", \"Code\") VALUES (1, 'A')");
+        AssertRejected("INSERT INTO ig_badges (\"Id\", \"Code\") VALUES (2, 'A')");
     }
 
     private static string Answer(NpgsqlConnection connection, string sql)

@@ -57,6 +57,26 @@ same: Concatenation with a value that is not a string
     - filter: x => !(x.Doc.Str + x.Int != "{it's}")
     - filter: x => !(x.Doc.Str + x.Chr == "{it's}")
     - filter: x => !(x.Doc.Str + x.Chr != "{it's}")
+    - expression: x => x.NStr + x.Int
+    - expression: x => x.NStr + x.Chr
+    - expression: x => x.Doc.NStr + x.Int
+    - expression: x => x.Doc.NStr + x.Chr
+    - filter: x => x.NStr + x.Int == "{it's}"
+    - filter: x => x.NStr + x.Int != "{it's}"
+    - filter: x => x.NStr + x.Chr == "{it's}"
+    - filter: x => x.NStr + x.Chr != "{it's}"
+    - filter: x => x.Doc.NStr + x.Int == "{it's}"
+    - filter: x => x.Doc.NStr + x.Int != "{it's}"
+    - filter: x => x.Doc.NStr + x.Chr == "{it's}"
+    - filter: x => x.Doc.NStr + x.Chr != "{it's}"
+    - filter: x => !(x.NStr + x.Int == "{it's}")
+    - filter: x => !(x.NStr + x.Int != "{it's}")
+    - filter: x => !(x.NStr + x.Chr == "{it's}")
+    - filter: x => !(x.NStr + x.Chr != "{it's}")
+    - filter: x => !(x.Doc.NStr + x.Int == "{it's}")
+    - filter: x => !(x.Doc.NStr + x.Int != "{it's}")
+    - filter: x => !(x.Doc.NStr + x.Chr == "{it's}")
+    - filter: x => !(x.Doc.NStr + x.Chr != "{it's}")
 
 unchecked: Concatenation with a ulong
     EF Core maps ulong to numeric(20,0) and writes the value as 5.0, so its query concatenates '5.0'
@@ -222,102 +242,6 @@ unchecked: Date and time JSON members compared in a filter (#119)
     - filter: x => !(x.Doc.Date > x.NDate)
     - filter: x => !(x.Doc.Date >= x.Date)
     - filter: x => !(x.Doc.Date >= x.NDate)
-
-unchecked: Concatenation with a nullable operand (#94)
-    C# concatenates null as an empty string, PostgreSQL's || returns NULL, and EF Core wraps the
-    operand in COALESCE(…, ''). The index holds NULL where the query computes a value, so a unique
-    index leaves those rows unchecked. Open: https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/issues/94
-    - expression: x => x.Str + x.NStr2
-    - expression: x => x.Str + x.NInt
-    - expression: x => x.NStr + "x"
-    - expression: x => "x" + x.NStr
-    - expression: x => x.NStr + x.Str2
-    - expression: x => x.NStr + x.NStr2
-    - expression: x => x.NStr + x.Int
-    - expression: x => x.NStr + x.NInt
-    - expression: x => x.NStr + x.Chr
-    - expression: x => x.Doc.Str + x.NStr2
-    - expression: x => x.Doc.Str + x.NInt
-    - expression: x => x.Doc.NStr + "x"
-    - expression: x => "x" + x.Doc.NStr
-    - expression: x => x.Doc.NStr + x.Str2
-    - expression: x => x.Doc.NStr + x.NStr2
-    - expression: x => x.Doc.NStr + x.Int
-    - expression: x => x.Doc.NStr + x.NInt
-    - expression: x => x.Doc.NStr + x.Chr
-    - filter: x => x.Str + x.NStr2 == "{it's}"
-    - filter: x => x.Str + x.NStr2 != "{it's}"
-    - filter: x => x.Str + x.NInt == "{it's}"
-    - filter: x => x.Str + x.NInt != "{it's}"
-    - filter: x => x.NStr + "x" == "{it's}"
-    - filter: x => x.NStr + "x" != "{it's}"
-    - filter: x => "x" + x.NStr == "{it's}"
-    - filter: x => "x" + x.NStr != "{it's}"
-    - filter: x => x.NStr + x.Str2 == "{it's}"
-    - filter: x => x.NStr + x.Str2 != "{it's}"
-    - filter: x => x.NStr + x.NStr2 == "{it's}"
-    - filter: x => x.NStr + x.NStr2 != "{it's}"
-    - filter: x => x.NStr + x.Int == "{it's}"
-    - filter: x => x.NStr + x.Int != "{it's}"
-    - filter: x => x.NStr + x.NInt == "{it's}"
-    - filter: x => x.NStr + x.NInt != "{it's}"
-    - filter: x => x.NStr + x.Chr == "{it's}"
-    - filter: x => x.NStr + x.Chr != "{it's}"
-    - filter: x => x.Doc.Str + x.NStr2 == "{it's}"
-    - filter: x => x.Doc.Str + x.NStr2 != "{it's}"
-    - filter: x => x.Doc.Str + x.NInt == "{it's}"
-    - filter: x => x.Doc.Str + x.NInt != "{it's}"
-    - filter: x => x.Doc.NStr + "x" == "{it's}"
-    - filter: x => x.Doc.NStr + "x" != "{it's}"
-    - filter: x => "x" + x.Doc.NStr == "{it's}"
-    - filter: x => "x" + x.Doc.NStr != "{it's}"
-    - filter: x => x.Doc.NStr + x.Str2 == "{it's}"
-    - filter: x => x.Doc.NStr + x.Str2 != "{it's}"
-    - filter: x => x.Doc.NStr + x.NStr2 == "{it's}"
-    - filter: x => x.Doc.NStr + x.NStr2 != "{it's}"
-    - filter: x => x.Doc.NStr + x.Int == "{it's}"
-    - filter: x => x.Doc.NStr + x.Int != "{it's}"
-    - filter: x => x.Doc.NStr + x.NInt == "{it's}"
-    - filter: x => x.Doc.NStr + x.NInt != "{it's}"
-    - filter: x => x.Doc.NStr + x.Chr == "{it's}"
-    - filter: x => x.Doc.NStr + x.Chr != "{it's}"
-    - filter: x => !(x.Str + x.NStr2 == "{it's}")
-    - filter: x => !(x.Str + x.NStr2 != "{it's}")
-    - filter: x => !(x.Str + x.NInt == "{it's}")
-    - filter: x => !(x.Str + x.NInt != "{it's}")
-    - filter: x => !(x.NStr + "x" == "{it's}")
-    - filter: x => !(x.NStr + "x" != "{it's}")
-    - filter: x => !("x" + x.NStr == "{it's}")
-    - filter: x => !("x" + x.NStr != "{it's}")
-    - filter: x => !(x.NStr + x.Str2 == "{it's}")
-    - filter: x => !(x.NStr + x.Str2 != "{it's}")
-    - filter: x => !(x.NStr + x.NStr2 == "{it's}")
-    - filter: x => !(x.NStr + x.NStr2 != "{it's}")
-    - filter: x => !(x.NStr + x.Int == "{it's}")
-    - filter: x => !(x.NStr + x.Int != "{it's}")
-    - filter: x => !(x.NStr + x.NInt == "{it's}")
-    - filter: x => !(x.NStr + x.NInt != "{it's}")
-    - filter: x => !(x.NStr + x.Chr == "{it's}")
-    - filter: x => !(x.NStr + x.Chr != "{it's}")
-    - filter: x => !(x.Doc.Str + x.NStr2 == "{it's}")
-    - filter: x => !(x.Doc.Str + x.NStr2 != "{it's}")
-    - filter: x => !(x.Doc.Str + x.NInt == "{it's}")
-    - filter: x => !(x.Doc.Str + x.NInt != "{it's}")
-    - filter: x => !(x.Doc.NStr + "x" == "{it's}")
-    - filter: x => !(x.Doc.NStr + "x" != "{it's}")
-    - filter: x => !("x" + x.Doc.NStr == "{it's}")
-    - filter: x => !("x" + x.Doc.NStr != "{it's}")
-    - filter: x => !(x.Doc.NStr + x.Str2 == "{it's}")
-    - filter: x => !(x.Doc.NStr + x.Str2 != "{it's}")
-    - filter: x => !(x.Doc.NStr + x.NStr2 == "{it's}")
-    - filter: x => !(x.Doc.NStr + x.NStr2 != "{it's}")
-    - filter: x => !(x.Doc.NStr + x.Int == "{it's}")
-    - filter: x => !(x.Doc.NStr + x.Int != "{it's}")
-    - filter: x => !(x.Doc.NStr + x.NInt == "{it's}")
-    - filter: x => !(x.Doc.NStr + x.NInt != "{it's}")
-    - filter: x => !(x.Doc.NStr + x.Chr == "{it's}")
-    - filter: x => !(x.Doc.NStr + x.Chr != "{it's}")
-    - expression: x => x.Str + c  with string? c = null;
 
 same: A captured Substring start renders unfolded (#117)
     substring("Str", (1 + 1)) against EF Core's substring("Str", 2): PostgreSQL folds the constant
