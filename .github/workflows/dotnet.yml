@@ -79,6 +79,15 @@ jobs:
       - name: Build
         run: dotnet build -c Release --no-restore
 
+      # The default build is the floor the packages declare (#133). Read from what the test host
+      # loads, because a provider pinned higher pulls EF Core up behind it: until 5.5.0 a Sqlite pin
+      # at 10.0.11 ran every lane on EF Core 10.0.11 beside Npgsql EF 10.0.0, a mix no consumer has.
+      - name: Dependency versions are the floor
+        run: >
+          test/assert-dependency-versions.sh
+          test/EFCore.ComplexIndexes.Tests/bin/Release/net10.0/EFCore.ComplexIndexes.Tests.deps.json
+          10.0.0 10.0.0
+
       # This used to fan out across ubuntu/windows/macos for the repository-convention tests, which
       # do real path work. Dropped as unearned: no shipped code touches the filesystem, so the only
       # thing the other runners proved was that the *test harness* composes paths portably — which
@@ -219,6 +228,107 @@ jobs:
       - name: Scaffold a migration from a throwaway consumer project
         run: ./test/consumer-smoke-test.sh
 
+  # Every suite again, on the newest EF Core 10 and Npgsql EF patches on nuget.org (#133).
+  #
+  # The packages declare `[10.0.0, 11.0.0)`, so a consumer runs on whatever patch they restore, while
+  # the other lanes test the floor. This package replaces EF's migrations differ and SQL generator
+  # and uses its internal API in ten files, and EF internals carry no promise across patches. On
+  # the 5.x line, which takes fixes only, nothing else would notice a patch that breaks it.
+  #
+  # The versions are looked up when the job runs rather than pinned here, so a new patch is tested
+  # the night it ships (nightly.yml calls this workflow) without a PR that bumps a number. src/ is
+  # still compiled against its floor: only the test projects float (test/Directory.Build.targets),
+  # which is what a consumer on a newer patch runs.
+  newest-patch:
+    name: Newest EF Core patch
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5.4.0
+        with:
+          global-json-file: global.json
+
+      # Npgsql EF 10.0.1 and later require EF Core 10.0.4 or later, so the two newest are a pair a
+      # consumer can restore.
+      - name: Find the newest patches
+        run: |
+          newest() {
+            curl -fsSL "https://api.nuget.org/v3-flatcontainer/$1/index.json" \
+              | jq -r '.versions[]' | grep -E '^10\.[0-9]+\.[0-9]+$' | sort -V | tail -n1
+          }
+          ef="$(newest microsoft.entityframeworkcore)"
+          npgsql="$(newest npgsql.entityframeworkcore.postgresql)"
+          if [[ -z "$ef" || -z "$npgsql" ]]; then
+            echo "::error::nuget.org returned no 10.x version (EF Core '$ef', Npgsql EF '$npgsql')."
+            exit 1
+          fi
+          echo "EF_FLOAT=$ef" >> "$GITHUB_ENV"
+          echo "NPGSQL_EF_FLOAT=$npgsql" >> "$GITHUB_ENV"
+          echo "### EF Core $ef, Npgsql EF $npgsql" >> "$GITHUB_STEP_SUMMARY"
+
+      # Passed to the build as well, so it evaluates the references the restore resolved.
+      - name: Restore dependencies
+        run: dotnet restore -p:EfFloat="$EF_FLOAT" -p:NpgsqlEfFloat="$NPGSQL_EF_FLOAT"
+
+      - name: Build
+        run: dotnet build -c Release --no-restore -p:EfFloat="$EF_FLOAT" -p:NpgsqlEfFloat="$NPGSQL_EF_FLOAT"
+
+      # A float that did not take leaves the floor in place, and every test then passes on it.
+      - name: Dependency versions are the newest patches
+        run: >
+          test/assert-dependency-versions.sh
+          test/EFCore.ComplexIndexes.Tests/bin/Release/net10.0/EFCore.ComplexIndexes.Tests.deps.json
+          "$EF_FLOAT" "$NPGSQL_EF_FLOAT"
+
+      # One step for the four suites, which runs each and fails after the last, so one red run
+      # names every suite the patch breaks. The steps run under `bash -e`, so each suite's exit
+      # status is caught by `if` rather than ending the step. CI=true makes an unavailable container
+      # fail, as in the integration lanes. The smoke test runs last: it packs, and packing restores
+      # without the float.
+      - name: Tests
+        env:
+          CI: true
+        run: |
+          export SMOKE_EF_VERSION="$EF_FLOAT" SMOKE_NPGSQL_EF_VERSION="$NPGSQL_EF_FLOAT"
+          failed=()
+          suite() {
+            local name="$1"
+            shift
+            echo "::group::$name"
+            if "$@"; then
+              echo "::endgroup::"
+            else
+              echo "::endgroup::"
+              echo "::error::$name failed on EF Core $EF_FLOAT, Npgsql EF $NPGSQL_EF_FLOAT."
+              failed+=("$name")
+            fi
+          }
+          tests() {
+            dotnet test -c Release --no-build --filter "$1" \
+              --logger "trx;LogFileName=newest-patch-$2.trx" --results-directory TestResults
+          }
+
+          suite "Unit" tests "TestCategory!=Integration" unit
+          suite "Integration (PostgreSQL)" tests "TestCategory=Integration&TestCategory!=SqlServer" postgres
+          suite "Integration (SQL Server)" tests "TestCategory=Integration&TestCategory=SqlServer" sqlserver
+          suite "Consumer smoke test" ./test/consumer-smoke-test.sh
+
+          if (( ${#failed[@]} )); then
+            echo "Failed: ${failed[*]}"
+            exit 1
+          fi
+
+      - name: Upload test results
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        if: always()
+        with:
+          name: test-results-newest-patch
+          path: TestResults/*.trx
+          if-no-files-found: ignore
+
   pack:
     name: Pack
     runs-on: ubuntu-latest
@@ -291,7 +401,7 @@ jobs:
   ci:
     name: CI
     runs-on: ubuntu-latest
-    needs: [ test, integration, integration-sqlserver, consumer, pack ]
+    needs: [ test, integration, integration-sqlserver, consumer, newest-patch, pack ]
     if: always()
 
     steps:

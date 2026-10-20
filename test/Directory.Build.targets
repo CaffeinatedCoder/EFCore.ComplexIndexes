@@ -1,0 +1,30 @@
+<Project>
+    <!--
+        Which EF Core patch the test projects run on (#133).
+
+        The test project pins the floor the packages declare, so a plain build tests what a consumer
+        on 10.0.0 gets. These two properties float it to another patch, for the test projects only:
+        src/ is still compiled against its floor, which is exactly what a consumer on a newer patch
+        runs, a package built on 10.0.0 loaded beside EF Core 10.0.x.
+
+            dotnet restore -p:EfFloat=10.0.13 -p:NpgsqlEfFloat=10.0.3
+
+        Set both. Npgsql EF 10.0.1 and later require EF Core 10.0.4 or later, and floating one alone
+        resolves a mix no consumer has. Restore with the properties before building: a build with
+        no-restore keeps whatever the last restore resolved. Then read the test host's deps.json
+        (test/assert-dependency-versions.sh) to see that the float took effect. A float that
+        quietly resolves the floor again passes every test and proves nothing.
+
+        Microsoft.EntityFrameworkCore, Relational and Abstractions have no direct reference here.
+        They follow the providers, because each EF Core patch depends on its own patch of them.
+    -->
+    <ItemGroup Condition="'$(EfFloat)' != ''">
+        <PackageReference Update="Microsoft.EntityFrameworkCore.Sqlite" Version="$(EfFloat)" />
+        <PackageReference Update="Microsoft.EntityFrameworkCore.SqlServer" Version="$(EfFloat)" />
+        <PackageReference Update="Microsoft.EntityFrameworkCore.Design" Version="$(EfFloat)" />
+    </ItemGroup>
+
+    <ItemGroup Condition="'$(NpgsqlEfFloat)' != ''">
+        <PackageReference Update="Npgsql.EntityFrameworkCore.PostgreSQL" Version="$(NpgsqlEfFloat)" />
+    </ItemGroup>
+</Project>

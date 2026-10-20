@@ -21,6 +21,11 @@
 # Usage: consumer-smoke-test.sh [feed-directory]
 #   With no argument the packages are packed fresh. Pass a directory of existing .nupkg files
 #   (the release workflow passes its pack output) to test exactly the artifacts being shipped.
+#
+#   SMOKE_EF_VERSION and SMOKE_NPGSQL_EF_VERSION pin the consumers to one EF Core patch (#133): the
+#   provider and Design are added at those versions, and each consumer's deps.json is read to show
+#   they took. Set both, since Npgsql EF 10.0.1 and later need EF Core 10.0.4 or later. Unset, the
+#   provider comes from the satellite's dependency range (its floor) and Design at the newest 10.x.
 
 set -euo pipefail
 
@@ -92,7 +97,7 @@ export PATH="$work/tools:$PATH"
 # option either — that fails with NU1101 on the transitive dependencies. <clear/> drops any
 # machine-level sources.
 scaffold_consumer() {
-    local name="$1" package="$2" app="$work/$1"
+    local name="$1" package="$2" provider="$3" provider_version="$4" app="$work/$1"
 
     echo "==> $name: consumer project, $package"
     mkdir -p "$app"
@@ -125,11 +130,24 @@ XML
     run dotnet add package "$package" --version "$version"
     # The 10.x line, as for dotnet-ef above. Unversioned, this restores nuget.org's latest, which
     # becomes EF Core 11 the day it ships: a package for net11.0, refused by this net10.0 project.
-    run dotnet add package Microsoft.EntityFrameworkCore.Design --version "10.*"
+    if [[ -n "${SMOKE_EF_VERSION:-}" ]]; then
+        run dotnet add package "$provider" --version "$provider_version"
+        run dotnet add package Microsoft.EntityFrameworkCore.Design --version "$SMOKE_EF_VERSION"
+    else
+        run dotnet add package Microsoft.EntityFrameworkCore.Design --version "10.*"
+    fi
 
     # Built explicitly first: `dotnet ef` reports a compile error only as "Build failed. Use dotnet
     # build to see the errors", which in CI is indistinguishable from the design-time host failing.
     run dotnet build
+
+    # A pin that did not take tests the floor again and passes, so the versions are read back from
+    # what the consumer loads.
+    if [[ -n "${SMOKE_EF_VERSION:-}" ]]; then
+        local npgsql=""
+        [[ "$provider" == Npgsql.* ]] && npgsql="$provider_version"
+        "$repo_root/test/assert-dependency-versions.sh" "bin/Debug/net10.0/$name.deps.json" "$SMOKE_EF_VERSION" $npgsql
+    fi
 
     echo "==> $name: dotnet ef migrations add Initial"
     run dotnet-ef migrations add Initial
@@ -216,7 +234,8 @@ public sealed class ShopContext : DbContext
 }
 CSHARP
 
-scaffold_consumer postgres EFCore.ComplexIndexes.PostgreSQL
+scaffold_consumer postgres EFCore.ComplexIndexes.PostgreSQL \
+    Npgsql.EntityFrameworkCore.PostgreSQL "${SMOKE_NPGSQL_EF_VERSION:-}"
 
 echo "==> postgres: asserting the scaffolded migration"
 pg="$(migration_of postgres)"
@@ -277,7 +296,8 @@ public sealed class ShopContext : DbContext
 }
 CSHARP
 
-scaffold_consumer sqlserver EFCore.ComplexIndexes.SqlServer
+scaffold_consumer sqlserver EFCore.ComplexIndexes.SqlServer \
+    Microsoft.EntityFrameworkCore.SqlServer "${SMOKE_EF_VERSION:-}"
 
 echo "==> sqlserver: asserting the scaffolded migration"
 ss="$(migration_of sqlserver)"
