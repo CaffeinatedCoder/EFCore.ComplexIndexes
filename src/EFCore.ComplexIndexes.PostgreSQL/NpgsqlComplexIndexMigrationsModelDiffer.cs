@@ -692,7 +692,7 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
         if (target is not null)
         {
             foreach (var constraint in targetConstraints)
-                ThrowIfIdentifierTooLong(target.Model, constraint.Name, "temporal constraint", constraint.Table, "name");
+                ThrowIfIdentifierTooLong(target.Model, constraint.Name, "temporal constraint", constraint.Table, "name", constraint.Origin);
 
             foreach (var foreignKey in targetForeignKeys)
                 ThrowIfIdentifierTooLong(target.Model, foreignKey.Name, "temporal foreign key", foreignKey.DependentTable, "name");
@@ -921,7 +921,7 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
         if (target is not null)
         {
             foreach (var constraint in targetConstraints)
-                ThrowIfIdentifierTooLong(target.Model, constraint.Name, "exclusion constraint", constraint.Table, "name");
+                ThrowIfIdentifierTooLong(target.Model, constraint.Name, "exclusion constraint", constraint.Table, "name", constraint.Origin);
         }
 
         if (sourceConstraints.Count == 0 && targetConstraints.Count == 0)
@@ -1082,10 +1082,82 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
         return renamed;
     }
 
+    // The default name of a TPC copy over the identifier limit, shortened as the core shortens a
+    // complex index's (CustomMigrationsModelDiffer.ShortenIdentifier). A constraint's name is taken
+    // twice over: among the constraints of its table, and, for the index behind it, among the
+    // relations of its schema. Sorted, so both sides of a diff assign alike; copies sharing a full
+    // name share the shortened one, so the name checks still report two declarations that resolve
+    // alike. Other kinds start with other prefixes, and ValidateNamesAcrossKinds still sees the
+    // shortened names.
+    private List<T> ShortenConstraintCopyNames<T>(
+        IRelationalModel                                     model,
+        HashSet<T>                                           copies,
+        IEnumerable<T>                                       others,
+        Func<T, (string Table, string? Schema, string Name)> identity,
+        Func<T, string, T>                                   rename)
+    {
+        var shortened = new List<T>(copies.Count);
+        if (copies.Count == 0)
+            return shortened;
+
+        var inSchema = new HashSet<(string? Schema, string Name)>();
+        var onTable  = new HashSet<(string? Schema, string Table, string Name)>();
+
+        void Take(string table, string? schema, string name, bool indexBacked)
+        {
+            onTable.Add((schema, table, name));
+            if (indexBacked)
+                inSchema.Add((schema, name));
+        }
+
+        foreach (var table in model.Tables)
+        {
+            foreach (var index in table.Indexes)
+                inSchema.Add((table.Schema, index.Name));
+
+            foreach (var key in table.UniqueConstraints)
+                Take(table.Name, table.Schema, key.Name, indexBacked: true);
+
+            foreach (var foreignKey in table.ForeignKeyConstraints)
+                Take(table.Name, table.Schema, foreignKey.Name, indexBacked: false);
+
+            foreach (var check in table.CheckConstraints.Where(c => c.Name is not null))
+                Take(table.Name, table.Schema, check.Name!, indexBacked: false);
+        }
+
+        foreach (var other in others)
+        {
+            var (table, schema, name) = identity(other);
+            Take(table, schema, name, indexBacked: true);
+        }
+
+        var limit    = model.Model.GetMaxIdentifierLength();
+        var assigned = new Dictionary<(string? Schema, string Table, string Name), string>();
+
+        foreach (var copy in copies.OrderBy(c => identity(c).Schema, StringComparer.Ordinal)
+                                   .ThenBy(c => identity(c).Table, StringComparer.Ordinal)
+                                   .ThenBy(c => identity(c).Name, StringComparer.Ordinal))
+        {
+            var (table, schema, full) = identity(copy);
+            if (!assigned.TryGetValue((schema, table, full), out var name))
+            {
+                name = ShortenIdentifier(full, limit, candidate => inSchema.Contains((schema, candidate)) || onTable.Contains((schema, table, candidate)));
+                assigned[(schema, table, full)] = name;
+                Take(table, schema, name, indexBacked: true);
+            }
+
+            shortened.Add(rename(copy, name));
+        }
+
+        return shortened;
+    }
+
     private HashSet<ExclusionDescriptor> BuildExclusionDescriptors(IRelationalModel? model)
     {
         var set = new HashSet<ExclusionDescriptor>();
         if (model is null) return set;
+
+        var longCopies = new HashSet<ExclusionDescriptor>();
 
         // Declarations come from the same reader an application uses (NpgsqlExclusionModelExtensions).
         foreach (var entityType in model.Model.GetEntityTypes())
@@ -1109,10 +1181,15 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
                 foreach (var (tableType, storeObject) in tables)
                 {
                     ThrowIfMissingFromDerivedTable(model, entityType, tableType, storeObject, paths, "an exclusion constraint");
-                    set.Add(ResolveExclusion(tableType, def, storeObject) with { Origin = origin });
+
+                    var descriptor = ResolveExclusion(tableType, def, storeObject) with { Origin = origin };
+                    (IsLongDefaultCopyName(model.Model, origin, def.Name, descriptor.Name) ? longCopies : set).Add(descriptor);
                 }
             }
         }
+
+        foreach (var copy in ShortenConstraintCopyNames(model, longCopies, set, c => (c.Table, c.Schema, c.Name), (c, name) => c with { Name = name }))
+            set.Add(copy);
 
         return set;
     }
@@ -1214,13 +1291,15 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
     private static string QuoteQualified(string table, string? schema)
         => schema is null ? Quote(table) : $"{Quote(schema)}.{Quote(table)}";
 
-    private static HashSet<TemporalDescriptor> BuildDescriptors(
+    private HashSet<TemporalDescriptor> BuildDescriptors(
         IRelationalModel?            model,
         IRelationalTypeMappingSource typeMappingSource
     )
     {
         var set = new HashSet<TemporalDescriptor>();
         if (model is null) return set;
+
+        var longCopies = new HashSet<TemporalDescriptor>();
 
         foreach (var entityType in model.Model.GetEntityTypes())
         {
@@ -1242,10 +1321,15 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
                 foreach (var (tableType, storeObject) in tables)
                 {
                     ThrowIfMissingFromDerivedTable(model, entityType, tableType, storeObject, [.. def.KeyProperties, def.PeriodProperty], "a temporal constraint");
-                    set.Add(ResolveTemporal(tableType, def, storeObject, typeMappingSource) with { Origin = origin });
+
+                    var descriptor = ResolveTemporal(tableType, def, storeObject, typeMappingSource) with { Origin = origin };
+                    (IsLongDefaultCopyName(model.Model, origin, def.Name, descriptor.Name) ? longCopies : set).Add(descriptor);
                 }
             }
         }
+
+        foreach (var copy in ShortenConstraintCopyNames(model, longCopies, set, c => (c.Table, c.Schema, c.Name), (c, name) => c with { Name = name }))
+            set.Add(copy);
 
         return set;
     }
