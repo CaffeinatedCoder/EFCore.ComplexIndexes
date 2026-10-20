@@ -19,7 +19,10 @@ namespace EFCore.ComplexIndexes.PostgreSQL;
 public class NpgsqlComplexIndexSqlGenerator(
     MigrationsSqlGeneratorDependencies dependencies,
     INpgsqlSingletonOptions            npgsqlSingletonOptions
-) : NpgsqlMigrationsSqlGenerator(dependencies, npgsqlSingletonOptions)
+) : NpgsqlMigrationsSqlGenerator(
+    // The EF Core major check, for an application that registers this generator by hand.
+    EfCoreVersionGuard.Guarded(dependencies),
+    npgsqlSingletonOptions)
 {
     /// <summary>
     /// Renders <c>CREATE INDEX</c> from the <see cref="ComplexIndexAnnotations.IndexParts"/>
