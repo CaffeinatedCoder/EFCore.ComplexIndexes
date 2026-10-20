@@ -35,8 +35,23 @@ public class BuilderApiParityTests
 
         Assert.IsNotEmpty(whitelist, $"{differ.Name}.{whitelistField} is empty — has it been renamed?");
 
-        var reachable = new HashSet<string>(StringComparer.Ordinal);
+        var reachable = KeysSetBy(builderExtensions).SelectMany(m => m.Keys).ToHashSet(StringComparer.Ordinal);
 
+        var unreachable = whitelist.Except(reachable).OrderBy(k => k, StringComparer.Ordinal).ToList();
+
+        Assert.IsEmpty(
+            unreachable,
+            $"{differ.Name} forwards {string.Join(", ", unreachable)} onto index operations, but "
+          + $"{builderExtensions.Name} offers no way to set them. Either add the builder method or drop "
+          + "the key from the whitelist.");
+    }
+
+    /// <summary>
+    /// Invokes every option method of <paramref name="builderExtensions"/> on a fresh builder and
+    /// reports the annotation keys each one sets.
+    /// </summary>
+    internal static IEnumerable<(string Method, IReadOnlyCollection<string> Keys)> KeysSetBy(Type builderExtensions)
+    {
         foreach (var method in builderExtensions.GetMethods(BindingFlags.Public | BindingFlags.Static))
         {
             // Every option method is an extension generic over the builder interface.
@@ -53,17 +68,8 @@ public class BuilderApiParityTests
 
             concrete.Invoke(null, arguments);
 
-            foreach (var key in builder.Annotations.Keys)
-                reachable.Add(key);
+            yield return (method.Name, builder.Annotations.Keys.ToList());
         }
-
-        var unreachable = whitelist.Except(reachable).OrderBy(k => k, StringComparer.Ordinal).ToList();
-
-        Assert.IsEmpty(
-            unreachable,
-            $"{differ.Name} forwards {string.Join(", ", unreachable)} onto index operations, but "
-          + $"{builderExtensions.Name} offers no way to set them. Either add the builder method or drop "
-          + "the key from the whitelist.");
     }
 
     private static object SampleArgument(ParameterInfo parameter, string methodName)

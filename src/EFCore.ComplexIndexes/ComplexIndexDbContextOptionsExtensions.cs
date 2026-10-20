@@ -19,7 +19,7 @@ namespace EFCore.ComplexIndexes;
 /// With a provider satellite installed, call that package's method instead
 /// (<c>UseNpgsqlComplexIndexes()</c>, <c>UseSqlServerComplexIndexes()</c>): the core differ registered
 /// here would give <c>EnsureCreated()</c> a schema without the satellite's features, such as
-/// exclusion constraints.
+/// exclusion constraints, and it refuses a complex index that carries the provider's index options.
 /// </para>
 /// </remarks>
 public static class ComplexIndexDbContextOptionsExtensions
