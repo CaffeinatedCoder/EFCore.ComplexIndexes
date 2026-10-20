@@ -36,7 +36,9 @@ public class CustomMigrationsModelDiffer(
     CommandBatchPreparerDependencies commandBatchPreparerDependencies
 )
     : MigrationsModelDiffer(
-        typeMappingSource,
+        // The EF Core major check, for an application that registers this differ (or a
+        // satellite's, which constructs this one) by hand rather than through an entry point.
+        EfCoreVersionGuard.Guarded(typeMappingSource),
         migrationsAnnotationProvider,
         relationalAnnotationProvider,
         rowIdentityMapFactory,
