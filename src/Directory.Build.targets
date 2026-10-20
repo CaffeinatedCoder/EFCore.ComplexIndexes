@@ -1,0 +1,63 @@
+<Project>
+    <!--
+        Shipping projects only: MSBuild imports the nearest Directory.Build.targets above a project,
+        so this one reaches src/ and nothing else. A Directory.Build.targets added at the root later
+        does not reach src/ unless this file imports it.
+    -->
+
+    <!--
+        Release notes are the version's section of the package's own CHANGELOG.md.
+
+        nuget.org's Release Notes tab and Visual Studio's Updates tab both show the nuspec's
+        releaseNotes. nuget.org renders the field as plain text (measured 2026-10-20 on bunit 2.12.5
+        and Bogus 35.6.5, and in NuGetGallery's HtmlExtensions.PreFormattedText): HTML-encoded, line
+        breaks kept, bare http(s) URLs turned into links that stop before a parenthesis, and Markdown
+        shown literally. So a line keeps reading as a line, the section is written plain:
+        [text](url) becomes "text (url)", and backticks, bold markers and the "### " of a section
+        heading are dropped. One footer line links the full changelog at the version's tag.
+
+        Fail closed: no changelog, no section for $(PackageVersion), an empty section, or notes over
+        nuget.org's 35,000-character limit each fail the pack, naming the file. A package with
+        nothing in a version says "No change in this package.", so the section always exists.
+
+        GenerateNuspec is incremental, and the changelog is none of its inputs: without adding it,
+        a changelog edit followed by a second pack keeps the first pack's notes.
+
+        ReleaseNotesChangelog is overridable so PackagingConventionTests can point the target at a
+        seeded changelog and watch it fail.
+    -->
+    <PropertyGroup>
+        <ReleaseNotesChangelog Condition="'$(ReleaseNotesChangelog)' == ''">$(MSBuildProjectDirectory)/CHANGELOG.md</ReleaseNotesChangelog>
+    </PropertyGroup>
+
+    <Target Name="SetPackageReleaseNotesFromChangelog"
+            BeforeTargets="GenerateNuspec"
+            Condition="'$(IsPackable)' == 'true'">
+        <Error Condition="!Exists('$(ReleaseNotesChangelog)')"
+               Text="Cannot set the release notes of $(PackageId): $(ReleaseNotesChangelog) does not exist." />
+
+        <PropertyGroup>
+            <_ReleaseNotesVersion>$([System.Text.RegularExpressions.Regex]::Escape($(PackageVersion)))</_ReleaseNotesVersion>
+            <_ReleaseNotes>$([System.IO.File]::ReadAllText($(ReleaseNotesChangelog)))</_ReleaseNotes>
+            <_ReleaseNotes>$([System.Text.RegularExpressions.Regex]::Replace($(_ReleaseNotes), '\r', ''))</_ReleaseNotes>
+            <_ReleaseNotes>$([System.Text.RegularExpressions.Regex]::Match($(_ReleaseNotes), '(?ms)(?&lt;=^## \[$(_ReleaseNotesVersion)\][^\n]*\n).*?(?=^## |\z)').Value.Trim())</_ReleaseNotes>
+        </PropertyGroup>
+
+        <Error Condition="'$(_ReleaseNotes)' == ''"
+               Text="Cannot set the release notes of $(PackageId): $(ReleaseNotesChangelog) has no '## [$(PackageVersion)]' section, or it is empty. A version with nothing for this package says 'No change in this package.'" />
+
+        <PropertyGroup>
+            <_ReleaseNotes>$([System.Text.RegularExpressions.Regex]::Replace($(_ReleaseNotes), '\[([^\]\n]+)\]\((https?://[^)\s]+)\)', '$1 ($2)'))</_ReleaseNotes>
+            <_ReleaseNotes>$([System.Text.RegularExpressions.Regex]::Replace($(_ReleaseNotes), '\x60|\*\*', ''))</_ReleaseNotes>
+            <_ReleaseNotes>$([System.Text.RegularExpressions.Regex]::Replace($(_ReleaseNotes), '(?m)^### ', ''))</_ReleaseNotes>
+            <PackageReleaseNotes>$(_ReleaseNotes)%0A%0AFull changelog: $(RepositoryUrl)/blob/v$(PackageVersion)/src/$(MSBuildProjectName)/CHANGELOG.md</PackageReleaseNotes>
+        </PropertyGroup>
+
+        <Error Condition="$(PackageReleaseNotes.Length) &gt; 35000"
+               Text="Cannot set the release notes of $(PackageId): the '## [$(PackageVersion)]' section of $(ReleaseNotesChangelog) renders to $(PackageReleaseNotes.Length) characters, over nuget.org's limit of 35,000." />
+
+        <ItemGroup>
+            <NuGetPackInput Include="$(ReleaseNotesChangelog)" />
+        </ItemGroup>
+    </Target>
+</Project>

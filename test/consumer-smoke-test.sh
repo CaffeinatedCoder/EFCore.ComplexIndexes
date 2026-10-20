@@ -69,6 +69,20 @@ run() {
     fi
 }
 
+# The release notes nuget.org shows, on the artifacts that ship: the pack job and the release
+# workflow pass their own feed. PackagingConventionTests holds what the notes say; this holds that
+# every package in the feed carries them, footer last, as src/Directory.Build.targets writes them.
+echo "==> Release notes in the packed nuspecs"
+for package in EFCore.ComplexIndexes EFCore.ComplexIndexes.PostgreSQL EFCore.ComplexIndexes.SqlServer; do
+    footer="Full changelog: https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/v$version/src/$package/CHANGELOG.md</releaseNotes>"
+    if unzip -p "$feed/$package.$version.nupkg" "$package.nuspec" | grep -qF "$footer"; then
+        echo "  ok: $package carries its changelog section as release notes"
+    else
+        echo "  FAIL: $package.$version.nupkg has no release notes ending in its changelog link"
+        failed=1
+    fi
+done
+
 assert_contains() {
     if grep -q "$1" "$2"; then
         echo "  ok: $3"

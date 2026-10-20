@@ -32,6 +32,7 @@ The last 5.x minor with a change of its own: the line refuses EF Core 11, whose 
 ### Changed
 
 - Indexes: a complex index declared on the abstract base of a TPC hierarchy is created on every concrete table, as EF Core's own indexes are, where it failed at `migrations add` ([Upgrading](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/docs/upgrading.md#declarations-on-a-tpc-type-cover-every-table-of-the-hierarchy)).
+- Packaging: each package carries the version's section of its changelog as its NuGet release notes, which nuget.org's Release Notes tab and Visual Studio's Updates tab show.
 
 ### Fixed
 
