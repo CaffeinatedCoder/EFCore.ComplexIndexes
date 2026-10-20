@@ -20,18 +20,10 @@ public class SqlServerDifferTests
     private static IReadOnlyList<MigrationOperation> GetDifferences(IRelationalModel? source, IRelationalModel? target)
         => MigrationHarness.SqlServerDiff(source, target);
 
-    // End-to-end SQL through the stock SQL Server migrations generator — no runtime wiring needed.
-    private static string GenerateSql(IReadOnlyList<MigrationOperation> operations)
-    {
-        var options = new DbContextOptionsBuilder()
-                     .UseSqlServer("Server=localhost;Database=test;Trusted_Connection=True")
-                     .Options;
-
-        using var context   = new EmptyContext(options);
-        var       generator = context.GetService<IMigrationsSqlGenerator>();
-
-        return string.Join("\n", generator.Generate(operations, model: null).Select(c => c.CommandText));
-    }
+    // End-to-end SQL through the stock SQL Server migrations generator and the target model, as
+    // `database update` renders it — no runtime wiring needed.
+    private static string GenerateSql(IReadOnlyList<MigrationOperation> operations, IRelationalModel target)
+        => MigrationHarness.SqlServerSql(operations, target);
 
     private class EmptyContext(DbContextOptions options) : DbContext(options);
 
@@ -106,7 +98,8 @@ public class SqlServerDifferTests
     [TestMethod(DisplayName = "SQL Server index options are forwarded and rendered by the stock generator")]
     public void SqlServer_options_are_forwarded_and_rendered()
     {
-        var operations = GetDifferences(source: null, target: BuildRelationalModel<CoveringIndexContext>());
+        var target     = BuildRelationalModel<CoveringIndexContext>();
+        var operations = GetDifferences(source: null, target);
 
         var createIndex = Assert.ContainsSingle(operations.OfType<CreateIndexOperation>());
         Assert.AreEqual("ux_person_email", createIndex.Name);
@@ -114,7 +107,7 @@ public class SqlServerDifferTests
         Assert.AreEqual(80,   createIndex["SqlServer:FillFactor"]);
         Assert.IsTrue(((string[])createIndex["SqlServer:Include"]!).SequenceEqual(["name"]));
 
-        var sql = GenerateSql([createIndex]);
+        var sql = GenerateSql([createIndex], target);
         StringAssert.Contains(sql, "CREATE UNIQUE INDEX [ux_person_email] ON [person] ([email])");
         StringAssert.Contains(sql, "INCLUDE ([name])");
         StringAssert.Contains(sql, "ONLINE = ON");
@@ -134,12 +127,13 @@ public class SqlServerDifferTests
     [TestMethod(DisplayName = "Filtered descending composite renders WHERE and DESC")]
     public void Filtered_descending_composite_renders()
     {
-        var operations = GetDifferences(source: null, target: BuildRelationalModel<FilteredDescendingContext>());
+        var target     = BuildRelationalModel<FilteredDescendingContext>();
+        var operations = GetDifferences(source: null, target);
 
         var createIndex = Assert.ContainsSingle(operations.OfType<CreateIndexOperation>());
         Assert.IsNotNull(createIndex.IsDescending);
 
-        var sql = GenerateSql([createIndex]);
+        var sql = GenerateSql([createIndex], target);
         StringAssert.Contains(sql, "[name], [email] DESC");
         StringAssert.Contains(sql, "WHERE [name] IS NOT NULL");
     }
@@ -170,12 +164,13 @@ public class SqlServerDifferTests
     [TestMethod(DisplayName = "Data compression is forwarded and rendered by the stock generator")]
     public void Data_compression_is_forwarded()
     {
-        var operations = GetDifferences(source: null, target: BuildRelationalModel<DataCompressionContext>());
+        var target     = BuildRelationalModel<DataCompressionContext>();
+        var operations = GetDifferences(source: null, target);
 
         var createIndex = Assert.ContainsSingle(operations.OfType<CreateIndexOperation>());
         Assert.AreEqual(DataCompressionType.Page, createIndex["SqlServer:DataCompression"]);
 
-        StringAssert.Contains(GenerateSql(operations), "DATA_COMPRESSION = PAGE");
+        StringAssert.Contains(GenerateSql(operations, target), "DATA_COMPRESSION = PAGE");
     }
 
     // ── Clustered-index combinations SQL Server rejects ──
@@ -284,10 +279,329 @@ public class SqlServerDifferTests
     [TestMethod(DisplayName = "A clustered index is allowed when the key is explicitly nonclustered")]
     public void Clustered_index_with_nonclustered_key_is_allowed()
     {
-        var operations = GetDifferences(source: null, target: BuildRelationalModel<ClusteredWithNonclusteredKeyContext>());
+        var target     = BuildRelationalModel<ClusteredWithNonclusteredKeyContext>();
+        var operations = GetDifferences(source: null, target);
 
         var createIndex = Assert.ContainsSingle(operations.OfType<CreateIndexOperation>());
         Assert.AreEqual(true, createIndex["SqlServer:Clustered"]);
-        StringAssert.Contains(GenerateSql(operations), "CREATE CLUSTERED INDEX [ix_clustered]");
+        StringAssert.Contains(GenerateSql(operations, target), "CREATE CLUSTERED INDEX [ix_clustered]");
+    }
+
+    // ── The target table as a whole (#90) ──
+
+    // One clustered complex index; the next context adds a second in a later migration.
+    private class OneClusteredContext(DbContextOptions<OneClusteredContext> options) : DbContext(options)
+    {
+        public DbSet<Person> People => Set<Person>();
+
+        protected override void OnModelCreating(ModelBuilder modelBuilder) =>
+            modelBuilder.Entity<Person>(b =>
+            {
+                MapPerson(b);
+                b.HasKey(x => x.Id).IsClustered(false);
+                b.HasComplexIndex(x => x.Email.Value, ix => ix.HasName("cx_one").IsClustered());
+            });
+    }
+
+    private class SecondClusteredLaterContext(DbContextOptions<SecondClusteredLaterContext> options) : DbContext(options)
+    {
+        public DbSet<Person> People => Set<Person>();
+
+        protected override void OnModelCreating(ModelBuilder modelBuilder) =>
+            modelBuilder.Entity<Person>(b =>
+            {
+                MapPerson(b);
+                b.HasKey(x => x.Id).IsClustered(false);
+                b.HasComplexIndex(x => x.Email.Value, ix => ix.HasName("cx_one").IsClustered());
+                b.HasComplexIndex(x => x.Name,        ix => ix.HasName("cx_two").IsClustered());
+            });
+    }
+
+    // The clustered slot moves from cx_one to cx_two within one migration: the drop runs first.
+    private class ClusteredMovedContext(DbContextOptions<ClusteredMovedContext> options) : DbContext(options)
+    {
+        public DbSet<Person> People => Set<Person>();
+
+        protected override void OnModelCreating(ModelBuilder modelBuilder) =>
+            modelBuilder.Entity<Person>(b =>
+            {
+                MapPerson(b);
+                b.HasKey(x => x.Id).IsClustered(false);
+                b.HasComplexIndex(x => x.Email.Value, ix => ix.HasName("cx_one"));
+                b.HasComplexIndex(x => x.Name,        ix => ix.HasName("cx_two").IsClustered());
+            });
+    }
+
+    // What a snapshot scaffolded before 5.0.2 can hold: a clustered key and a clustered complex
+    // index. The next context is the model that resolves it.
+    private class ClusteredNonclusteredFixContext(DbContextOptions<ClusteredNonclusteredFixContext> options) : DbContext(options)
+    {
+        public DbSet<Person> People => Set<Person>();
+
+        protected override void OnModelCreating(ModelBuilder modelBuilder) =>
+            modelBuilder.Entity<Person>(b =>
+            {
+                MapPerson(b);
+                b.HasComplexIndex(x => x.Email.Value, ix => ix.HasName("ix_clustered"));
+            });
+    }
+
+    private class ClusteredWithClusteredNativeIndexContext(DbContextOptions<ClusteredWithClusteredNativeIndexContext> options) : DbContext(options)
+    {
+        public DbSet<Person> People => Set<Person>();
+
+        protected override void OnModelCreating(ModelBuilder modelBuilder) =>
+            modelBuilder.Entity<Person>(b =>
+            {
+                MapPerson(b);
+                b.HasKey(x => x.Id).IsClustered(false);
+                b.HasIndex(x => x.Name).IsClustered();
+                b.HasComplexIndex(x => x.Email.Value, ix => ix.HasName("ix_clustered").IsClustered());
+            });
+    }
+
+    private class ClusteredWithClusteredAlternateKeyContext(DbContextOptions<ClusteredWithClusteredAlternateKeyContext> options) : DbContext(options)
+    {
+        public DbSet<Person> People => Set<Person>();
+
+        protected override void OnModelCreating(ModelBuilder modelBuilder) =>
+            modelBuilder.Entity<Person>(b =>
+            {
+                MapPerson(b);
+                b.HasKey(x => x.Id).IsClustered(false);
+                b.HasAlternateKey(x => x.Name).HasName("AK_person_name").IsClustered();
+                b.HasComplexIndex(x => x.Email.Value, ix => ix.HasName("ix_clustered").IsClustered());
+            });
+    }
+
+    private class NamedLikeKeyContext(DbContextOptions<NamedLikeKeyContext> options) : DbContext(options)
+    {
+        public DbSet<Person> People => Set<Person>();
+
+        protected override void OnModelCreating(ModelBuilder modelBuilder) =>
+            modelBuilder.Entity<Person>(b =>
+            {
+                MapPerson(b);
+                b.HasComplexIndex(x => x.Email.Value, indexName: "pk_person");
+            });
+    }
+
+    private class NamedLikeAlternateKeyContext(DbContextOptions<NamedLikeAlternateKeyContext> options) : DbContext(options)
+    {
+        public DbSet<Person> People => Set<Person>();
+
+        protected override void OnModelCreating(ModelBuilder modelBuilder) =>
+            modelBuilder.Entity<Person>(b =>
+            {
+                MapPerson(b);
+                b.HasAlternateKey(x => x.Name).HasName("AK_person_name");
+                b.HasComplexIndex(x => x.Email.Value, indexName: "AK_person_name");
+            });
+    }
+
+    // Index names are per table on SQL Server: another table's key name is free here.
+    private class Pet
+    {
+        public Guid   Id   { get; set; }
+        public string Name { get; set; } = "";
+    }
+
+    private class NamedLikeOtherTablesKeyContext(DbContextOptions<NamedLikeOtherTablesKeyContext> options) : DbContext(options)
+    {
+        public DbSet<Person> People => Set<Person>();
+        public DbSet<Pet>    Pets   => Set<Pet>();
+
+        protected override void OnModelCreating(ModelBuilder modelBuilder)
+        {
+            modelBuilder.Entity<Pet>(b => b.ToTable("pet"));
+            modelBuilder.Entity<Person>(b =>
+            {
+                MapPerson(b);
+                b.HasComplexIndex(x => x.Email.Value, indexName: "PK_pet");
+            });
+        }
+    }
+
+    [TestMethod(DisplayName = "A second clustered complex index added in a later migration is rejected")]
+    public void Second_clustered_index_in_later_migration_is_rejected()
+    {
+        // cx_one already exists, so the migration creates only cx_two: counting the creates alone
+        // scaffolded CREATE CLUSTERED INDEX [cx_two], which failed at apply.
+        var ex = Assert.ThrowsExactly<InvalidOperationException>(
+            () => GetDifferences(BuildRelationalModel<OneClusteredContext>(), BuildRelationalModel<SecondClusteredLaterContext>()));
+
+        StringAssert.Contains(ex.Message, "at most one clustered index per table");
+        StringAssert.Contains(ex.Message, "'cx_one'");
+        StringAssert.Contains(ex.Message, "'cx_two'");
+    }
+
+    [TestMethod(DisplayName = "Moving the clustered slot between complex indexes in one migration is allowed")]
+    public void Clustered_slot_moving_between_complex_indexes_is_allowed()
+    {
+        var operations = GetDifferences(BuildRelationalModel<OneClusteredContext>(), BuildRelationalModel<ClusteredMovedContext>());
+
+        var drops = operations.OfType<DropIndexOperation>().Select(o => o.Name).ToList();
+        CollectionAssert.AreEquivalent(new[] { "cx_one" }, drops);
+        var create = operations.OfType<CreateIndexOperation>().Single(o => o.Name == "cx_two");
+        Assert.AreEqual(true, create["SqlServer:Clustered"]);
+    }
+
+    [TestMethod(DisplayName = "A snapshot holding a clustered-slot conflict stays diffable")]
+    public void Clustered_conflict_in_the_source_model_is_not_validated()
+    {
+        // The source carries a clustered key and a clustered complex index, which only a snapshot
+        // scaffolded before 5.0.2 can hold. The migration that makes the index nonclustered was
+        // refused, because the check ran on the source too.
+        var operations = GetDifferences(BuildRelationalModel<ClusteredWithClusteredKeyContext>(),
+                                        BuildRelationalModel<ClusteredNonclusteredFixContext>());
+
+        Assert.AreEqual("ix_clustered", Assert.ContainsSingle(operations.OfType<DropIndexOperation>()).Name);
+        var create = Assert.ContainsSingle(operations.OfType<CreateIndexOperation>());
+        Assert.IsNull(create.FindAnnotation("SqlServer:Clustered"));
+    }
+
+    [TestMethod(DisplayName = "A clustered index is rejected when a native index already holds the clustered slot")]
+    public void Clustered_index_against_clustered_native_index_is_rejected()
+    {
+        var ex = Assert.ThrowsExactly<InvalidOperationException>(
+            () => GetDifferences(source: null, target: BuildRelationalModel<ClusteredWithClusteredNativeIndexContext>()));
+
+        StringAssert.Contains(ex.Message, "the native index on (name) is already clustered");
+    }
+
+    [TestMethod(DisplayName = "A clustered index is rejected when a unique constraint already holds the clustered slot")]
+    public void Clustered_index_against_clustered_alternate_key_is_rejected()
+    {
+        var ex = Assert.ThrowsExactly<InvalidOperationException>(
+            () => GetDifferences(source: null, target: BuildRelationalModel<ClusteredWithClusteredAlternateKeyContext>()));
+
+        StringAssert.Contains(ex.Message, "unique constraint 'AK_person_name' is already clustered");
+    }
+
+    [TestMethod(DisplayName = "A complex index named like its table's primary key is rejected, whatever the case")]
+    public void Index_named_like_primary_key_is_rejected()
+    {
+        var ex = Assert.ThrowsExactly<InvalidOperationException>(
+            () => GetDifferences(source: null, target: BuildRelationalModel<NamedLikeKeyContext>()));
+
+        StringAssert.Contains(ex.Message, "'pk_person' on table 'person' has the same name as the table's primary key 'PK_person'");
+    }
+
+    [TestMethod(DisplayName = "A complex index named like a unique constraint of its table is rejected")]
+    public void Index_named_like_alternate_key_is_rejected()
+    {
+        var ex = Assert.ThrowsExactly<InvalidOperationException>(
+            () => GetDifferences(source: null, target: BuildRelationalModel<NamedLikeAlternateKeyContext>()));
+
+        StringAssert.Contains(ex.Message, "same name as the table's unique constraint on (name) 'AK_person_name'");
+    }
+
+    [TestMethod(DisplayName = "A complex index may share its name with another table's key")]
+    public void Index_named_like_another_tables_key_is_allowed()
+    {
+        var operations = GetDifferences(source: null, target: BuildRelationalModel<NamedLikeOtherTablesKeyContext>());
+
+        Assert.AreEqual("PK_pet", Assert.ContainsSingle(operations.OfType<CreateIndexOperation>()).Name);
+    }
+
+    // ── Property-level options and renames (#96) ──
+
+    // Every SQL Server differ test above declares entity-level, so the whitelist, which only the
+    // property-level path goes through, could lose a key without a test noticing.
+    private class Contact
+    {
+        public string Email { get; set; } = "";
+        public string Phone { get; set; } = "";
+    }
+
+    private class Customer
+    {
+        public Guid    Id      { get; set; }
+        public string  Name    { get; set; } = "";
+        public Contact Contact { get; set; } = new();
+    }
+
+    private static void MapCustomer(Microsoft.EntityFrameworkCore.Metadata.Builders.EntityTypeBuilder<Customer> b)
+    {
+        b.ToTable("customer");
+        b.HasKey(x => x.Id).IsClustered(false);
+        b.Property(x => x.Name).HasColumnName("name");
+    }
+
+    private class PropertyLevelOptionsContext(DbContextOptions<PropertyLevelOptionsContext> options) : DbContext(options)
+    {
+        public DbSet<Customer> Customers => Set<Customer>();
+
+        protected override void OnModelCreating(ModelBuilder modelBuilder) =>
+            modelBuilder.Entity<Customer>(b =>
+            {
+                MapCustomer(b);
+                b.ComplexProperty(x => x.Contact, c =>
+                {
+                    c.Property(x => x.Email).HasColumnName("email").HasMaxLength(256).HasComplexIndex(ix => ix
+                        .HasName("cx_email").IsClustered().HasFillFactor(70).SortInTempDb().UseDataCompression(DataCompressionType.Row));
+                    c.Property(x => x.Phone).HasColumnName("phone").HasMaxLength(32).HasComplexIndex(ix => ix
+                        .HasName("ix_phone").IncludeProperties("Name", "Contact.Email").IsCreatedOnline());
+                });
+            });
+    }
+
+    [TestMethod(DisplayName = "Property-level SQL Server options are forwarded, resolved and rendered")]
+    public void Property_level_options_are_forwarded_and_rendered()
+    {
+        var target  = BuildRelationalModel<PropertyLevelOptionsContext>();
+        var creates = GetDifferences(source: null, target).OfType<CreateIndexOperation>().ToDictionary(o => o.Name);
+
+        var clustered = creates["cx_email"];
+        Assert.AreEqual(true,                    clustered["SqlServer:Clustered"]);
+        Assert.AreEqual(70,                      clustered["SqlServer:FillFactor"]);
+        Assert.AreEqual(true,                    clustered["SqlServer:SortInTempDb"]);
+        Assert.AreEqual(DataCompressionType.Row, clustered["SqlServer:DataCompression"]);
+
+        // INCLUDE entries are property paths, resolved to columns on the property-level path too.
+        var covering = creates["ix_phone"];
+        CollectionAssert.AreEqual(new[] { "name", "email" }, (string[])covering["SqlServer:Include"]!);
+        Assert.AreEqual(true, covering["SqlServer:Online"]);
+
+        var sql = GenerateSql([clustered, covering], target);
+        StringAssert.Contains(sql, "CREATE CLUSTERED INDEX [cx_email] ON [customer] ([email]) WITH (FILLFACTOR = 70, SORT_IN_TEMPDB = ON, DATA_COMPRESSION = ROW);");
+        StringAssert.Contains(sql, "CREATE INDEX [ix_phone] ON [customer] ([phone]) INCLUDE ([name], [email]) WITH (ONLINE = ON);");
+    }
+
+    private class OldIndexNameContext(DbContextOptions<OldIndexNameContext> options) : DbContext(options)
+    {
+        public DbSet<Customer> Customers => Set<Customer>();
+
+        protected override void OnModelCreating(ModelBuilder modelBuilder) =>
+            modelBuilder.Entity<Customer>(b =>
+            {
+                MapCustomer(b);
+                b.ComplexProperty(x => x.Contact);
+                b.HasComplexIndex(x => x.Contact.Phone, indexName: "ix_phone_v1");
+            });
+    }
+
+    private class NewIndexNameContext(DbContextOptions<NewIndexNameContext> options) : DbContext(options)
+    {
+        public DbSet<Customer> Customers => Set<Customer>();
+
+        protected override void OnModelCreating(ModelBuilder modelBuilder) =>
+            modelBuilder.Entity<Customer>(b =>
+            {
+                MapCustomer(b);
+                b.ComplexProperty(x => x.Contact);
+                b.HasComplexIndex(x => x.Contact.Phone, indexName: "ix_phone_v2");
+            });
+    }
+
+    [TestMethod(DisplayName = "A name-only change becomes sp_rename, not a rebuild")]
+    public void Name_only_change_becomes_rename()
+    {
+        var target     = BuildRelationalModel<NewIndexNameContext>();
+        var operations = GetDifferences(BuildRelationalModel<OldIndexNameContext>(), target);
+
+        var rename = Assert.ContainsSingle(operations);
+        Assert.IsInstanceOfType<RenameIndexOperation>(rename);
+        StringAssert.Contains(GenerateSql(operations, target), "EXEC sp_rename N'[customer].[ix_phone_v1]', N'ix_phone_v2', 'INDEX';");
     }
 }
