@@ -15,6 +15,8 @@ to do about it, and a link to the guide with the detail. What the first `migrati
 upgrade does is in [docs/upgrading.md](docs/upgrading.md), and
 [CONTRIBUTING.md](CONTRIBUTING.md#changelog) has the rules.
 
+## [5.5.1] — 2026-10-20
+
 ## [5.5.0] — 2026-10-20
 
 The last 5.x minor with a change of its own: the line refuses EF Core 11, whose successor is `CodoMetis.EFCore.SchemaKit`. Some fixes change what an existing model scaffolds or applies: [Changed answers in 5.5.0](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/docs/upgrading.md#changed-answers-in-550).
@@ -229,6 +231,7 @@ Eleven fixes from a review of 5.0.1. The first three were migrations that scaffo
 - Expression indexes: descending parts render `DESC`, declared with `ExpressionIndexBuilder.Descending()`.
 - Migrations: the drops of complex indexes run before the base operations, so moving an index between `HasIndex` and a complex declaration under one name applies.
 
+[5.5.1]: https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/releases/tag/v5.5.1
 [5.5.0]: https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/releases/tag/v5.5.0
 [5.4.1]: https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/releases/tag/v5.4.1
 [5.4.0]: https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/releases/tag/v5.4.0

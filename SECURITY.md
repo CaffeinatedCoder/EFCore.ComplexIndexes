@@ -54,8 +54,8 @@ is to upgrade.
 
 | Version | Supported |
 |---|---|
-| 5.4.x | ✅ |
-| < 5.4 | ❌ |
+| 5.5.x | ✅ |
+| < 5.5 | ❌ |
 
 Previews (`11.0.0-preview.N`) are not supported versions and have no row: a fix reaches a preview
 in the next preview.

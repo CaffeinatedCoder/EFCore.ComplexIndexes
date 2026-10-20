@@ -4,6 +4,10 @@ The changes that affect the PostgreSQL satellite, newest first. The
 [root changelog](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/CHANGELOG.md)
 covers all three packages, which share one version number and release together.
 
+## [5.5.1] — 2026-10-20
+
+No change in this package.
+
 ## [5.5.0] — 2026-10-20
 
 The last 5.x minor with a change of its own: the line refuses EF Core 11, whose successor is `CodoMetis.EFCore.SchemaKit.PostgreSQL`.
