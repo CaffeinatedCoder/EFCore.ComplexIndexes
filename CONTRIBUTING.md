@@ -128,7 +128,7 @@ registration (#55).
 ### At the `v5.5.0` tag
 
 Cut **`release/5.x`** from the tag and protect it like `main`, with the required
-`Test (ubuntu-latest)` check. `main` then becomes SchemaKit (#38): new ids, `net11.0`, and
+`CI` check. `main` then becomes SchemaKit (#38): new ids, `net11.0`, and
 `11.0.0-preview.N` releases during the EF Core 11 release candidates, tagged on `main`.
 
 ### After the `v5.5.0` tag

@@ -121,7 +121,7 @@ fixes only after 5.5.0.
 long-lived `net11` branch of the 2026-10-18 plan is dropped, as in CodoMetis.ValueRanges.
 `release.yml` verifies the tag against `Directory.Build.props` on the tagged commit and discovers
 packages from the pack output, so both branches release unchanged. Branch protection and the
-required `Test (ubuntu-latest)` check have to be configured on `release/5.x` by hand.
+required `CI` check (#110) have to be configured on `release/5.x` by hand.
 
 ## 4. Phase 1: the next features (planned for 5.5.0; now SchemaKit 11.x, section 3)
 
@@ -537,7 +537,7 @@ service after SchemaKit, is the ownership check (#57).
 | `test/consumer-smoke-test.sh` | two satellites by name; the core csproj path; the sentinel literal | loop over `src/*/`; rename; read the sentinel from the dialect |
 | `dotnet.yml`, `release.yml` | the core csproj path for the version | rename |
 | `dependabot.yml` | `/src/*` | unchanged |
-| `.github` branch protection | required check name | keep `Test (ubuntu-latest)`; configure it on `release/5.x` too |
+| `.github` branch protection | required check name | keep `CI` (#110), the gate over every lane; configure it on `release/5.x` too |
 
 Two lines (D7) mean one SDK per branch (#43): .NET 10 on `release/5.x`, .NET 11 on `main`. There is
 no second TFM in one build.
