@@ -215,9 +215,11 @@ unchecked: Date and time JSON members in an expression
     an index (5.4.0). A non-unique index that starts with one is refused at migrations add.
     - expression: x => x.Doc.Date
 
-unchecked: Date and time JSON members compared in a filter (#119)
-    The text a date or time JSON member renders as meets a typed column, and PostgreSQL refuses the
-    predicate at apply. Open: https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/issues/119
+unchecked: Date and time JSON members compared with a column in a filter
+    A date or time JSON member is text in an index or constraint (see the block above), and text
+    compared with a typed column fails at apply. The translator cannot see that a path is a JSON
+    member, so the differ refuses the comparison at migrations add (#119); a null test and a
+    comparison with a string literal still apply.
     - filter: x => x.Doc.Date == x.Date
     - filter: x => x.Doc.Date == x.NDate
     - filter: x => x.Doc.Date != x.Date

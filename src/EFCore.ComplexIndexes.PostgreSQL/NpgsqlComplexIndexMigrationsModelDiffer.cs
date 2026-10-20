@@ -232,10 +232,15 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
         if (!queryAligned && _resolvingExclusionFilter && RendersAsCast(leaf))
             queryAligned = true;
 
+        // An exclusion filter's member that falls back to text under the current rendering is text
+        // here too; saying so lets the filter resolution refuse comparing it with a column (#119).
         if (!queryAligned)
             return new ResolvedIndexPart(true, BuildLegacyJsonExtraction(containerColumn, jsonPath, asText: true), part.Descending, part.NullSort)
                    {
-                       NameToken = nameToken
+                       NameToken    = nameToken,
+                       TextFallback = _resolvingExclusionFilter && RenderJsonScalar(leaf, containerColumn, jsonPath).FallbackStoreType is { } storeType
+                                          ? (part.PropertyPath, storeType)
+                                          : null
                    };
 
         var (sql, fallbackStoreType) = RenderJsonScalar(leaf, containerColumn, jsonPath);
