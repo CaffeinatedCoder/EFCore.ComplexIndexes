@@ -669,9 +669,20 @@ held among the base's rows and not among a derived type's, and applied clean (#9
 gated on rendering version 3, like any change of answer: a snapshot scaffolded before it resolves
 to the declaring table only, which is what makes the first `migrations add` create the copies. That
 is also why exclusion and temporal declarations mark the version now; a constraint-only model
-carried none. Copies of one declaration share a `TpcDeclaration`, outside descriptor equality, so
-the name checks can say "this explicit name repeats on every table" instead of "two declarations
-collide"; the checks themselves need nothing new, since they iterate descriptors.
+carried none. The name checks need nothing new, since they iterate descriptors.
+
+Each copy's name comes from `CustomMigrationsModelDiffer.CopyName`. A default name includes its
+table already. An explicit name stays on the declaring type's table, and on every table where the
+provider keeps index names per table (SQL Server), as EF Core repeats its own `HasIndex` name.
+Elsewhere the copy takes the name followed by `_` and its table: EF Core repeats the name there too,
+and the migration fails at apply (42P07, SQLite "index … already exists", measured on EF Core 10).
+Until that rule, the name checks refused a repeated explicit name, and two partial indexes or
+exclusion constraints over the same parts, which must both be named, could take no name that
+passed (#167). A temporal foreign key owns no index and keeps its explicit name on every table. The
+names this package makes up (a default name with more than one table, an explicit name with its
+table) are shortened past the identifier limit as EF Core shortens its own (`ShortenIdentifier`,
+#145, the temporal foreign key's since #168); a name the user wrote is refused instead, since a
+shorter one fixes it.
 
 Two things refuse rather than copy. EF Core 10 leaves a TPC type's complex properties out of its
 derived tables (on save the value is dropped, a query over the derived type throws), so

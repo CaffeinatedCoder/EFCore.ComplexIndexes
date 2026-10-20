@@ -525,6 +525,166 @@ public partial class PostgresIntegrationTests
         Assert.AreEqual($"EX_{table}_R~", overlap.ConstraintName);
     }
 
+    // #167: on a TPC base, two partial indexes and two exclusion constraints over the same parts,
+    // which must be named. A 5.4.1 snapshot held them on the base's table; the upgrade keeps those
+    // names and gives each derived table's copy the name followed by its table.
+    private class TpcSibling
+    {
+        public int                   Id     { get; set; }
+        public int                   RoomId { get; set; }
+        public string                Code   { get; set; } = "";
+        public string                State  { get; set; } = "";
+        public NpgsqlRange<DateOnly> During { get; set; }
+    }
+
+    private class TpcVipSibling : TpcSibling;
+
+    private abstract class TpcSiblingContextBase(DbContextOptions options) : DbContext(options)
+    {
+        protected override void OnModelCreating(ModelBuilder modelBuilder)
+        {
+            modelBuilder.Entity<TpcSibling>(b =>
+            {
+                b.UseTpcMappingStrategy();
+                b.ToTable("ig_tpc_siblings");
+                b.HasComplexIndex(x => x.Code, isUnique: true, filter: "{RoomId} > 0", indexName: "ix_sib_active");
+                b.HasComplexIndex(x => x.Code, isUnique: true, filter: "{RoomId} <= 0", indexName: "ix_sib_archived");
+                b.HasExclusionConstraint(x => x.RoomId, x => x.During, filter: "{State} <> 'revoked'", name: "ex_sib_active");
+                b.HasExclusionConstraint(x => x.RoomId, x => x.During, filter: "{State} = 'revoked'", name: "ex_sib_revoked");
+            });
+            modelBuilder.Entity<TpcVipSibling>().ToTable("ig_tpc_vip_siblings");
+            ConfigureModel(modelBuilder);
+        }
+
+        protected virtual void ConfigureModel(ModelBuilder modelBuilder) { }
+    }
+
+    private class TpcSiblingContext(DbContextOptions<TpcSiblingContext> options) : TpcSiblingContextBase(options);
+
+    private class TpcSiblingBefore55Context(DbContextOptions<TpcSiblingBefore55Context> options) : TpcSiblingContextBase(options)
+    {
+        protected override void ConfigureModel(ModelBuilder modelBuilder)
+            => modelBuilder.HasAnnotation(ComplexIndexAnnotations.RenderingVersion, 2);
+    }
+
+    [TestMethod(DisplayName = "Named partial siblings on a TPC base upgrade from 5.4.1 and each derived table enforces them under its own names (#167)")]
+    public void Tpc_named_partial_siblings_upgrade_and_enforce()
+    {
+        Apply(GetDifferences(source: null, target: BuildRelationalModel<TpcSiblingBefore55Context>()));
+
+        var upgrade = GetDifferences(BuildRelationalModel<TpcSiblingBefore55Context>(), BuildRelationalModel<TpcSiblingContext>());
+        ApplyInTransaction(upgrade);
+        Assert.IsEmpty(GetDifferences(BuildRelationalModel<TpcSiblingContext>(), BuildRelationalModel<TpcSiblingContext>()));
+
+        using (var connection = new NpgsqlConnection(ConnectionString))
+        {
+            connection.Open();
+            using var cmd = new NpgsqlCommand(
+                "SELECT t.relname || '.' || string_agg(c.relname, ',' ORDER BY c.relname) FROM pg_index i "
+              + "JOIN pg_class c ON c.oid = i.indexrelid JOIN pg_class t ON t.oid = i.indrelid "
+              + "WHERE t.relname IN ('ig_tpc_siblings', 'ig_tpc_vip_siblings') AND NOT i.indisprimary GROUP BY t.relname ORDER BY t.relname", connection);
+            using var reader = cmd.ExecuteReader();
+            var rows = new List<string>();
+            while (reader.Read())
+                rows.Add(reader.GetString(0));
+
+            CollectionAssert.AreEqual(
+                new[]
+                {
+                    "ig_tpc_siblings.ex_sib_active,ex_sib_revoked,ix_sib_active,ix_sib_archived",
+                    "ig_tpc_vip_siblings.ex_sib_active_ig_tpc_vip_siblings,ex_sib_revoked_ig_tpc_vip_siblings,"
+                  + "ix_sib_active_ig_tpc_vip_siblings,ix_sib_archived_ig_tpc_vip_siblings"
+                },
+                rows);
+        }
+
+        const string insert = "INSERT INTO ig_tpc_vip_siblings (\"Id\", \"RoomId\", \"Code\", \"State\", \"During\") VALUES ";
+        Sql(insert + "(1, 5, 'a', 'booked', '[2024-01-01,2024-02-01)'), (2, -1, 'b', 'booked', '[2024-01-01,2024-02-01)'), "
+                   + "(3, 7, 'c', 'revoked', '[2024-01-01,2024-02-01)')");
+
+        Assert.AreEqual("ix_sib_active_ig_tpc_vip_siblings", AssertRejected(insert + "(4, 6, 'a', 'booked', '[2025-01-01,2025-02-01)')").ConstraintName);
+        Assert.AreEqual("ix_sib_archived_ig_tpc_vip_siblings", AssertRejected(insert + "(5, -2, 'b', 'booked', '[2025-01-01,2025-02-01)')").ConstraintName);
+        Assert.AreEqual("ex_sib_active_ig_tpc_vip_siblings", AssertRejected(insert + "(6, 5, 'd', 'booked', '[2024-01-15,2024-02-15)')").ConstraintName);
+        Assert.AreEqual("ex_sib_revoked_ig_tpc_vip_siblings", AssertRejected(insert + "(7, 7, 'e', 'revoked', '[2024-01-15,2024-02-15)')").ConstraintName);
+
+        // Each filter covers its own rows: a revoked stay may overlap an active one.
+        Sql(insert + "(8, 5, 'f', 'revoked', '[2024-01-15,2024-02-15)')");
+    }
+
+    // #168: a temporal foreign key on a TPC base with a long derived table. 5.4.1 added it to the
+    // base's table only; the upgrade adds the long table's copy under a shortened name.
+    private class TpcFkRoom
+    {
+        public int                   Id        { get; set; }
+        public int                   RoomId    { get; set; }
+        public NpgsqlRange<DateOnly> Available { get; set; }
+    }
+
+    private class TpcFkBooking
+    {
+        public int                   Id     { get; set; }
+        public int                   RoomId { get; set; }
+        public NpgsqlRange<DateOnly> During { get; set; }
+    }
+
+    private class TpcFkCorporateBooking : TpcFkBooking;
+
+    private abstract class TpcFkContextBase(DbContextOptions options) : DbContext(options)
+    {
+        public const string LongTable = "ig_corporate_bookings_for_customer_accounts_region_xyz";
+
+        protected override void OnModelCreating(ModelBuilder modelBuilder)
+        {
+            modelBuilder.Entity<TpcFkRoom>(b =>
+            {
+                b.ToTable("ig_fk_rooms");
+                b.HasTemporalConstraint(x => x.RoomId, x => x.Available);
+            });
+            modelBuilder.Entity<TpcFkBooking>(b =>
+            {
+                b.UseTpcMappingStrategy();
+                b.ToTable("ig_fk_bookings");
+                b.HasTemporalForeignKey<TpcFkBooking, TpcFkRoom>(x => x.RoomId, x => x.During, r => r.RoomId, r => r.Available);
+            });
+            modelBuilder.Entity<TpcFkCorporateBooking>().ToTable(LongTable);
+            ConfigureModel(modelBuilder);
+        }
+
+        protected virtual void ConfigureModel(ModelBuilder modelBuilder) { }
+    }
+
+    private class TpcFkContext(DbContextOptions<TpcFkContext> options) : TpcFkContextBase(options);
+
+    // A model declaring only constraints carried no rendering version before 5.5.0.
+    private class TpcFkBefore55Context(DbContextOptions<TpcFkBefore55Context> options) : TpcFkContextBase(options)
+    {
+        protected override void ConfigureModel(ModelBuilder modelBuilder)
+            => modelBuilder.Model.RemoveAnnotation(ComplexIndexAnnotations.RenderingVersion);
+    }
+
+    [TestMethod(DisplayName = "A temporal foreign key on a TPC base upgrades from 5.4.1 and the long derived table enforces it under its shortened name (#168)")]
+    public void Tpc_long_derived_table_foreign_key_upgrades_and_enforces()
+    {
+        const string table = TpcFkContextBase.LongTable;
+        var          name  = $"FK_{table}_ig_fk_rooms_RoomId_During"[..62] + "~";
+
+        Apply(GetDifferences(source: null, target: BuildRelationalModel<TpcFkBefore55Context>()));
+
+        // What 5.4.1 left: the long table references nothing.
+        Sql($"INSERT INTO {table} (\"Id\", \"RoomId\", \"During\") VALUES (1, 9, '[2024-01-01,2024-02-01)')");
+        Sql($"DELETE FROM {table}");
+
+        ApplyInTransaction(GetDifferences(BuildRelationalModel<TpcFkBefore55Context>(), BuildRelationalModel<TpcFkContext>()));
+        Assert.IsEmpty(GetDifferences(BuildRelationalModel<TpcFkContext>(), BuildRelationalModel<TpcFkContext>()));
+
+        Sql("INSERT INTO ig_fk_rooms (\"Id\", \"RoomId\", \"Available\") VALUES (1, 7, '[2024-01-01,2025-01-01)')");
+        Sql($"INSERT INTO {table} (\"Id\", \"RoomId\", \"During\") VALUES (2, 7, '[2024-03-01,2024-04-01)')");
+
+        var orphan = AssertRejected($"INSERT INTO {table} (\"Id\", \"RoomId\", \"During\") VALUES (3, 7, '[2024-12-01,2025-02-01)')");
+        Assert.AreEqual(PostgresErrorCodes.ForeignKeyViolation, orphan.SqlState); // 23503
+        Assert.AreEqual(name, orphan.ConstraintName);
+    }
+
     // ── Implicit sequences: an identity column's sequence takes its name among the schema's relations ──
 
     private class Ticket
