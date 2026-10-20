@@ -37,6 +37,7 @@ The last 5.x minor with a change of its own: the line refuses EF Core 11, whose 
 - Indexes: a complex index declared on the abstract base of a TPC hierarchy is created on every concrete table, as EF Core's own indexes are, where it failed at `migrations add` ([Upgrading](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/docs/upgrading.md#declarations-on-a-tpc-type-cover-every-table-of-the-hierarchy)).
 - Packaging: each package carries the version's section of its changelog as its NuGet release notes, which nuget.org's Release Notes tab and Visual Studio's Updates tab show.
 - Packaging: the release notes, the README on nuget.org and the GitHub release link the documentation at the version's tag, so they keep describing the version they shipped with after `main` moves on to the next line.
+- Packaging: the PostgreSQL and SQL Server packages depend on exactly their own version of `EFCore.ComplexIndexes`, and the core differ refuses a satellite of another version, naming both. Update the packages together: a 5.4.x satellite beside core 5.5.0 was refused as the core differ ([#169](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/issues/169)).
 
 ### Fixed
 

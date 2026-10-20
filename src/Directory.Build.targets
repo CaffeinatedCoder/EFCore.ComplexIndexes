@@ -87,6 +87,35 @@
         </ItemGroup>
     </Target>
 
+    <!--
+        A satellite depends on exactly the core it was built with (#169).
+
+        A ProjectReference packs as a dependency on ">= the referenced version", and the satellites
+        bind to the core's internals through InternalsVisibleTo, so any later core would satisfy
+        them while breaking them. Up to 5.4.1 that let a consumer who updated only a direct core
+        reference run a 5.4.1 satellite against core 5.5.0 without a warning. The three packages are
+        released together under one version, patches on release/5.x included, so an exact pin never
+        refuses a pair that was released. A range up to the next minor would admit core 5.5.1 under
+        satellite 5.5.0, which is the pair this pin exists to keep out.
+
+        NuGet has no metadata on a ProjectReference for the range, so this rewrites the version the
+        pack task reads from its own item. The pack fails when that item does not hold one entry
+        per ProjectReference, which is how a rename on NuGet's side would show; otherwise the
+        dependency would quietly go back to ">=". PackagingConventionTests reads the packed nuspec.
+    -->
+    <Target Name="PinProjectReferenceDependencies"
+            BeforeTargets="GenerateNuspec"
+            Condition="'$(IsPackable)' == 'true'">
+        <Error Condition="'@(ProjectReference->Count())' != '@(_ProjectReferencesWithVersions->Count())'"
+               Text="Cannot pin the dependencies of $(PackageId) on the packages it references: expected one versioned entry per ProjectReference (@(ProjectReference->Count())), found @(_ProjectReferencesWithVersions->Count())." />
+
+        <ItemGroup>
+            <_ProjectReferencesWithVersions>
+                <ProjectVersion>[%(ProjectVersion)]</ProjectVersion>
+            </_ProjectReferencesWithVersions>
+        </ItemGroup>
+    </Target>
+
     <Target Name="SetPackageReleaseNotesFromChangelog"
             BeforeTargets="GenerateNuspec"
             DependsOnTargets="_ComputeFrozenLinks"
