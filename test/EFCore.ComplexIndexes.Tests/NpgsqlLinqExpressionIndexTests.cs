@@ -278,6 +278,18 @@ public class NpgsqlLinqExpressionIndexTests
             });
     }
 
+    [TestMethod(DisplayName = "A Substring start known at the declaration is folded, as EF Core folds it")]
+    public void Substring_start_is_folded()
+    {
+        // A captured start rendered substring("Code", (1 + 1)); EF Core writes substring("Code", 2).
+        var start = 1;
+        Assert.AreEqual("substring({Code}, 2)", Translate(x => x.Code.Substring(start)));
+        Assert.AreEqual("substring({Code}, 2, 3)", Translate(x => x.Code.Substring(start, 3)));
+
+        // A start computed from the row stays an expression.
+        Assert.AreEqual("substring({Code}, (length({Last}) + 1))", Translate(x => x.Code.Substring(x.Last.Length)));
+    }
+
     [TestMethod(DisplayName = "A nullable operand of a concatenation is coalesced to an empty string")]
     public void Concatenation_coalesces_nullable_operands()
     {
