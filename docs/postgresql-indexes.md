@@ -141,7 +141,7 @@ builder.HasExpressionIndex(x => (x.Nickname ?? x.FirstName) + " " + x.LastName);
 // CREATE INDEX ... ON people (((coalesce("nickname", "first_name") || ' ') || "last_name"));
 ```
 
-The supported subset is deliberately small and fails loudly: `ToLower`/`ToUpper`, `Trim`/`TrimStart`/`TrimEnd`, `Substring` (1-based conversion handled), `Replace`, `string.Length`, string concatenation (`+`), null coalescing (`??`), and constants (captured variables are evaluated and inlined invariant-culture). Anything else throws `NotSupportedException` **at declaration time** with a pointer to the raw-SQL overload.
+The supported subset is deliberately small and fails loudly: `ToLower`/`ToUpper`, `Trim`/`TrimStart`/`TrimEnd`, `Substring` (1-based conversion handled), `Replace`, `string.Length`, `.Value` and `.HasValue` on a nullable, string concatenation (`+`), null coalescing (`??`), and constants (captured variables are evaluated and inlined invariant-culture). Any other member of a scalar type, such as `CreatedAt.Year`, is not a mapped property and is refused with the rest. Anything else throws `NotSupportedException` **at declaration time** with a pointer to the raw-SQL overload.
 
 Paths see through a value converter as well: when `Email` is a value object mapped as one column,
 `x => x.Email.Value.ToLower()` resolves `Email.Value` to that column — provided `Value` has the
@@ -177,8 +177,10 @@ builder.ComplexProperty(x => x.Address, c => c.Property(a => a.City)
 
 The builders are not generic, so `HasFilter<TEntity>` takes the entity type explicitly. The subset
 is small and fails at the declaration: `==`/`!=` (against `null`: `IS NULL`/`IS NOT NULL`), `<`,
-`<=`, `>`, `>=`, `&&`, `||`, `!`, boolean properties, captured booleans, and on the operands the
-string operations and constants a typed expression index accepts. Comparisons keep C#'s answer for null,
+`<=`, `>`, `>=`, `&&`, `||`, `!`, boolean properties, captured booleans, `.HasValue` (`IS NOT NULL`),
+and on the operands the string operations and constants a typed expression index accepts. A `char`
+compares with a char literal, `x.Grade == 'A'` as `"Grade" = 'A'`, although C# compares it as its
+code. Comparisons keep C#'s answer for null,
 written as EF Core writes the same lambda in a query, so the index covers exactly the rows that
 query selects: on a `string?`, `x.Kind != "federated"` becomes
 `("Kind" <> 'federated' OR "Kind" IS NULL)`, a negated comparison is pushed down to it, and a
