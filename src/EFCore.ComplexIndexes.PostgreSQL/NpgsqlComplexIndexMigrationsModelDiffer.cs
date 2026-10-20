@@ -38,6 +38,9 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
     // to the base constructor, and capturing it as well would store it twice (CS9107).
     private readonly IRelationalTypeMappingSource _typeMappingSource = typeMappingSource;
 
+    // Set while an exclusion constraint's filter is resolved; see ResolveUnmappedPart.
+    private bool _resolvingExclusionFilter;
+
     private static readonly HashSet<string> SupportedNpgsqlAnnotations =
     [
         NpgsqlAnnotations.IndexMethod,
@@ -221,6 +224,14 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
         // Default index names come from the container and the path, never from the rendered SQL.
         var nameToken = containerColumn + string.Concat(jsonPath);
 
+        // Exclusion constraint filters are pinned to rendering 1, which renders every member as
+        // text. A member the current rendering casts — a number, boolean, uuid or enum — compared
+        // as text fails at apply (text > integer with 42883, a text WHERE with 42804), so it takes
+        // the current rendering; the cast keeps NULL as NULL, so a filter that did apply, such as
+        // IS NOT NULL, still holds for the same rows. Every other member keeps rendering 1.
+        if (!queryAligned && _resolvingExclusionFilter && RendersAsCast(leaf))
+            queryAligned = true;
+
         if (!queryAligned)
             return new ResolvedIndexPart(true, BuildLegacyJsonExtraction(containerColumn, jsonPath, asText: true), part.Descending, part.NullSort)
                    {
@@ -234,6 +245,17 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
                    NameToken    = nameToken,
                    TextFallback = fallbackStoreType is null ? null : (part.PropertyPath, fallbackStoreType)
                };
+    }
+
+    // Whether RenderJsonScalar renders the member as a CAST of its text.
+    private bool RendersAsCast(IProperty leaf)
+    {
+        var mapping = leaf.FindRelationalTypeMapping() ?? _typeMappingSource.FindMapping(leaf);
+
+        return !leaf.IsPrimitiveCollection
+            && mapping is not (null or StringTypeMapping)
+            && mapping.StoreTypeNameBase is not ("jsonb" or "json" or "bytea")
+            && !StableTextInputTypes.Contains(mapping.StoreTypeNameBase);
     }
 
     // Types whose text input function is STABLE rather than IMMUTABLE — the conversion depends on
@@ -868,13 +890,27 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
                     def.Method,
                     // Pinned to the original JSON rendering: the constraint enforces the same rows
                     // either way, so the 5.4.0 rendering change would only drop and re-add it.
-                    ResolveFilter(entityType, def.Filter, storeObject, renderingVersion: 1),
+                    // Non-string members are the exception (ResolveUnmappedPart).
+                    ResolveExclusionFilter(entityType, def.Filter, storeObject),
                     def.Deferrable,
                     def.InitiallyDeferred));
             }
         }
 
         return set;
+    }
+
+    private string? ResolveExclusionFilter(IEntityType entityType, string? filter, StoreObjectIdentifier storeObject)
+    {
+        _resolvingExclusionFilter = true;
+        try
+        {
+            return ResolveFilter(entityType, filter, storeObject, renderingVersion: 1);
+        }
+        finally
+        {
+            _resolvingExclusionFilter = false;
+        }
     }
 
     // The ADD is preceded by DROP CONSTRAINT IF EXISTS so the migration also applies cleanly on

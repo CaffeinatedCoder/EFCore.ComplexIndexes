@@ -433,6 +433,58 @@ public class PostgresIntegrationTests
             });
     }
 
+    // ── Exclusion constraint filtered on non-string JSON members ──
+
+    private class Terms
+    {
+        public int  Priority { get; set; }
+        public bool Active   { get; set; }
+    }
+
+    private class Lease
+    {
+        public int                   Id     { get; set; }
+        public int                   UnitId { get; set; }
+        public NpgsqlRange<DateOnly> Period { get; set; }
+        public Terms                 Terms  { get; set; } = new();
+    }
+
+    private class LeaseContext(DbContextOptions<LeaseContext> options) : DbContext(options)
+    {
+        public DbSet<Lease> Leases => Set<Lease>();
+
+        protected override void OnModelCreating(ModelBuilder modelBuilder) =>
+            modelBuilder.Entity<Lease>(b =>
+            {
+                b.ToTable("ig_leases");
+                b.HasKey(x => x.Id);
+                b.Property(x => x.UnitId).HasColumnName("unit_id");
+                b.Property(x => x.Period).HasColumnName("period");
+                b.ComplexProperty(x => x.Terms, c => c.ToJson("terms"));
+                b.HasExclusionConstraint(x => x.UnitId, x => x.Period, x => x.Terms.Priority > 5, name: "ex_ig_leases_priority");
+                b.HasExclusionConstraint(ex => ex.WithEquality(x => x.UnitId).WithOverlaps(x => x.Period)
+                                                 .HasFilter(x => x.Terms.Active).HasName("ex_ig_leases_active"));
+            });
+    }
+
+    [TestMethod(DisplayName = "Exclusion constraints filtered on int and bool JSON members apply and enforce")]
+    public void Exclusion_filter_on_non_string_json_members_applies()
+    {
+        // Failed with 42883 (text > integer) and 42804 (argument of WHERE must be type boolean)
+        // while exclusion filters rendered every JSON member as text.
+        MigrateWithoutRuntimeWiring<LeaseContext>();
+
+        Sql("""INSERT INTO ig_leases ("Id", unit_id, period, terms) VALUES (1, 1, '[2024-01-01,2024-06-01)', '{"Priority":9,"Active":false}')""");
+        Sql("""INSERT INTO ig_leases ("Id", unit_id, period, terms) VALUES (2, 1, '[2024-03-01,2024-09-01)', '{"Priority":1,"Active":false}')""");
+
+        // Two overlapping high-priority leases on one unit: the priority constraint.
+        AssertRejected("""INSERT INTO ig_leases ("Id", unit_id, period, terms) VALUES (3, 1, '[2024-02-01,2024-03-01)', '{"Priority":7,"Active":false}')""");
+
+        // Two overlapping active leases on one unit: the active constraint.
+        Sql("""INSERT INTO ig_leases ("Id", unit_id, period, terms) VALUES (4, 2, '[2024-01-01,2024-06-01)', '{"Priority":1,"Active":true}')""");
+        AssertRejected("""INSERT INTO ig_leases ("Id", unit_id, period, terms) VALUES (5, 2, '[2024-02-01,2024-03-01)', '{"Priority":1,"Active":true}')""");
+    }
+
     [TestMethod(DisplayName = "Unique index on a ToJson complex member applies and enforces")]
     public void Json_member_index_applies_and_enforces()
     {
