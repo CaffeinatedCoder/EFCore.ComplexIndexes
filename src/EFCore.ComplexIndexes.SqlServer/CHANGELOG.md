@@ -18,6 +18,8 @@ covers all three packages.
   The `[10.0.0, 11.0.0)` dependency ranges did not keep EF Core 11 out: a direct reference to it
   overrides them with NU1608, a warning. The check reads EF Core's version, not the runtime's, so
   EF Core 10 on .NET 11 keeps working.
+- **Fixed:** changing the type, length or nullability of a column a complex index reads no longer
+  fails at apply with Msg 5074: the index is dropped before the `ALTER COLUMN` and created after it.
 
 ## 5.4.1
 

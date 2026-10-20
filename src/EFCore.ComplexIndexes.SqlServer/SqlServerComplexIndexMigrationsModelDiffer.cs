@@ -54,6 +54,13 @@ public class SqlServerComplexIndexMigrationsModelDiffer(
     protected override bool CanRenameIndexes => true;
 
     /// <summary>
+    /// An <c>ALTER COLUMN</c> on a column the index reads: SQL Server refuses it while the index
+    /// exists (Msg 5074), and EF drops only its own indexes around it.
+    /// </summary>
+    protected override bool RequiresIndexRecreation(MigrationOperation operation, IReadOnlySet<string> columns)
+        => operation is AlterColumnOperation alter && columns.Contains(alter.Name);
+
+    /// <summary>
     /// <c>[c] IS NOT NULL AND …</c> over the nullable key columns of a unique, nonclustered index
     /// declared without a filter: what EF Core's <c>SqlServerIndexConvention</c> gives its own unique
     /// indexes. SQL Server, unlike the SQL standard, treats NULLs as equal in a unique index, so
