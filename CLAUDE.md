@@ -340,6 +340,13 @@ unset default schema against one naming `public`, which the core compares as con
 collision throws once, from whichever check sees it first; do not "deduplicate" by filtering index
 pairs out of the cross-kind check, since it is the only net for the `public` case.
 
+How names compare is the other half of the rule, declared beside the scope through
+`CustomMigrationsModelDiffer.IndexNameComparer`: `OrdinalIgnoreCase` by default and in the SQL Server
+satellite, `Ordinal` in the PostgreSQL one, where EF Core's quoted identifiers keep their case. SQLite
+compares identifiers without regard to case even when quoted, and SQL Server does under its default
+collation, so until 5.5.0 `ix_code` and `IX_CODE` passed both checks and failed at apply. Ignoring
+case is the default for the reason the widest scope is: a case-sensitive database pays a rename.
+
 ### The read model is the differ's reader
 
 `ComplexIndexModelExtensions.GetDeclaredComplexIndexes` (core) and

@@ -171,6 +171,37 @@ public class IndexNameCollisionTests
             });
     }
 
+    // Two names that differ only in case: one name to SQLite and SQL Server, two to PostgreSQL.
+    private class CaseOnlyContext(DbContextOptions<CaseOnlyContext> options) : DbContext(options)
+    {
+        public DbSet<Person> People => Set<Person>();
+
+        protected override void OnModelCreating(ModelBuilder modelBuilder) =>
+            modelBuilder.Entity<Person>(b =>
+            {
+                b.ToTable("people");
+                b.HasKey(x => x.Id);
+                b.ComplexProperty(x => x.Email);
+                b.HasComplexIndex(x => x.Name, indexName: "ix_case");
+                b.HasComplexIndex(x => x.Email.Value, indexName: "IX_CASE");
+            });
+    }
+
+    private class CaseOnlyNativeContext(DbContextOptions<CaseOnlyNativeContext> options) : DbContext(options)
+    {
+        public DbSet<Person> People => Set<Person>();
+
+        protected override void OnModelCreating(ModelBuilder modelBuilder) =>
+            modelBuilder.Entity<Person>(b =>
+            {
+                b.ToTable("people");
+                b.HasKey(x => x.Id);
+                b.HasIndex(x => x.Name).HasDatabaseName("ix_case");
+                b.ComplexProperty(x => x.Email);
+                b.HasComplexIndex(x => x.Email.Value, indexName: "IX_CASE");
+            });
+    }
+
     private static List<string> CreatedTables(IReadOnlyList<MigrationOperation> operations, string indexName)
         => [.. operations.OfType<CreateIndexOperation>().Where(o => o.Name == indexName).Select(o => o.Table)];
 
@@ -239,6 +270,58 @@ public class IndexNameCollisionTests
         });
 
         StringAssert.Contains(exception.Message, "index IX_name already exists");
+    }
+
+    // The premise behind comparing without regard to case: SQLite folds the case of identifiers,
+    // quoted ones included. Passes with or without the fix.
+    [TestMethod(DisplayName = "SQLite itself rejects two index names that differ only in case")]
+    public void Sqlite_engine_rejects_index_names_differing_in_case()
+    {
+        using var connection = new SqliteConnection(MigrationHarness.SqliteConnection);
+        connection.Open();
+        using var context = new MigrationHarness.EmptyContext(MigrationHarness.SqliteOptions(connection));
+
+        var migration = new MigrationBuilder("Microsoft.EntityFrameworkCore.Sqlite");
+        migration.CreateTable("a", t => new { x = t.Column<string>(), y = t.Column<string>() });
+        migration.CreateIndex("ix_case", "a", "x");
+        migration.CreateIndex("IX_CASE", "a", "y");
+
+        var commands = context.GetService<IMigrationsSqlGenerator>().Generate(migration.Operations);
+
+        var exception = Assert.ThrowsExactly<SqliteException>(() =>
+        {
+            foreach (var command in commands)
+            {
+                using var sql = connection.CreateCommand();
+                sql.CommandText = command.CommandText;
+                sql.ExecuteNonQuery();
+            }
+        });
+
+        StringAssert.Contains(exception.Message, "index IX_CASE already exists");
+    }
+
+    [TestMethod(DisplayName = "SQLite: two complex index names that differ only in case are rejected")]
+    public void Sqlite_rejects_complex_names_differing_in_case()
+    {
+        var target = MigrationHarness.SqliteModel<CaseOnlyContext>();
+
+        var exception = Assert.ThrowsExactly<InvalidOperationException>(() => MigrationHarness.CoreDiff(null, target));
+
+        StringAssert.Contains(exception.Message, "'ix_case'");
+        StringAssert.Contains(exception.Message, "'IX_CASE', which differ only in case");
+        StringAssert.Contains(exception.Message, "unique per table, whatever their case");
+    }
+
+    [TestMethod(DisplayName = "SQLite: a complex index named like a native index in another case is rejected")]
+    public void Sqlite_rejects_native_name_differing_in_case()
+    {
+        var target = MigrationHarness.SqliteModel<CaseOnlyNativeContext>();
+
+        var exception = Assert.ThrowsExactly<InvalidOperationException>(() => MigrationHarness.CoreDiff(null, target));
+
+        StringAssert.Contains(exception.Message, "The complex index 'IX_CASE' on table 'people' has the same name as the native index 'ix_case' on (Name)");
+        StringAssert.Contains(exception.Message, "whatever their case");
     }
 
     [TestMethod(DisplayName = "SQLite: a complex index named like a native index on another table is rejected")]
@@ -330,7 +413,39 @@ public class IndexNameCollisionTests
             CreatedTables(MigrationHarness.SqlServerDiff(null, target), "IX_name"));
     }
 
+    [TestMethod(DisplayName = "SQL Server: two complex index names that differ only in case are rejected")]
+    public void Sql_server_rejects_complex_names_differing_in_case()
+    {
+        var target = MigrationHarness.SqlServerModel<CaseOnlyContext>();
+
+        var exception = Assert.ThrowsExactly<InvalidOperationException>(() => MigrationHarness.SqlServerDiff(null, target));
+
+        StringAssert.Contains(exception.Message, "which differ only in case");
+    }
+
+    [TestMethod(DisplayName = "SQL Server: a complex index named like a native index in another case is rejected")]
+    public void Sql_server_rejects_native_name_differing_in_case()
+    {
+        var target = MigrationHarness.SqlServerModel<CaseOnlyNativeContext>();
+
+        var exception = Assert.ThrowsExactly<InvalidOperationException>(() => MigrationHarness.SqlServerDiff(null, target));
+
+        StringAssert.Contains(exception.Message, "the native index 'ix_case' on (Name)");
+    }
+
     // ── PostgreSQL: one namespace per schema ──
+
+    // EF Core quotes every identifier, and a quoted identifier keeps its case. PostgresIntegrationTests
+    // applies the pair.
+    [TestMethod(DisplayName = "PostgreSQL: two index names that differ only in case are two names")]
+    public void Npgsql_allows_names_differing_in_case()
+    {
+        var operations = MigrationHarness.NpgsqlDiff(null, MigrationHarness.NpgsqlModel<CaseOnlyContext>());
+
+        CollectionAssert.AreEquivalent(
+            new[] { "ix_case", "IX_CASE" },
+            operations.OfType<CreateIndexOperation>().Select(o => o.Name).ToArray());
+    }
 
     [TestMethod(DisplayName = "PostgreSQL: a complex index named like a native index on another table is rejected")]
     public void Npgsql_rejects_native_name_on_another_table()

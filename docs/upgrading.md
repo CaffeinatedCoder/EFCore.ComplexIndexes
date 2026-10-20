@@ -97,6 +97,18 @@ version, not the runtime's. An application on EF Core 11 now fails at startup or
 prerelease sorts below 11.0.0 and falls inside the `[10.0.0, 11.0.0)` ranges, so this message may
 be the first sign it was running on a version this package never supported.
 
+### Rename complex index names that differ only in case
+
+Complex index names that differ only in case, such as `ix_code` and `IX_CODE`, are one name at
+`migrations add` on SQLite and SQL Server, from each other and from a native `HasIndex` name. Both
+databases compare index names without regard to case, so such a model used to fail when the
+migration was applied. PostgreSQL keeps the case of the quoted names EF Core writes, and nothing
+changes there.
+
+On a SQL Server database with a case-sensitive collation, and on a provider without a satellite
+whose index names keep their case, the check asks for a rename the database would not have needed.
+Rename one of the two indexes. A snapshot that holds such a pair stays diffable.
+
 ## Changed answers in 5.5.0
 
 Most of these make the first `migrations add` after the upgrade drop and re-create some indexes or

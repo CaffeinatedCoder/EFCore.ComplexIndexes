@@ -31,16 +31,19 @@ The last 5.x minor with a change of its own: the line refuses EF Core 11, whose 
 ### Breaking
 
 - Registration: every registration entry point, the design-time one `dotnet ef` runs included, throws `InvalidOperationException` on an EF Core major other than 10, naming `CodoMetis.EFCore.SchemaKit` for EF Core 11. EF Core 10 on .NET 11 keeps working ([Upgrading](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/docs/upgrading.md#ef-core-11-is-refused-at-registration)).
+- Indexes: on a SQL Server database with a case-sensitive collation, or a provider without a satellite whose index names keep their case, complex index names that differ only in case fail at `migrations add`; rename one ([Upgrading](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/docs/upgrading.md#rename-complex-index-names-that-differ-only-in-case)).
 
 ### Added
 
 - **`CustomMigrationsModelDiffer.RequiresIndexRecreation`**, a protected hook through which a provider's differ drops an unchanged complex index before a base operation that cannot run while it exists, and creates it after.
 - **`CustomMigrationsModelDiffer.ImplicitFilter`**, a protected hook through which a provider's differ gives an index declared without a filter the one its EF Core convention would give it.
+- **`CustomMigrationsModelDiffer.IndexNameComparer`**, a protected hook through which a provider's differ says how it compares index names: without regard to case by default and on SQL Server, ordinally on PostgreSQL.
 
 ### Fixed
 
 - Indexes: on PostgreSQL, a complex index, exclusion constraint or temporal constraint named like a table, view or sequence of its schema, the sequence of an identity or serial column included, fails at `migrations add`, where it failed at apply with 42P07 ([Index names](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/README.md#single-column-index-on-a-complex-property)).
 - Indexes: on SQL Server, a clustered complex index added in a later migration beside an existing one, and a complex index named like its table's primary key or a unique constraint, fail at `migrations add`, where they failed at apply ([SQL Server](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/docs/sqlserver.md#deliberate-rejections)).
+- Indexes: on SQLite and SQL Server, complex index names that differ only in case, from each other or from a native index, fail at `migrations add`, where they failed at apply because the database compares them without regard to case ([Index names](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/README.md#single-column-index-on-a-complex-property)).
 - Constraints: on PostgreSQL, a migration that drops both tables of a temporal foreign key applies, `Down()` included, where it failed with 2BP01 when the principal's table sorted first ([Temporal foreign keys](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/docs/postgresql-constraints.md#temporal-foreign-keys-period--requires-postgresql-18)).
 - Constraints: on PostgreSQL, an exclusion constraint filter on a `ToJson()` number, boolean, uuid or enum member casts it as EF Core's queries do and applies, where it failed with 42883 or 42804 ([Exclusion constraints](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/docs/postgresql-constraints.md#exclusion-constraints-exclude)).
 - Constraints: on PostgreSQL, an exclusion constraint with a scalar element under `gist` gets `btree_gist` whatever the element's operator and however the method is spelled, so `<>` and `UseMethod("GiST")` apply, where they failed with 42704 when the extension was missing ([Exclusion constraints](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/docs/postgresql-constraints.md#exclusion-constraints-exclude)).
