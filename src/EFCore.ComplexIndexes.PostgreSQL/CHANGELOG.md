@@ -21,6 +21,7 @@ The last 5.x minor with a change of its own: the line refuses EF Core 11, whose 
 ### Fixed
 
 - Constraints: a migration that drops both tables of a temporal foreign key applies, `Down()` included, where it failed with 2BP01 when the principal's table sorted first ([Temporal foreign keys](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/docs/postgresql-constraints.md#temporal-foreign-keys-period--requires-postgresql-18)).
+- Constraints: an exclusion constraint filter on a `ToJson()` number, boolean, uuid or enum member casts it as EF Core's queries do and applies, where it failed with 42883 or 42804 ([Exclusion constraints](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/docs/postgresql-constraints.md#exclusion-constraints-exclude)).
 - Docs: the temporal foreign key samples pass both type arguments to `HasTemporalForeignKey`, and compile ([Temporal foreign keys](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/docs/postgresql-constraints.md#temporal-foreign-keys-period--requires-postgresql-18)).
 
 ## [5.4.0] — 2026-09-22
