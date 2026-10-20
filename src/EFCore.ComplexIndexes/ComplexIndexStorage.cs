@@ -68,7 +68,8 @@ internal static class ComplexIndexStorage
 
     /// <summary>
     /// Records on the model that its declarations were made under <see cref="CurrentRenderingVersion"/>.
-    /// Every declaration path calls this, so the key is present exactly when the model declares an index.
+    /// Every declaration path calls this, the PostgreSQL satellite's constraints included, so the key
+    /// is present exactly when the model declares an index or a constraint.
     /// </summary>
     public static void MarkRenderingVersion(IMutableModel model)
         => model.SetAnnotation(ComplexIndexAnnotations.RenderingVersion, CurrentRenderingVersion);

@@ -58,7 +58,10 @@ public static class NpgsqlExclusionMutableExtensions
             }
 
             if (amended > 0)
+            {
                 entityType.SetAnnotation(NpgsqlExclusionAnnotations.Constraints, ExclusionConstraintSerializer.Serialize(definitions));
+                ComplexIndexStorage.MarkRenderingVersion(entityType.Model);
+            }
 
             return amended;
         }

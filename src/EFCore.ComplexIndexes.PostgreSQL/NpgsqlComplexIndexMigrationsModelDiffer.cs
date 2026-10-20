@@ -440,8 +440,8 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
         var defaultSchema = target.Model.GetDefaultSchema() ?? "public";
         var names         = new List<NamedObject>();
 
-        void Add(string name, string table, string? schema, string kind, bool ours, bool constraint, bool indexBacked)
-            => names.Add(new NamedObject(name, table, schema ?? defaultSchema, kind, ours, constraint, indexBacked));
+        void Add(string name, string table, string? schema, string kind, bool ours, bool constraint, bool indexBacked, TpcDeclaration? origin = null)
+            => names.Add(new NamedObject(name, table, schema ?? defaultSchema, kind, ours, constraint, indexBacked) { Origin = origin });
 
         // The relations themselves: an index named like a table, view or sequence of its schema
         // fails with 42P07 just as one named like another index does.
@@ -453,17 +453,17 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
                          });
 
         foreach (var index in ExtractAllIndexDescriptors(target))
-            Add(index.IndexName, index.TableName, index.Schema, "complex index", ours: true, constraint: false, indexBacked: true);
+            Add(index.IndexName, index.TableName, index.Schema, "complex index", ours: true, constraint: false, indexBacked: true, index.Origin);
 
         var temporal = BuildDescriptors(target, _typeMappingSource);
         foreach (var constraint in temporal)
-            Add(constraint.Name, constraint.Table, constraint.Schema, "temporal constraint", ours: true, constraint: true, indexBacked: true);
+            Add(constraint.Name, constraint.Table, constraint.Schema, "temporal constraint", ours: true, constraint: true, indexBacked: true, constraint.Origin);
 
         foreach (var foreignKey in BuildForeignKeyDescriptors(target, _typeMappingSource, temporal))
             Add(foreignKey.Name, foreignKey.DependentTable, foreignKey.DependentSchema, "temporal foreign key", ours: true, constraint: true, indexBacked: false);
 
         foreach (var exclusion in BuildExclusionDescriptors(target))
-            Add(exclusion.Name, exclusion.Table, exclusion.Schema, "exclusion constraint", ours: true, constraint: true, indexBacked: true);
+            Add(exclusion.Name, exclusion.Table, exclusion.Schema, "exclusion constraint", ours: true, constraint: true, indexBacked: true, exclusion.Origin);
 
         foreach (var table in target.Tables)
         {
@@ -524,6 +524,10 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
 
                 var other = members.First(m => !ReferenceEquals(m, ours));
 
+                // One declaration on a TPC type, created on several tables under its one explicit name.
+                if (ours.Origin is { } origin && other.Origin == origin)
+                    throw new InvalidOperationException(origin.RepeatedName(ours.Kind, ours.Name, rule([ours, other])));
+
                 var otherDescription = other.Description
                                     ?? (other.IsRelation
                                            ? $"the {other.Kind} '{other.Name}'"
@@ -551,6 +555,9 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
 
         // How the collision message names this object, where its kind and name are not enough.
         public string? Description { get; init; }
+
+        // The declaration on a TPC type this object is one table's copy of.
+        public TpcDeclaration? Origin { get; init; }
     }
 
     // An identity column — Npgsql's default for an int or long key — and a serial column each get a
@@ -1006,56 +1013,67 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
             if (declarations.Count == 0)
                 continue;
 
-            var table = entityType.GetTableName();
-            if (table is null)
+            var tables = DeclarationTables(entityType);
+            if (tables.Count == 0)
             {
                 ThrowIfDeclaredOnUnmappedType(entityType, "exclusion constraints");
                 continue;
             }
 
-            var schema      = entityType.GetSchema();
-            var storeObject = StoreObjectIdentifier.Table(table, schema);
-
             foreach (var def in declarations)
             {
-                var parts = new List<ResolvedExclusionPart>(def.Parts.Count);
-                foreach (var part in def.Parts)
+                var origin = TpcDeclaration.For(entityType, tables);
+                var paths  = def.Parts.Select(p => p.PropertyPath).OfType<string>().Concat(PlaceholderPaths(def.Filter)).ToList();
+
+                foreach (var (tableType, storeObject) in tables)
                 {
-                    if (part.IsExpression)
-                    {
-                        parts.Add(new ResolvedExclusionPart(true, part.Expression!, part.Operator));
-                        continue;
-                    }
-
-                    var property = ResolveProperty(entityType, part.PropertyPath!)
-                                ?? throw new InvalidOperationException(
-                                       $"Could not resolve exclusion constraint property '{part.PropertyPath}' on entity '{entityType.Name}'.");
-
-                    var column = property.GetColumnName(storeObject)
-                              ?? throw new InvalidOperationException(
-                                     $"Exclusion constraint property '{part.PropertyPath}' on entity '{entityType.Name}' has no column mapping for table '{table}'.");
-
-                    parts.Add(new ResolvedExclusionPart(false, column, part.Operator) { StoreType = property.GetColumnType(storeObject) });
+                    ThrowIfMissingFromDerivedTable(model, entityType, tableType, storeObject, paths, "an exclusion constraint");
+                    set.Add(ResolveExclusion(tableType, def, storeObject) with { Origin = origin });
                 }
-
-                var name = def.Name ?? $"EX_{table}_{string.Join("_", parts.Select(ExclusionPartToken))}";
-
-                set.Add(new ExclusionDescriptor(
-                    table,
-                    schema,
-                    name,
-                    parts,
-                    def.Method,
-                    // Pinned to the original JSON rendering: the constraint enforces the same rows
-                    // either way, so the 5.4.0 rendering change would only drop and re-add it.
-                    // Non-string members are the exception (ResolveUnmappedPart).
-                    ResolveExclusionFilter(entityType, def.Filter, storeObject),
-                    def.Deferrable,
-                    def.InitiallyDeferred));
             }
         }
 
         return set;
+    }
+
+    private ExclusionDescriptor ResolveExclusion(IEntityType entityType, ExclusionConstraintDeclaration def, StoreObjectIdentifier storeObject)
+    {
+        var (table, schema) = (storeObject.Name, storeObject.Schema);
+
+        var parts = new List<ResolvedExclusionPart>(def.Parts.Count);
+        foreach (var part in def.Parts)
+        {
+            if (part.IsExpression)
+            {
+                parts.Add(new ResolvedExclusionPart(true, part.Expression!, part.Operator));
+                continue;
+            }
+
+            var property = ResolveProperty(entityType, part.PropertyPath!)
+                        ?? throw new InvalidOperationException(
+                               $"Could not resolve exclusion constraint property '{part.PropertyPath}' on entity '{entityType.Name}'.");
+
+            var column = property.GetColumnName(storeObject)
+                      ?? throw new InvalidOperationException(
+                             $"Exclusion constraint property '{part.PropertyPath}' on entity '{entityType.Name}' has no column mapping for table '{table}'.");
+
+            parts.Add(new ResolvedExclusionPart(false, column, part.Operator) { StoreType = property.GetColumnType(storeObject) });
+        }
+
+        var name = def.Name ?? $"EX_{table}_{string.Join("_", parts.Select(ExclusionPartToken))}";
+
+        return new ExclusionDescriptor(
+            table,
+            schema,
+            name,
+            parts,
+            def.Method,
+            // Pinned to the original JSON rendering: the constraint enforces the same rows
+            // either way, so the 5.4.0 rendering change would only drop and re-add it.
+            // Non-string members are the exception (ResolveUnmappedPart).
+            ResolveExclusionFilter(entityType, def.Filter, storeObject),
+            def.Deferrable,
+            def.InitiallyDeferred);
     }
 
     private string? ResolveExclusionFilter(IEntityType entityType, string? filter, StoreObjectIdentifier storeObject)
@@ -1126,49 +1144,63 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
              || string.IsNullOrEmpty(json))
                 continue;
 
-            var table = entityType.GetTableName();
-            if (table is null)
+            var tables = DeclarationTables(entityType);
+            if (tables.Count == 0)
             {
                 ThrowIfDeclaredOnUnmappedType(entityType, "temporal constraints");
                 continue;
             }
 
-            var schema      = entityType.GetSchema();
-            var storeObject = StoreObjectIdentifier.Table(table, schema);
-
             foreach (var def in TemporalConstraintSerializer.Deserialize(json))
             {
-                var keyColumns = new List<string>(def.KeyProperties.Count);
-                foreach (var keyProperty in def.KeyProperties)
+                var origin = TpcDeclaration.For(entityType, tables);
+
+                foreach (var (tableType, storeObject) in tables)
                 {
-                    var property = ResolveProperty(entityType, keyProperty)
-                                ?? throw new InvalidOperationException(
-                                       $"Could not resolve temporal constraint key property '{keyProperty}' on entity '{entityType.Name}'.");
-
-                    keyColumns.Add(
-                        property.GetColumnName(storeObject)
-                     ?? throw new InvalidOperationException(
-                            $"Temporal constraint key property '{keyProperty}' on entity '{entityType.Name}' has no column mapping for table '{table}'.")
-                    );
+                    ThrowIfMissingFromDerivedTable(model, entityType, tableType, storeObject, [.. def.KeyProperties, def.PeriodProperty], "a temporal constraint");
+                    set.Add(ResolveTemporal(tableType, def, storeObject, typeMappingSource) with { Origin = origin });
                 }
-
-                var periodProperty = ResolveProperty(entityType, def.PeriodProperty)
-                                  ?? throw new InvalidOperationException(
-                                         $"Could not resolve temporal constraint period column '{def.PeriodProperty}' on entity {entityType.Name}.");
-
-                ValidatePeriodIsRangeOrMultirangeType(periodProperty, def.PeriodProperty, entityType.Name, typeMappingSource, "temporal constraint period property");
-
-                var periodColumn = periodProperty.GetColumnName(storeObject)
-                                   ?? throw new InvalidOperationException(
-                                          $"Temporal constraint period property '{def.PeriodProperty}' on entity '{entityType.Name}' has no column mapping for table '{table}'.");
-
-                var name = def.Name ?? $"AK_{table}_{string.Join("_", keyColumns)}_{periodColumn}";
-
-                set.Add(new TemporalDescriptor(table, schema, name, keyColumns, periodColumn));
             }
         }
 
         return set;
+    }
+
+    private static TemporalDescriptor ResolveTemporal(
+        IEntityType                  entityType,
+        TemporalConstraintDefinition def,
+        StoreObjectIdentifier        storeObject,
+        IRelationalTypeMappingSource typeMappingSource)
+    {
+        var (table, schema) = (storeObject.Name, storeObject.Schema);
+
+        var keyColumns = new List<string>(def.KeyProperties.Count);
+        foreach (var keyProperty in def.KeyProperties)
+        {
+            var property = ResolveProperty(entityType, keyProperty)
+                        ?? throw new InvalidOperationException(
+                               $"Could not resolve temporal constraint key property '{keyProperty}' on entity '{entityType.Name}'.");
+
+            keyColumns.Add(
+                property.GetColumnName(storeObject)
+             ?? throw new InvalidOperationException(
+                    $"Temporal constraint key property '{keyProperty}' on entity '{entityType.Name}' has no column mapping for table '{table}'.")
+            );
+        }
+
+        var periodProperty = ResolveProperty(entityType, def.PeriodProperty)
+                          ?? throw new InvalidOperationException(
+                                 $"Could not resolve temporal constraint period column '{def.PeriodProperty}' on entity {entityType.Name}.");
+
+        ValidatePeriodIsRangeOrMultirangeType(periodProperty, def.PeriodProperty, entityType.Name, typeMappingSource, "temporal constraint period property");
+
+        var periodColumn = periodProperty.GetColumnName(storeObject)
+                           ?? throw new InvalidOperationException(
+                                  $"Temporal constraint period property '{def.PeriodProperty}' on entity '{entityType.Name}' has no column mapping for table '{table}'.");
+
+        var name = def.Name ?? $"AK_{table}_{string.Join("_", keyColumns)}_{periodColumn}";
+
+        return new TemporalDescriptor(table, schema, name, keyColumns, periodColumn);
     }
 
     private static HashSet<TemporalForeignKeyDescriptor> BuildForeignKeyDescriptors(
@@ -1180,91 +1212,133 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
         var set = new HashSet<TemporalForeignKeyDescriptor>();
         if (model is null) return set;
 
-        foreach (var dependentEntityType in model.Model.GetEntityTypes())
+        foreach (var declaringType in model.Model.GetEntityTypes())
         {
-            if (dependentEntityType.FindAnnotation(NpgsqlTemporalAnnotations.ForeignKeys)?.Value is not string json
+            if (declaringType.FindAnnotation(NpgsqlTemporalAnnotations.ForeignKeys)?.Value is not string json
              || string.IsNullOrEmpty(json))
                 continue;
 
-            var dependentTable = dependentEntityType.GetTableName();
-            if (dependentTable is null)
+            var dependentTables = DeclarationTables(declaringType);
+            if (dependentTables.Count == 0)
             {
-                ThrowIfDeclaredOnUnmappedType(dependentEntityType, "temporal foreign keys");
+                ThrowIfDeclaredOnUnmappedType(declaringType, "temporal foreign keys");
                 continue;
             }
-
-            var dependentSchema      = dependentEntityType.GetSchema();
-            var dependentStoreObject = StoreObjectIdentifier.Table(dependentTable, dependentSchema);
 
             foreach (var def in TemporalForeignKeySerializer.Deserialize(json))
             {
                 var principalEntityType = ResolveEntityType(model.Model, def.PrincipalEntityType)
                                        ?? throw new InvalidOperationException(
-                                              $"Could not resolve temporal foreign key principal entity '{def.PrincipalEntityType}' from dependent entity '{dependentEntityType.Name}'.");
+                                              $"Could not resolve temporal foreign key principal entity '{def.PrincipalEntityType}' from dependent entity '{declaringType.Name}'.");
 
-                var principalTable = principalEntityType.GetTableName()
-                                  ?? throw new InvalidOperationException(
-                                         $"Temporal foreign key principal entity '{principalEntityType.Name}' is not mapped to a table.");
+                var (principalType, principalStoreObject) = PrincipalTable(declaringType, principalEntityType);
+                ThrowIfMissingFromDerivedTable(model, principalEntityType, principalType, principalStoreObject,
+                                               [.. def.PrincipalKeyProperties, def.PrincipalPeriodProperty], "the principal key of a temporal foreign key");
 
-                var principalSchema      = principalEntityType.GetSchema();
-                var principalStoreObject = StoreObjectIdentifier.Table(principalTable, principalSchema);
-
-                var dependentColumns = ResolveColumns(
-                    dependentEntityType,
-                    def.DependentKeyProperties,
-                    dependentStoreObject,
-                    "temporal foreign key dependent key",
-                    dependentTable);
-
-                var principalColumns = ResolveColumns(
-                    principalEntityType,
-                    def.PrincipalKeyProperties,
-                    principalStoreObject,
-                    "temporal foreign key principal key",
-                    principalTable);
-
-                var dependentPeriodProperty = ResolveProperty(dependentEntityType, def.DependentPeriodProperty)
-                                           ?? throw new InvalidOperationException(
-                                                  $"Could not resolve temporal foreign key dependent period column '{def.DependentPeriodProperty}' on entity '{dependentEntityType.Name}'.");
-                ValidatePeriodIsRangeOrMultirangeType(dependentPeriodProperty, def.DependentPeriodProperty, dependentEntityType.Name, typeMappingSource, "temporal foreign key dependent period property");
-                var dependentPeriodColumn = dependentPeriodProperty.GetColumnName(dependentStoreObject)
-                                         ?? throw new InvalidOperationException(
-                                                $"Temporal foreign key dependent period property '{def.DependentPeriodProperty}' on entity '{dependentEntityType.Name}' has no column mapping for table '{dependentTable}'.");
-
-                var principalPeriodProperty = ResolveProperty(principalEntityType, def.PrincipalPeriodProperty)
-                                           ?? throw new InvalidOperationException(
-                                                  $"Could not resolve temporal foreign key principal period column '{def.PrincipalPeriodProperty}' on entity '{principalEntityType.Name}'.");
-                ValidatePeriodIsRangeOrMultirangeType(principalPeriodProperty, def.PrincipalPeriodProperty, principalEntityType.Name, typeMappingSource, "temporal foreign key principal period property");
-                var principalPeriodColumn = principalPeriodProperty.GetColumnName(principalStoreObject)
-                                         ?? throw new InvalidOperationException(
-                                                $"Temporal foreign key principal period property '{def.PrincipalPeriodProperty}' on entity '{principalEntityType.Name}' has no column mapping for table '{principalTable}'.");
-
-                if (!HasMatchingPrincipalTemporalConstraint(temporalConstraints, principalTable, principalSchema, principalColumns, principalPeriodColumn))
+                // Every table the dependent's rows live in references the principal.
+                foreach (var (dependentType, dependentStoreObject) in dependentTables)
                 {
-                    throw new InvalidOperationException(
-                        $"Temporal foreign key '{def.Name ?? DefaultForeignKeyName(dependentTable, principalTable, dependentColumns, dependentPeriodColumn)}' " +
-                        $"references '{principalTable}' ({string.Join(", ", principalColumns)}, PERIOD {principalPeriodColumn}), " +
-                        "but no matching HasTemporalConstraint was found on the principal entity. " +
-                        "PostgreSQL requires the referenced table to have a UNIQUE or PRIMARY KEY constraint with WITHOUT OVERLAPS."
-                    );
+                    ThrowIfMissingFromDerivedTable(model, declaringType, dependentType, dependentStoreObject,
+                                                   [.. def.DependentKeyProperties, def.DependentPeriodProperty], "a temporal foreign key");
+
+                    set.Add(ResolveForeignKey(def, dependentType, dependentStoreObject, principalType, principalStoreObject, typeMappingSource, temporalConstraints));
                 }
-
-                var name = def.Name ?? DefaultForeignKeyName(dependentTable, principalTable, dependentColumns, dependentPeriodColumn);
-
-                set.Add(new TemporalForeignKeyDescriptor(
-                    dependentTable,
-                    dependentSchema,
-                    principalTable,
-                    principalSchema,
-                    name,
-                    dependentColumns,
-                    dependentPeriodColumn,
-                    principalColumns,
-                    principalPeriodColumn));
             }
         }
 
         return set;
+    }
+
+    /// <summary>
+    /// The one table a temporal foreign key to <paramref name="principal"/> references.
+    /// </summary>
+    /// <remarks>
+    /// A TPC type with derived types keeps its rows in several tables, and a foreign key references
+    /// one: pointed at the declaring type's table, it refused every row of a derived type. EF Core
+    /// creates no foreign key at all for a relationship with such a principal. An abstract principal
+    /// with a single concrete table has all its rows there, so that table is the one.
+    /// </remarks>
+    private static (IEntityType EntityType, StoreObjectIdentifier Table) PrincipalTable(IEntityType dependent, IEntityType principal)
+    {
+        var tables = DeclarationTables(principal);
+
+        return tables.Count switch
+               {
+                   0 => throw new InvalidOperationException(
+                            $"Temporal foreign key principal entity '{principal.Name}' is not mapped to a table."),
+                   1 => tables[0],
+                   _ => throw new InvalidOperationException(
+                            $"'{dependent.DisplayName()}' declares a temporal foreign key to '{principal.DisplayName()}', a TPC type whose rows "
+                          + $"are spread over the tables {string.Join(", ", tables.Select(t => $"'{t.Table.Name}'"))}. A foreign key references "
+                          + "one table, so it would refuse every row kept in another; EF Core creates no foreign key for such a relationship "
+                          + "either. Reference an entity type with no derived types.")
+               };
+    }
+
+    private static TemporalForeignKeyDescriptor ResolveForeignKey(
+        TemporalForeignKeyDefinition def,
+        IEntityType                  dependentEntityType,
+        StoreObjectIdentifier        dependentStoreObject,
+        IEntityType                  principalEntityType,
+        StoreObjectIdentifier        principalStoreObject,
+        IRelationalTypeMappingSource typeMappingSource,
+        HashSet<TemporalDescriptor>  temporalConstraints)
+    {
+        var (dependentTable, dependentSchema) = (dependentStoreObject.Name, dependentStoreObject.Schema);
+        var (principalTable, principalSchema) = (principalStoreObject.Name, principalStoreObject.Schema);
+
+        var dependentColumns = ResolveColumns(
+            dependentEntityType,
+            def.DependentKeyProperties,
+            dependentStoreObject,
+            "temporal foreign key dependent key",
+            dependentTable);
+
+        var principalColumns = ResolveColumns(
+            principalEntityType,
+            def.PrincipalKeyProperties,
+            principalStoreObject,
+            "temporal foreign key principal key",
+            principalTable);
+
+        var dependentPeriodProperty = ResolveProperty(dependentEntityType, def.DependentPeriodProperty)
+                                   ?? throw new InvalidOperationException(
+                                          $"Could not resolve temporal foreign key dependent period column '{def.DependentPeriodProperty}' on entity '{dependentEntityType.Name}'.");
+        ValidatePeriodIsRangeOrMultirangeType(dependentPeriodProperty, def.DependentPeriodProperty, dependentEntityType.Name, typeMappingSource, "temporal foreign key dependent period property");
+        var dependentPeriodColumn = dependentPeriodProperty.GetColumnName(dependentStoreObject)
+                                 ?? throw new InvalidOperationException(
+                                        $"Temporal foreign key dependent period property '{def.DependentPeriodProperty}' on entity '{dependentEntityType.Name}' has no column mapping for table '{dependentTable}'.");
+
+        var principalPeriodProperty = ResolveProperty(principalEntityType, def.PrincipalPeriodProperty)
+                                   ?? throw new InvalidOperationException(
+                                          $"Could not resolve temporal foreign key principal period column '{def.PrincipalPeriodProperty}' on entity '{principalEntityType.Name}'.");
+        ValidatePeriodIsRangeOrMultirangeType(principalPeriodProperty, def.PrincipalPeriodProperty, principalEntityType.Name, typeMappingSource, "temporal foreign key principal period property");
+        var principalPeriodColumn = principalPeriodProperty.GetColumnName(principalStoreObject)
+                                 ?? throw new InvalidOperationException(
+                                        $"Temporal foreign key principal period property '{def.PrincipalPeriodProperty}' on entity '{principalEntityType.Name}' has no column mapping for table '{principalTable}'.");
+
+        if (!HasMatchingPrincipalTemporalConstraint(temporalConstraints, principalTable, principalSchema, principalColumns, principalPeriodColumn))
+        {
+            throw new InvalidOperationException(
+                $"Temporal foreign key '{def.Name ?? DefaultForeignKeyName(dependentTable, principalTable, dependentColumns, dependentPeriodColumn)}' " +
+                $"references '{principalTable}' ({string.Join(", ", principalColumns)}, PERIOD {principalPeriodColumn}), " +
+                "but no matching HasTemporalConstraint was found on the principal entity. " +
+                "PostgreSQL requires the referenced table to have a UNIQUE or PRIMARY KEY constraint with WITHOUT OVERLAPS."
+            );
+        }
+
+        var name = def.Name ?? DefaultForeignKeyName(dependentTable, principalTable, dependentColumns, dependentPeriodColumn);
+
+        return new TemporalForeignKeyDescriptor(
+            dependentTable,
+            dependentSchema,
+            principalTable,
+            principalSchema,
+            name,
+            dependentColumns,
+            dependentPeriodColumn,
+            principalColumns,
+            principalPeriodColumn);
     }
 
     private static List<string> ResolveColumns(
@@ -1411,6 +1485,9 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
         IReadOnlyList<string> KeyColumns,
         string                PeriodColumn)
     {
+        // For messages only, outside equality: the copies of one declaration on a TPC type share it.
+        public TpcDeclaration? Origin { get; init; }
+
         public bool Equals(TemporalDescriptor? other) =>
             other is not null
          && Table        == other.Table
@@ -1456,6 +1533,9 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
         bool                                 Deferrable,
         bool                                 InitiallyDeferred)
     {
+        // For messages only, outside equality: the copies of one declaration on a TPC type share it.
+        public TpcDeclaration? Origin { get; init; }
+
         public bool Equals(ExclusionDescriptor? other) =>
             other is not null
          && Table             == other.Table
