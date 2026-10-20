@@ -311,6 +311,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           VERSION: ${{ needs.verify.outputs.version }}
+          REPO_URL: ${{ github.server_url }}/${{ github.repository }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           tag="$GITHUB_REF_NAME"
@@ -336,6 +337,16 @@ jobs:
             found && /^## / { exit }
             found && (started || NF) { started = 1; print }
           ' CHANGELOG.md)"
+
+          # The changelog links the docs at main, which moves on after the tag (#151). The release
+          # links them at the tag, as the packages' release notes do (src/Directory.Build.targets).
+          # The pattern is quoted so it matches literally; the replacement is not, because bash 3.2
+          # would keep the quotes in it, and it holds no character bash 5.2 would substitute.
+          for kind in blob tree; do
+            main="$REPO_URL/$kind/main/"
+            frozen="$REPO_URL/$kind/v$VERSION/"
+            notes="${notes//"$main"/$frozen}"
+          done
 
           if [[ -z "$notes" ]]; then
             echo "::error::CHANGELOG.md has no '## [$VERSION] — yyyy-mm-dd' section to use as release notes."
