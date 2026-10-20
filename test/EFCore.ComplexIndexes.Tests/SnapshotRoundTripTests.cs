@@ -277,6 +277,26 @@ public class SnapshotRoundTripTests
         Assert.IsEmpty(operations, string.Join("\n", operations.Select(o => o.GetType().Name)));
     }
 
+    // #145: a derived table's long name puts each copy's default name past 63 bytes, and the copy is
+    // shortened. The snapshot side must shorten alike, or every `migrations add` would rename them.
+    [TestMethod(DisplayName = "Shortened names of TPC copies on a long derived table survive the snapshot round trip without churn")]
+    public void Tpc_shortened_copy_names_roundtrip_is_noop()
+    {
+        var target = BuildLiveModel<RoundTripLongTpcContext>();
+
+        // Not vacuous: the copies on the long table carry shortened names.
+        var created = GetDifferences(null, target);
+        Assert.AreEqual(
+            $"IX_{RoundTripLongTpcContext.LongTable}_C~",
+            created.OfType<CreateIndexOperation>().Single(o => o.Table == RoundTripLongTpcContext.LongTable).Name);
+        var adds = created.OfType<SqlOperation>().Select(o => o.Sql).Where(s => s.Contains("ADD CONSTRAINT")).ToList();
+        Assert.IsTrue(adds.Any(s => s.Contains($"\"EX_{RoundTripLongTpcContext.LongTable}_R~\"")), string.Join("\n", adds));
+        Assert.IsTrue(adds.Any(s => s.Contains($"\"AK_{RoundTripLongTpcContext.LongTable}_C~\"")), string.Join("\n", adds));
+
+        var operations = GetDifferences(BuildModelViaSnapshot<RoundTripLongTpcContext>(), target);
+        Assert.IsEmpty(operations, string.Join("\n", operations.Select(o => o.GetType().Name)));
+    }
+
     // A snapshot scaffolded before 5.5.0 holds the base table's declarations only: resolved by that
     // rule, the first migration after upgrading creates exactly the derived tables' copies.
     [TestMethod(DisplayName = "A snapshot scaffolded before 5.5.0 creates exactly the copies on a TPC base's derived tables")]
@@ -595,6 +615,28 @@ internal class RoundTripTpcContext(DbContextOptions<RoundTripTpcContext> options
         });
 
         modelBuilder.Entity<RoundTripSpecialBooking>().ToTable("rt_special_bookings");
+        modelBuilder.Entity<RoundTripVipBooking>().ToTable("rt_vip_bookings");
+    }
+}
+
+// The TPC base of RoundTripTpcContext with a derived table whose name puts each copy's default name
+// past PostgreSQL's 63 bytes (#145).
+internal class RoundTripLongTpcContext(DbContextOptions<RoundTripLongTpcContext> options) : DbContext(options)
+{
+    public const string LongTable = "rt_special_bookings_for_corporate_customer_accounts_xyz12";
+
+    protected override void OnModelCreating(ModelBuilder modelBuilder)
+    {
+        modelBuilder.Entity<RoundTripBooking>(b =>
+        {
+            b.UseTpcMappingStrategy();
+            b.ToTable("rt_bookings");
+            b.HasComplexIndex(x => x.Code, isUnique: true);
+            b.HasExclusionConstraint(x => x.RoomId, x => x.During);
+            b.HasTemporalConstraint(x => x.Code, x => x.During);
+        });
+
+        modelBuilder.Entity<RoundTripSpecialBooking>().ToTable(LongTable);
         modelBuilder.Entity<RoundTripVipBooking>().ToTable("rt_vip_bookings");
     }
 }
