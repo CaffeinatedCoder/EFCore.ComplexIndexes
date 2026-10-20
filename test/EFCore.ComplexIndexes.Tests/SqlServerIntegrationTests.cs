@@ -426,6 +426,49 @@ public class SqlServerIntegrationTests
         Assert.IsNull(ReadIndex("cars", "ux_vin"), "The refusal came after the index was created.");
     }
 
+    private class NullsOrderedContext(DbContextOptions<NullsOrderedContext> options) : DbContext(options)
+    {
+        protected override void OnModelCreating(ModelBuilder modelBuilder)
+            => modelBuilder.Entity<Car>(b =>
+            {
+                b.ToTable("cars");
+                b.ComplexProperty(x => x.Registration, c => c.Property(r => r.Vin).HasMaxLength(17));
+                b.HasComplexCompositeIndex(x => new { x.Id, Vin = DbOrder.NullsLast(x.Registration!.Vin) }, indexName: "ix_cars_vin");
+            });
+    }
+
+    /// <summary>
+    /// With <c>UseComplexIndexes()</c> in place of <c>UseSqlServerComplexIndexes()</c>, the core
+    /// differ scaffolded a NULLS-ordered index with the runtime-wiring sentinel: <c>EnsureCreated()</c>
+    /// created the table and then failed on an invalid column named after
+    /// <c>UseNpgsqlComplexIndexes()</c>, while the core README said <c>migrations add</c> fails (#172).
+    /// It now refuses before anything is created.
+    /// </summary>
+    [TestMethod(DisplayName = "UseComplexIndexes() refuses a NULLS-ordered index at EnsureCreated, before creating the table")]
+    public void Core_registration_refuses_a_nulls_ordered_index()
+    {
+        var options = new DbContextOptionsBuilder<NullsOrderedContext>()
+                     .UseSqlServer(ConnectionString)
+                     .UseComplexIndexes()
+                     .Options;
+
+        Exception? failure = null;
+        using (var context = new NullsOrderedContext(options))
+        {
+            try { context.Database.EnsureCreated(); }
+            catch (Exception e) { failure = e; }
+        }
+
+        Assert.IsInstanceOfType<InvalidOperationException>(
+            failure, $"EnsureCreated() reached the server: {failure?.GetType().Name}: {failure?.Message}");
+        StringAssert.Contains(failure.Message, "the EFCore.ComplexIndexes.SqlServer satellite refuses it as well");
+
+        using var connection = new SqlConnection(ConnectionString);
+        connection.Open();
+        using var table = new SqlCommand("SELECT OBJECT_ID(N'cars')", connection);
+        Assert.IsInstanceOfType<DBNull>(table.ExecuteScalar(), "The refusal came after the table was created.");
+    }
+
     // ── TPC: a declaration on a concrete base holds on every table of the hierarchy (#93) ──
 
     private class Voucher
