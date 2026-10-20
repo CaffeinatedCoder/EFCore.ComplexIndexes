@@ -154,8 +154,10 @@ public class CustomMigrationsModelDiffer(
         ValidateNoNativeIndexNameCollision(target, targetIndexes);
         ValidateIndexNameLengths(target, targetIndexes);
         ValidateQueryUsableLeadingParts(targetIndexes);
+        ValidateFilterComparisons(targetIndexes);
         ValidateRenderableParts(targetIndexes);
         ValidateNoSatelliteOptions(target);
+        ValidateIncludedColumns(target, targetIndexes);
         if (target is not null)
             ValidateTargetIndexes(target, targetIndexes);
 
@@ -199,7 +201,7 @@ public class CustomMigrationsModelDiffer(
 
         // A drop/create pair that differs only by name is a rename — cheap DDL instead of an index
         // rebuild — on providers whose generator can rename these indexes standalone.
-        var renames = new List<MigrationOperation>();
+        var renamePairs = new List<(IndexDescriptor From, IndexDescriptor To)>();
         if (CanRenameIndexes)
         {
             for (var i = pendingDrops.Count - 1; i >= 0; i--)
@@ -209,13 +211,7 @@ public class CustomMigrationsModelDiffer(
                 if (renamed is null)
                     continue;
 
-                renames.Add(new RenameIndexOperation
-                            {
-                                Name    = dropped.IndexName,
-                                NewName = renamed.IndexName,
-                                Table   = renamed.TableName,
-                                Schema  = renamed.Schema
-                            });
+                renamePairs.Add((dropped, renamed));
                 pendingDrops.RemoveAt(i);
                 pendingCreates.Remove(renamed);
             }
@@ -224,23 +220,49 @@ public class CustomMigrationsModelDiffer(
         // An unchanged index can still be in the way of a base operation, because EF does not know
         // it exists and so never moves it: SQL Server refuses to alter a column an index uses. Such
         // an index is dropped before the base operations and created after them, like a changed one.
+        bool InTheWay(IndexDescriptor current)
+        {
+            var columns = ColumnsReadBy(target!, current);
+            return operations.Any(o => o is ITableMigrationOperation table
+                                    && table.Table  == current.TableName
+                                    && table.Schema == current.Schema
+                                    && RequiresIndexRecreation(o, columns));
+        }
+
         if (target is not null)
         {
             foreach (var (kept, origin) in normalizedSource)
             {
-                if (!targetIndexes.TryGetValue(kept, out var current) || droppedTables.Contains(origin))
-                    continue;
-
-                var columns = ColumnsReadBy(target, current);
-                if (!operations.Any(o => o is ITableMigrationOperation table
-                                      && table.Table  == current.TableName
-                                      && table.Schema == current.Schema
-                                      && RequiresIndexRecreation(o, columns)))
+                if (!targetIndexes.TryGetValue(kept, out var current) || droppedTables.Contains(origin) || !InTheWay(current))
                     continue;
 
                 pendingDrops.Add(kept);
                 pendingCreates.Add(current);
             }
+        }
+
+        // Renames run after the base operations, so a rename stays one only when nothing before it
+        // needs its index gone: not a base operation the index is in the way of (#141), and not
+        // anything the target model gives the old name to, which the base operations may create
+        // first (#143) — a native index, a key, another complex index renamed into it. Otherwise the
+        // pair is a drop under the old name before the base operations and a create after them.
+        var renames = new List<MigrationOperation>();
+        foreach (var (from, to) in renamePairs)
+        {
+            if (target is not null && (InTheWay(to) || IsIndexNameInUse(target, targetIndexes, to, from.IndexName)))
+            {
+                pendingDrops.Add(from);
+                pendingCreates.Add(to);
+                continue;
+            }
+
+            renames.Add(new RenameIndexOperation
+                        {
+                            Name    = from.IndexName,
+                            NewName = to.IndexName,
+                            Table   = to.TableName,
+                            Schema  = to.Schema
+                        });
         }
 
         // A rebuild drops every index on the table and re-creates only EF Core's. Each complex index
@@ -658,7 +680,9 @@ public class CustomMigrationsModelDiffer(
     /// <summary>
     /// Resolves each entry of an INCLUDE-style column list: an entry that matches a property path
     /// (including complex members) becomes its mapped column name; anything else passes through
-    /// verbatim as a column name, so pre-v5 declarations keep working.
+    /// verbatim as a column name, so pre-v5 declarations keep working. In the target model, an
+    /// entry under <c>Npgsql:IndexInclude</c> or <c>SqlServer:Include</c> that names no column of
+    /// the table fails at <c>migrations add</c>.
     /// </summary>
     protected static object? ResolveIncludeList(IEntityType entityType, object? value, StoreObjectIdentifier storeObject)
     {
@@ -768,7 +792,10 @@ public class CustomMigrationsModelDiffer(
     /// <param name="storeObject">The table whose column names are used.</param>
     /// <returns>The filter with every placeholder replaced, or <paramref name="filter"/> unchanged when it has none.</returns>
     protected string? ResolveFilter(IEntityType entityType, string? filter, StoreObjectIdentifier storeObject)
-        => ResolveFilter(entityType, filter, storeObject, renderingVersion: null);
+    {
+        var resolved = ResolveFilter(entityType, filter, storeObject, renderingVersion: null, out var refusal);
+        return refusal is null ? resolved : throw new InvalidOperationException(refusal);
+    }
 
     /// <inheritdoc cref="ResolveFilter(IEntityType, string?, StoreObjectIdentifier)"/>
     /// <param name="entityType">The entity type the placeholders are resolved against.</param>
@@ -778,8 +805,19 @@ public class CustomMigrationsModelDiffer(
     /// Renders JSON members under this <see cref="ComplexIndexAnnotations.RenderingVersion"/> instead of
     /// the model's; exclusion constraint filters pass 1 so that their DDL never changes.
     /// </param>
-    internal string? ResolveFilter(IEntityType entityType, string? filter, StoreObjectIdentifier storeObject, int? renderingVersion)
+    /// <param name="refusal">
+    /// The message to fail with when the filter compares a JSON member stored as text with a column,
+    /// or null. Returned rather than thrown so that only the target model is refused: a snapshot
+    /// holding such a filter must still diff, or the migration removing it could not be scaffolded.
+    /// </param>
+    internal string? ResolveFilter(
+        IEntityType           entityType,
+        string?               filter,
+        StoreObjectIdentifier storeObject,
+        int?                  renderingVersion,
+        out string?           refusal)
     {
+        refusal = null;
         if (filter is null || !filter.Contains('{'))
             return filter;
 
@@ -819,7 +857,7 @@ public class CustomMigrationsModelDiffer(
         }
 
         var resolved = sql.ToString();
-        ThrowIfFallbackComparedWithColumn(entityType, resolved, fallbacks, typedSpans);
+        refusal = FallbackComparedWithColumn(entityType, resolved, fallbacks, typedSpans);
         return resolved;
     }
 
@@ -828,7 +866,7 @@ public class CustomMigrationsModelDiffer(
     // refused at apply ("operator does not exist: text < timestamp with time zone"), and the cast
     // EF Core's queries use cannot appear in an index or constraint. The comparison is refused here,
     // at migrations add. A null test and a comparison with a string literal still apply, as before.
-    private static void ThrowIfFallbackComparedWithColumn(
+    private static string? FallbackComparedWithColumn(
         IEntityType                                                      entityType,
         string                                                           sql,
         IReadOnlyList<(int Start, int End, string Path, string StoreType)> fallbacks,
@@ -843,13 +881,15 @@ public class CustomMigrationsModelDiffer(
                           || before.Success && (sql[..before.Index].EndsWith('"') || EndsTypedSpan(before.Index));
 
             if (withColumn)
-                throw new InvalidOperationException(
+                return
                     $"A filter on entity '{entityType.DisplayName()}' compares the JSON member '{fallback.Path}' with a column. "
                   + $"The member is {fallback.StoreType} stored as text in its document, and PostgreSQL can neither compare that text "
                   + "with a typed column nor index the cast EF Core's queries use (it is not IMMUTABLE), so the migration would fail "
                   + "at apply. Test the member with IS NULL or compare it with a string literal in the string filter overload, or "
-                  + "map it to a regular column.");
+                  + "map it to a regular column.";
         }
+
+        return null;
 
         bool StartsTypedSpan(int index) => typedSpans.Any(span => span.Start == index);
         bool EndsTypedSpan(int index) => typedSpans.Any(span => span.End == index);
@@ -1076,6 +1116,34 @@ public class CustomMigrationsModelDiffer(
 
     private NameKeyComparer NameKeys => new(IndexNameComparer);
 
+    /// <summary>
+    /// Whether the target model gives an index name, within the provider's
+    /// <see cref="IndexNameScope"/>, to a complex index, a native index or a key — so that a complex
+    /// index renamed away from it cannot be renamed after the base operations, which may already
+    /// have created the other object under it.
+    /// </summary>
+    /// <remarks>
+    /// Over-approximates on purpose: an object created after the renames, such as another complex
+    /// index, costs the renamed index a rebuild it did not need, where missing one fails the
+    /// migration at apply. The PostgreSQL satellite adds the rest of its relation namespace.
+    /// </remarks>
+    /// <param name="target">The target model.</param>
+    /// <param name="targetIndexes">The complex indexes of the target model.</param>
+    /// <param name="renamed">The renamed index, under its new name. It never counts against itself,
+    /// which a rename that changes only the case would under a comparer that ignores case.</param>
+    /// <param name="name">The name it is renamed away from.</param>
+    internal virtual bool IsIndexNameInUse(
+        IRelationalModel target, IReadOnlyCollection<IndexDescriptor> targetIndexes, IndexDescriptor renamed, string name)
+    {
+        var key  = NameKey(renamed.TableName, renamed.Schema, name);
+        var keys = NameKeys;
+
+        return targetIndexes.Any(i => !ReferenceEquals(i, renamed) && keys.Equals(NameKey(i.TableName, i.Schema, i.IndexName), key))
+            || target.Tables.Any(t => t.Indexes.Select(i => i.Name)
+                                       .Concat(t.UniqueConstraints.Select(c => c.Name))
+                                       .Any(n => keys.Equals(NameKey(t.Name, t.Schema, n), key)));
+    }
+
     private string UniquenessRule(bool sameTable, bool ignoringCase)
         => (sameTable, IndexNameScope) switch
            {
@@ -1119,6 +1187,17 @@ public class CustomMigrationsModelDiffer(
         }
     }
 
+    // The refusal ResolveFilter recorded while building the descriptor. Target model only: a snapshot
+    // scaffolded before the check existed must stay diffable, so that the filter can be removed.
+    private static void ValidateFilterComparisons(HashSet<IndexDescriptor> descriptors)
+    {
+        foreach (var descriptor in descriptors)
+        {
+            if (descriptor.FilterRefusal is { } refusal)
+                throw new InvalidOperationException(refusal);
+        }
+    }
+
     /// <summary>
     /// Fails, on a provider no satellite serves, when an index has a part only the PostgreSQL
     /// satellite's generator renders: <c>NULLS FIRST</c>/<c>NULLS LAST</c> ordering or an expression.
@@ -1151,6 +1230,51 @@ public class CustomMigrationsModelDiffer(
                 $"The complex index '{descriptor.IndexName}' on table '{descriptor.TableName}' {what}, which this package "
               + $"renders only on PostgreSQL, through the EFCore.ComplexIndexes.PostgreSQL satellite. {_provider} has no "
               + $"satellite, so the index would fail to apply or apply without it. {remedy}");
+        }
+    }
+
+    // The INCLUDE lists ResolveIncludeList resolves, by the key the satellite stores them under.
+    private static readonly HashSet<string> IncludeListAnnotations = ["Npgsql:IndexInclude", "SqlServer:Include"];
+
+    /// <summary>
+    /// Fails when an <c>INCLUDE</c> entry names no column of the index's table.
+    /// </summary>
+    /// <remarks>
+    /// <see cref="ResolveIncludeList"/> passes an entry that names no property through verbatim, as a
+    /// column name. When the property an entry named is removed, both sides of the diff resolve to
+    /// the same text, no index operation is emitted, and the migration is a bare <c>DROP COLUMN</c>:
+    /// PostgreSQL drops the index with the column and applies cleanly, SQL Server refuses the drop
+    /// (Msg 5074). Names compare by <see cref="IndexNameComparer"/>, the provider's identifier rule.
+    /// Only the list of the provider being diffed is checked, after <see cref="ValidateNoSatelliteOptions"/>
+    /// has made sure its satellite resolved it: a model shared with SQLite tests carries options SQLite
+    /// ignores. Target model only, so that a snapshot holding such an entry stays diffable and the
+    /// declaration can be fixed.
+    /// </remarks>
+    private void ValidateIncludedColumns(IRelationalModel? target, HashSet<IndexDescriptor> descriptors)
+    {
+        if (target is null || _satellite is null)
+            return;
+
+        foreach (var descriptor in descriptors)
+        {
+            if (target.FindTable(descriptor.TableName, descriptor.Schema) is not { } table)
+                continue;
+
+            foreach (var (key, value) in descriptor.ProviderAnnotations)
+            {
+                if (!IncludeListAnnotations.Contains(key) || !_satellite.IsOption(key) || value is not string[] entries)
+                    continue;
+
+                var missing = entries.FirstOrDefault(entry => !table.Columns.Any(c => IndexNameComparer.Equals(c.Name, entry)));
+                if (missing is null)
+                    continue;
+
+                throw new InvalidOperationException(
+                    $"The complex index '{descriptor.IndexName}' on table '{descriptor.TableName}' includes '{missing}', which is "
+                  + "neither a property path of the entity nor a column of the table. An INCLUDE entry naming a removed property "
+                  + "leaves the index unchanged in the migration, and dropping the column then drops the index on PostgreSQL "
+                  + "and fails on SQL Server. Remove the entry from IncludeProperties, or name a mapped property or column.");
+            }
         }
     }
 
@@ -1580,10 +1704,13 @@ public class CustomMigrationsModelDiffer(
                 providerAnnotations[annotation.Name] = TransformIndexAnnotation(entityType, annotation.Name, annotation.Value, storeObject);
         }
 
-        var filter = ResolveFilter(entityType, declaration.Filter, storeObject)
+        var filter = ResolveFilter(entityType, declaration.Filter, storeObject, renderingVersion: null, out var filterRefusal)
                   ?? ImplicitFilter(entityType, storeObject, part.IsExpression ? [] : [part.Value], declaration.IsUnique, providerAnnotations);
 
-        return new IndexDescriptor(tableName, schema, [part], indexName, declaration.IsUnique, filter, providerAnnotations);
+        return new IndexDescriptor(tableName, schema, [part], indexName, declaration.IsUnique, filter, providerAnnotations)
+        {
+            FilterRefusal = filterRefusal
+        };
     }
 
     private IndexDescriptor ResolveEntityLevelIndex(
@@ -1632,10 +1759,13 @@ public class CustomMigrationsModelDiffer(
         foreach (var (key, value) in declaration.ProviderAnnotations)
             providerAnnotations[key] = TransformIndexAnnotation(entityType, key, value, storeObject);
 
-        var filter = ResolveFilter(entityType, declaration.Filter, storeObject)
+        var filter = ResolveFilter(entityType, declaration.Filter, storeObject, renderingVersion: null, out var filterRefusal)
                   ?? ImplicitFilter(entityType, storeObject, [.. parts.Where(p => !p.IsExpression).Select(p => p.Value)], declaration.IsUnique, providerAnnotations);
 
-        return new IndexDescriptor(tableName, schema, parts, indexName, declaration.IsUnique, filter, providerAnnotations);
+        return new IndexDescriptor(tableName, schema, parts, indexName, declaration.IsUnique, filter, providerAnnotations)
+        {
+            FilterRefusal = filterRefusal
+        };
     }
 
     // Builds a default index-name token for a part: column names pass through; expressions are
@@ -1738,6 +1868,9 @@ public class CustomMigrationsModelDiffer(
     {
         // For messages only, outside equality: the copies of one declaration on a TPC type share it.
         public TpcDeclaration? Origin { get; init; }
+
+        // Outside equality: why the filter cannot apply, raised for the target model only.
+        public string? FilterRefusal { get; init; }
 
         public IEnumerable<string> ColumnNames => Parts.Where(p => !p.IsExpression).Select(p => p.Value);
 

@@ -434,10 +434,61 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
         if (target is null)
             return;
 
+        var names = TargetNames(target);
+
+        ThrowOnFirstCollision(
+            names.Where(n => n.IsConstraint).GroupBy(n => (n.Schema, n.Table, n.Name)),
+            other => "PostgreSQL keeps constraint names unique per table, so the migration would fail when applied (42710)"
+                   + (other.Any(o => o.Kind == "exclusion constraint")
+                          ? " — or, since every exclusion constraint is added after DROP CONSTRAINT IF EXISTS, silently replace the other constraint."
+                          : "."));
+
+        ThrowOnFirstCollision(
+            names.Where(n => n.InRelationNamespace).GroupBy(n => (n.Schema, "", n.Name)),
+            other => "PostgreSQL keeps index names — including the index behind every primary key, unique, exclusion and "
+                   + $"temporal constraint — unique per schema ('{other[0].Schema}'), a namespace they share with its tables, "
+                   + "views and sequences, so the migration would fail when applied (42P07).");
+
+        static void ThrowOnFirstCollision(
+            IEnumerable<IGrouping<(string Schema, string Table, string Name), NamedObject>> groups,
+            Func<IReadOnlyList<NamedObject>, string>                                        rule)
+        {
+            foreach (var group in groups)
+            {
+                var members = group.ToList();
+                var ours    = members.FirstOrDefault(m => m.Ours);
+                if (ours is null || members.Count < 2)
+                    continue;
+
+                var other = members.First(m => !ReferenceEquals(m, ours));
+
+                // One declaration on a TPC type, created on several tables under its one explicit name.
+                if (ours.Origin is { } origin && other.Origin == origin)
+                    throw new InvalidOperationException(origin.RepeatedName(ours.Kind, ours.Name, rule([ours, other])));
+
+                var otherDescription = other.Description
+                                    ?? (other.IsRelation
+                                           ? $"the {other.Kind} '{other.Name}'"
+                                           : $"the {other.Kind} on table '{other.Table}'");
+
+                throw new InvalidOperationException(
+                    $"The {ours.Kind} '{ours.Name}' on table '{ours.Table}' has the same name as {otherDescription}. "
+                  + $"{rule([ours, other])} Give one of them a different name.");
+            }
+        }
+    }
+
+    /// <summary>
+    /// Every name the target model gives in PostgreSQL's two namespaces: this package's
+    /// declarations, EF Core's indexes, keys, foreign keys and check constraints, and the tables,
+    /// views and sequences of each schema.
+    /// </summary>
+    private List<NamedObject> TargetNames(IRelationalModel target)
+    {
         // A list, not a set: two declarations with one name on one table produce identical entries,
-        // and a set would merge exactly the pair this check exists to find. Every source below is
-        // already free of duplicates.
-        var defaultSchema = target.Model.GetDefaultSchema() ?? "public";
+        // and a set would merge exactly the pair the cross-kind check exists to find. Every source
+        // below is already free of duplicates.
+        var defaultSchema = DefaultSchema(target);
         var names         = new List<NamedObject>();
 
         void Add(string name, string table, string? schema, string kind, bool ours, bool constraint, bool indexBacked, TpcDeclaration? origin = null)
@@ -498,47 +549,36 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
         foreach (var sequence in target.Model.GetSequences())
             AddRelation(sequence.Name, sequence.Schema, "sequence");
 
-        ThrowOnFirstCollision(
-            names.Where(n => n.IsConstraint).GroupBy(n => (n.Schema, n.Table, n.Name)),
-            other => "PostgreSQL keeps constraint names unique per table, so the migration would fail when applied (42710)"
-                   + (other.Any(o => o.Kind == "exclusion constraint")
-                          ? " — or, since every exclusion constraint is added after DROP CONSTRAINT IF EXISTS, silently replace the other constraint."
-                          : "."));
-
-        ThrowOnFirstCollision(
-            names.Where(n => n.InRelationNamespace).GroupBy(n => (n.Schema, "", n.Name)),
-            other => "PostgreSQL keeps index names — including the index behind every primary key, unique, exclusion and "
-                   + $"temporal constraint — unique per schema ('{other[0].Schema}'), a namespace they share with its tables, "
-                   + "views and sequences, so the migration would fail when applied (42P07).");
-
-        static void ThrowOnFirstCollision(
-            IEnumerable<IGrouping<(string Schema, string Table, string Name), NamedObject>> groups,
-            Func<IReadOnlyList<NamedObject>, string>                                        rule)
-        {
-            foreach (var group in groups)
-            {
-                var members = group.ToList();
-                var ours    = members.FirstOrDefault(m => m.Ours);
-                if (ours is null || members.Count < 2)
-                    continue;
-
-                var other = members.First(m => !ReferenceEquals(m, ours));
-
-                // One declaration on a TPC type, created on several tables under its one explicit name.
-                if (ours.Origin is { } origin && other.Origin == origin)
-                    throw new InvalidOperationException(origin.RepeatedName(ours.Kind, ours.Name, rule([ours, other])));
-
-                var otherDescription = other.Description
-                                    ?? (other.IsRelation
-                                           ? $"the {other.Kind} '{other.Name}'"
-                                           : $"the {other.Kind} on table '{other.Table}'");
-
-                throw new InvalidOperationException(
-                    $"The {ours.Kind} '{ours.Name}' on table '{ours.Table}' has the same name as {otherDescription}. "
-                  + $"{rule([ours, other])} Give one of them a different name.");
-            }
-        }
+        return names;
     }
+
+    private static string DefaultSchema(IRelationalModel target) => target.Model.GetDefaultSchema() ?? "public";
+
+    /// <summary>
+    /// Whether the target model gives a name to an object a rename's old name would clash with: a
+    /// constraint of the same table, or — for an object that owns an index — a relation of the same
+    /// schema. Such a rename cannot run after the base operations, which may already have created
+    /// that object under the name (#143), so it becomes a drop before them and an add after them.
+    /// </summary>
+    /// <remarks>
+    /// Over-approximates as the core's <see cref="IsIndexNameInUse"/> does: an object this package
+    /// adds after the renames costs a rebuild the rename did not need, never a failed apply.
+    /// </remarks>
+    private static bool IsNameInUse(List<NamedObject> names, string defaultSchema, string name, string table, string? schema, bool indexBacked)
+    {
+        schema ??= defaultSchema;
+        return names.Any(n => n.Name == name
+                           && n.Schema == schema
+                           && (n.IsConstraint && n.Table == table || indexBacked && n.InRelationNamespace));
+    }
+
+    // The core checks complex indexes, native indexes and keys under its own scope; PostgreSQL's
+    // relation namespace also holds the tables, views and sequences of the schema, and the indexes
+    // behind its exclusion and temporal constraints.
+    internal override bool IsIndexNameInUse(
+        IRelationalModel target, IReadOnlyCollection<IndexDescriptor> targetIndexes, IndexDescriptor renamed, string name)
+        => base.IsIndexNameInUse(target, targetIndexes, renamed, name)
+        || IsNameInUse(TargetNames(target), DefaultSchema(target), name, renamed.TableName, renamed.Schema, indexBacked: true);
 
     // InRelationNamespace: an index, a constraint backed by one, or a table, view or sequence —
     // everything PostgreSQL names in pg_class, whose names are unique per schema.
@@ -688,17 +728,6 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
                 principalDropped.Add(normalized);
         }
 
-        // A foreign key whose dependent table is dropped goes with it — unless its principal table is
-        // dropped too. EF orders the DropTable operations without knowing about the temporal foreign
-        // key, so when the principal's comes first it fails with 2BP01; dropping the key before the
-        // base operations makes the order irrelevant. Down() of the migration that created both
-        // tables has exactly this shape.
-        var pendingForeignKeyDrops = normalizedForeignKeys.Keys
-            .Where(src => (!droppedTables.Contains(normalizedForeignKeys[src]) || principalDropped.Contains(src))
-                       && (!targetForeignKeys.Contains(src)
-                        || DependsOnChangedTemporalConstraint(src, normalizedConstraints.Keys, targetConstraints)))
-            .ToList();
-
         var pendingConstraintDrops = normalizedConstraints.Keys
             .Where(src => !targetConstraints.Contains(src)
                        && !droppedTables.Contains(normalizedConstraints[src]))
@@ -706,15 +735,15 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
 
         var pendingConstraintAdds = targetConstraints.Where(tgt => !normalizedConstraints.ContainsKey(tgt)).ToList();
 
-        var pendingForeignKeyAdds = targetForeignKeys
-            .Where(tgt => !normalizedForeignKeys.ContainsKey(tgt)
-                       || DependsOnChangedTemporalConstraint(tgt, normalizedConstraints.Keys, targetConstraints))
-            .ToList();
-
         // Drop/add pairs identical except for the name — typically default-named constraints on a
         // renamed table — become RENAME CONSTRAINT. Dependent foreign keys survive a rename, so
-        // they don't churn (DependsOnChangedTemporalConstraint compares names insensitively).
-        var renames = new List<MigrationOperation>();
+        // they don't churn (DependsOnChangedTemporalConstraint compares names insensitively). A
+        // rename runs after the base operations, so one whose old name the target model gives to
+        // something else stays a drop and an add (#143) — and its foreign keys, which the drop
+        // would fail under (2BP01), are rebuilt around it.
+        List<NamedObject>? names   = null;
+        var                renames = new List<MigrationOperation>();
+        var                rebuilt = new List<TemporalDescriptor>();
 
         for (var i = pendingConstraintDrops.Count - 1; i >= 0; i--)
         {
@@ -723,6 +752,13 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
                                                                  && (dropped with { Name = a.Name }).Equals(a));
             if (renamed is null)
                 continue;
+
+            if (target is not null
+             && IsNameInUse(names ??= TargetNames(target), DefaultSchema(target), dropped.Name, renamed.Table, renamed.Schema, indexBacked: true))
+            {
+                rebuilt.Add(renamed);
+                continue;
+            }
 
             renames.Add(new SqlOperation
                         {
@@ -733,12 +769,37 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
             pendingConstraintAdds.Remove(renamed);
         }
 
+        bool DependsOnRebuiltConstraint(TemporalForeignKeyDescriptor foreignKey)
+            => rebuilt.Any(c => IsPrincipalConstraintFor(foreignKey, c));
+
+        // A foreign key whose dependent table is dropped goes with it — unless its principal table is
+        // dropped too. EF orders the DropTable operations without knowing about the temporal foreign
+        // key, so when the principal's comes first it fails with 2BP01; dropping the key before the
+        // base operations makes the order irrelevant. Down() of the migration that created both
+        // tables has exactly this shape.
+        var pendingForeignKeyDrops = normalizedForeignKeys.Keys
+            .Where(src => (!droppedTables.Contains(normalizedForeignKeys[src]) || principalDropped.Contains(src))
+                       && (!targetForeignKeys.Contains(src)
+                        || DependsOnChangedTemporalConstraint(src, normalizedConstraints.Keys, targetConstraints)
+                        || DependsOnRebuiltConstraint(src)))
+            .ToList();
+
+        var pendingForeignKeyAdds = targetForeignKeys
+            .Where(tgt => !normalizedForeignKeys.ContainsKey(tgt)
+                       || DependsOnChangedTemporalConstraint(tgt, normalizedConstraints.Keys, targetConstraints)
+                       || DependsOnRebuiltConstraint(tgt))
+            .ToList();
+
         for (var i = pendingForeignKeyDrops.Count - 1; i >= 0; i--)
         {
             var dropped = pendingForeignKeyDrops[i];
             var renamed = pendingForeignKeyAdds.FirstOrDefault(a => a.Name != dropped.Name
                                                                  && (dropped with { Name = a.Name }).Equals(a));
             if (renamed is null)
+                continue;
+
+            if (target is not null
+             && IsNameInUse(names ??= TargetNames(target), DefaultSchema(target), dropped.Name, renamed.DependentTable, renamed.DependentSchema, indexBacked: false))
                 continue;
 
             renames.Add(new SqlOperation
@@ -841,8 +902,15 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
         var sourceConstraints = BuildExclusionDescriptors(source);
         var targetConstraints = BuildExclusionDescriptors(target);
 
-        // Target only — a snapshot that already contains a collision must stay diffable.
+        // Target only — a snapshot that already contains a collision, or a filter refused since it
+        // was scaffolded, must stay diffable.
         ValidateUniqueExclusionNames(targetConstraints);
+
+        foreach (var constraint in targetConstraints)
+        {
+            if (constraint.FilterRefusal is { } refusal)
+                throw new InvalidOperationException(refusal);
+        }
 
         if (target is not null)
         {
@@ -881,14 +949,21 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
 
         // A drop/add pair identical except for the name — typically a default-named constraint on a
         // renamed table — becomes RENAME CONSTRAINT: a catalog update instead of a gist rebuild.
-        // Placed after the base operations, which may themselves rename the table.
-        var renames = new List<MigrationOperation>();
+        // Placed after the base operations, which may themselves rename the table — and may create
+        // whatever the target model names like the constraint used to be named, so such a rename
+        // stays a drop and an add (#143).
+        List<NamedObject>? names   = null;
+        var                renames = new List<MigrationOperation>();
         for (var i = pendingDrops.Count - 1; i >= 0; i--)
         {
             var dropped = pendingDrops[i];
             var renamed = pendingAdds.FirstOrDefault(a => a.Name != dropped.Name
                                                        && (dropped with { Name = a.Name }).Equals(a));
             if (renamed is null)
+                continue;
+
+            if (target is not null
+             && IsNameInUse(names ??= TargetNames(target), DefaultSchema(target), dropped.Name, renamed.Table, renamed.Schema, indexBacked: true))
                 continue;
 
             renames.Add(new SqlOperation
@@ -1148,17 +1223,20 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
             // Pinned to the original JSON rendering: the constraint enforces the same rows
             // either way, so the 5.4.0 rendering change would only drop and re-add it.
             // Non-string members are the exception (ResolveUnmappedPart).
-            ResolveExclusionFilter(entityType, def.Filter, storeObject),
+            ResolveExclusionFilter(entityType, def.Filter, storeObject, out var filterRefusal),
             def.Deferrable,
-            def.InitiallyDeferred);
+            def.InitiallyDeferred)
+        {
+            FilterRefusal = filterRefusal
+        };
     }
 
-    private string? ResolveExclusionFilter(IEntityType entityType, string? filter, StoreObjectIdentifier storeObject)
+    private string? ResolveExclusionFilter(IEntityType entityType, string? filter, StoreObjectIdentifier storeObject, out string? refusal)
     {
         _resolvingExclusionFilter = true;
         try
         {
-            return ResolveFilter(entityType, filter, storeObject, renderingVersion: 1);
+            return ResolveFilter(entityType, filter, storeObject, renderingVersion: 1, out refusal);
         }
         finally
         {
@@ -1619,6 +1697,9 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
     {
         // For messages only, outside equality: the copies of one declaration on a TPC type share it.
         public TpcDeclaration? Origin { get; init; }
+
+        // Outside equality: why the filter cannot apply, raised for the target model only.
+        public string? FilterRefusal { get; init; }
 
         public bool Equals(ExclusionDescriptor? other) =>
             other is not null

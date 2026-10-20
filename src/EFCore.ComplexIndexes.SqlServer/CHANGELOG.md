@@ -11,6 +11,7 @@ The last 5.x minor with a change of its own: the line refuses EF Core 11, whose 
 ### Changed answers
 
 - Indexes: a unique complex index over nullable columns gets EF Core's `IS NOT NULL` filter, so rows without a value no longer collide. It admitted one such row and refused the second ([#88](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/issues/88), [Upgrading](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/docs/upgrading.md#unique-indexes-over-nullable-columns-on-sql-server)).
+- Indexes: an `IncludeProperties(…)` entry that names neither a property nor a column of the table fails at `migrations add`. When its property was removed, the migration dropped only the column, and failed at apply with Msg 5074 ([#142](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/issues/142), [Upgrading](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/docs/upgrading.md#include-entries-must-name-a-column)).
 
 ### Breaking
 
@@ -25,7 +26,8 @@ The last 5.x minor with a change of its own: the line refuses EF Core 11, whose 
 
 - Indexes: a clustered complex index added in a later migration beside an existing one, and a complex index named like its table's primary key or a unique constraint, fail at `migrations add`, where they failed at apply ([SQL Server](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/docs/sqlserver.md#deliberate-rejections)).
 - Indexes: complex index names that differ only in case, from each other or from a native index, fail at `migrations add`, where they failed at apply because the default collation compares them without regard to case ([Index names](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/README.md#single-column-index-on-a-complex-property)).
-- Migrations: changing the type, length or nullability of a column a complex index reads applies, where it failed with Msg 5074. The index is dropped before the `ALTER COLUMN` and created after it ([SQL Server](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/docs/sqlserver.md)).
+- Migrations: a complex index renamed away from a name that the same migration gives to another index applies, where it failed at apply because the renamed index still held the name. It is dropped before EF Core's operations and created after them ([Index names](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/README.md#single-column-index-on-a-complex-property)).
+- Migrations: changing the type, length or nullability of a column a complex index reads applies, an index renamed in the same migration included, where it failed with Msg 5074. The index is dropped before the `ALTER COLUMN` and created after it ([SQL Server](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/docs/sqlserver.md)).
 
 ## [5.4.1] — 2026-09-22
 
