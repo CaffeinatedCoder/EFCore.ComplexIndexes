@@ -1,6 +1,8 @@
 using EFCore.ComplexIndexes.PostgreSQL;
 using EFCore.ComplexIndexes.SqlServer;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace EFCore.ComplexIndexes.Tests;
@@ -31,7 +33,32 @@ public class EfCoreVersionGuardTests
         ["CustomDesignTimeServices", (Action)(() => new CustomDesignTimeServices().ConfigureDesignTimeServices(new ServiceCollection()))],
         ["NpgsqlComplexIndexDesignTimeServices", (Action)(() => new NpgsqlComplexIndexDesignTimeServices().ConfigureDesignTimeServices(new ServiceCollection()))],
         ["SqlServerComplexIndexDesignTimeServices", (Action)(() => new SqlServerComplexIndexDesignTimeServices().ConfigureDesignTimeServices(new ServiceCollection()))],
+        // The public types registered by hand, past every entry point above (#91). Without the
+        // check in their constructors the differ built, and on EF Core 11 the first diff failed
+        // with a MissingMethodException that named nothing.
+        ["ReplaceService<IMigrationsModelDiffer, CustomMigrationsModelDiffer>",
+         (Action)(() => Resolve<IMigrationsModelDiffer, CustomMigrationsModelDiffer>(b => b.UseSqlite(MigrationHarness.SqliteConnection)))],
+        ["ReplaceService<IMigrationsModelDiffer, NpgsqlComplexIndexMigrationsModelDiffer>",
+         (Action)(() => Resolve<IMigrationsModelDiffer, NpgsqlComplexIndexMigrationsModelDiffer>(b => b.UseNpgsql(MigrationHarness.NpgsqlConnection)))],
+        ["ReplaceService<IMigrationsModelDiffer, SqlServerComplexIndexMigrationsModelDiffer>",
+         (Action)(() => Resolve<IMigrationsModelDiffer, SqlServerComplexIndexMigrationsModelDiffer>(b => b.UseSqlServer(MigrationHarness.SqlServerConnection)))],
+        ["ReplaceService<IMigrationsSqlGenerator, NpgsqlComplexIndexSqlGenerator>",
+         (Action)(() => Resolve<IMigrationsSqlGenerator, NpgsqlComplexIndexSqlGenerator>(b => b.UseNpgsql(MigrationHarness.NpgsqlConnection)))],
     ];
+
+    // A fresh service provider each time: a cached one could hand back an instance some other row
+    // constructed, and the row would pass without constructing anything.
+    private static void Resolve<TService, TImplementation>(Func<DbContextOptionsBuilder, DbContextOptionsBuilder> provider)
+        where TService : class where TImplementation : TService
+    {
+        var options = provider(new DbContextOptionsBuilder())
+                     .ReplaceService<TService, TImplementation>()
+                     .EnableServiceProviderCaching(false)
+                     .Options;
+
+        using var context = new MigrationHarness.EmptyContext(options);
+        context.GetService<TService>();
+    }
 
     [TestMethod(DisplayName = "EF Core 11 is refused, naming the successor package")]
     [DynamicData(nameof(EntryPoints))]

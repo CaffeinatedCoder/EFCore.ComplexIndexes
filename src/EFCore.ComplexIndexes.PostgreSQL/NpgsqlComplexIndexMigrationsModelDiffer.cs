@@ -38,6 +38,9 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
     // to the base constructor, and capturing it as well would store it twice (CS9107).
     private readonly IRelationalTypeMappingSource _typeMappingSource = typeMappingSource;
 
+    // Set while an exclusion constraint's filter is resolved; see ResolveUnmappedPart.
+    private bool _resolvingExclusionFilter;
+
     private static readonly HashSet<string> SupportedNpgsqlAnnotations =
     [
         NpgsqlAnnotations.IndexMethod,
@@ -221,6 +224,14 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
         // Default index names come from the container and the path, never from the rendered SQL.
         var nameToken = containerColumn + string.Concat(jsonPath);
 
+        // Exclusion constraint filters are pinned to rendering 1, which renders every member as
+        // text. A member the current rendering casts — a number, boolean, uuid or enum — compared
+        // as text fails at apply (text > integer with 42883, a text WHERE with 42804), so it takes
+        // the current rendering; the cast keeps NULL as NULL, so a filter that did apply, such as
+        // IS NOT NULL, still holds for the same rows. Every other member keeps rendering 1.
+        if (!queryAligned && _resolvingExclusionFilter && RendersAsCast(leaf))
+            queryAligned = true;
+
         if (!queryAligned)
             return new ResolvedIndexPart(true, BuildLegacyJsonExtraction(containerColumn, jsonPath, asText: true), part.Descending, part.NullSort)
                    {
@@ -234,6 +245,17 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
                    NameToken    = nameToken,
                    TextFallback = fallbackStoreType is null ? null : (part.PropertyPath, fallbackStoreType)
                };
+    }
+
+    // Whether RenderJsonScalar renders the member as a CAST of its text.
+    private bool RendersAsCast(IProperty leaf)
+    {
+        var mapping = leaf.FindRelationalTypeMapping() ?? _typeMappingSource.FindMapping(leaf);
+
+        return !leaf.IsPrimitiveCollection
+            && mapping is not (null or StringTypeMapping)
+            && mapping.StoreTypeNameBase is not ("jsonb" or "json" or "bytea")
+            && !StableTextInputTypes.Contains(mapping.StoreTypeNameBase);
     }
 
     // Types whose text input function is STABLE rather than IMMUTABLE — the conversion depends on
@@ -530,6 +552,7 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
         }
 
         var normalizedForeignKeys = new Dictionary<TemporalForeignKeyDescriptor, (string Table, string? Schema)>();
+        var principalDropped      = new HashSet<TemporalForeignKeyDescriptor>();
         foreach (var src in sourceForeignKeys)
         {
             var normalized = src;
@@ -537,11 +560,18 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
                 normalized = normalized with { DependentTable = dependent.Name, DependentSchema = dependent.Schema };
             if (renamedTables.TryGetValue((src.PrincipalTable, src.PrincipalSchema), out var principal))
                 normalized = normalized with { PrincipalTable = principal.Name, PrincipalSchema = principal.Schema };
-            normalizedForeignKeys.TryAdd(normalized, (src.DependentTable, src.DependentSchema));
+            if (normalizedForeignKeys.TryAdd(normalized, (src.DependentTable, src.DependentSchema))
+             && droppedTables.Contains((src.PrincipalTable, src.PrincipalSchema)))
+                principalDropped.Add(normalized);
         }
 
+        // A foreign key whose dependent table is dropped goes with it — unless its principal table is
+        // dropped too. EF orders the DropTable operations without knowing about the temporal foreign
+        // key, so when the principal's comes first it fails with 2BP01; dropping the key before the
+        // base operations makes the order irrelevant. Down() of the migration that created both
+        // tables has exactly this shape.
         var pendingForeignKeyDrops = normalizedForeignKeys.Keys
-            .Where(src => !droppedTables.Contains(normalizedForeignKeys[src])
+            .Where(src => (!droppedTables.Contains(normalizedForeignKeys[src]) || principalDropped.Contains(src))
                        && (!targetForeignKeys.Contains(src)
                         || DependsOnChangedTemporalConstraint(src, normalizedConstraints.Keys, targetConstraints)))
             .ToList();
@@ -902,13 +932,27 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
                     def.Method,
                     // Pinned to the original JSON rendering: the constraint enforces the same rows
                     // either way, so the 5.4.0 rendering change would only drop and re-add it.
-                    ResolveFilter(entityType, def.Filter, storeObject, renderingVersion: 1),
+                    // Non-string members are the exception (ResolveUnmappedPart).
+                    ResolveExclusionFilter(entityType, def.Filter, storeObject),
                     def.Deferrable,
                     def.InitiallyDeferred));
             }
         }
 
         return set;
+    }
+
+    private string? ResolveExclusionFilter(IEntityType entityType, string? filter, StoreObjectIdentifier storeObject)
+    {
+        _resolvingExclusionFilter = true;
+        try
+        {
+            return ResolveFilter(entityType, filter, storeObject, renderingVersion: 1);
+        }
+        finally
+        {
+            _resolvingExclusionFilter = false;
+        }
     }
 
     // The ADD is preceded by DROP CONSTRAINT IF EXISTS so the migration also applies cleanly on

@@ -434,6 +434,9 @@ differ let satellites resolve what the core cannot:
   so a rendering change never renames an index; and `ResolvedIndexPart` equality ignores both
   internal members, or identical SQL would still rebuild. Exclusion constraint filters pass
   `renderingVersion: 1` and keep the old rendering: rebuilding a constraint buys no enforcement.
+  The exception is a member the current rendering casts (a number, boolean, uuid or enum): as
+  text it never applied (42883, 42804), so since 5.5.0 it takes the current rendering, on both
+  sides of the diff alike.
 - `ResolveTemplatePart` — substitutes template placeholders with quoted columns or parenthesized
   JSON extractions. Since 5.2.0 the core implements it, quoting through the `QuoteIdentifier`
   virtual (ANSI by default; the SQL Server satellite brackets), so satellites override neither.

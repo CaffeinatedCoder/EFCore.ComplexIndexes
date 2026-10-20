@@ -316,6 +316,70 @@ public class PostgresIntegrationTests
         AssertRejected("INSERT INTO ig_bookings (\"Id\", room_id, booked_during) VALUES (3, 7, '[2024-01-15,2024-02-15)')");
     }
 
+    // ── Temporal foreign key: dropping both tables, the Down() of the migration that created them ──
+
+    private class Room
+    {
+        public int                   Id          { get; set; }
+        public int                   RoomId      { get; set; }
+        public NpgsqlRange<DateOnly> ValidDuring { get; set; }
+    }
+
+    private class RoomReservation
+    {
+        public int                   Id           { get; set; }
+        public int                   RoomId       { get; set; }
+        public NpgsqlRange<DateOnly> BookedDuring { get; set; }
+    }
+
+    // The principal's table sorts first, so EF drops it before the dependent's.
+    private class RoomReservationContext(DbContextOptions<RoomReservationContext> options) : DbContext(options)
+    {
+        public DbSet<Room>            Rooms        => Set<Room>();
+        public DbSet<RoomReservation> Reservations => Set<RoomReservation>();
+
+        protected override void OnModelCreating(ModelBuilder modelBuilder)
+        {
+            modelBuilder.Entity<Room>(b =>
+            {
+                b.ToTable("ig_a_rooms");
+                b.HasKey(x => x.Id);
+                b.Property(x => x.RoomId).HasColumnName("room_id");
+                b.Property(x => x.ValidDuring).HasColumnName("valid_during");
+                b.HasTemporalConstraint(x => x.RoomId, x => x.ValidDuring);
+            });
+
+            modelBuilder.Entity<RoomReservation>(b =>
+            {
+                b.ToTable("ig_b_reservations");
+                b.HasKey(x => x.Id);
+                b.Property(x => x.RoomId).HasColumnName("room_id");
+                b.Property(x => x.BookedDuring).HasColumnName("booked_during");
+                b.HasTemporalForeignKey<RoomReservation, Room>(
+                    x => x.RoomId, x => x.BookedDuring,
+                    x => x.RoomId, x => x.ValidDuring);
+            });
+        }
+    }
+
+    [TestMethod(DisplayName = "Dropping both tables of a temporal foreign key applies when the principal sorts first")]
+    public void Temporal_foreign_key_tables_drop_together()
+    {
+        MigrateWithoutRuntimeWiring<RoomReservationContext>();
+        Sql("INSERT INTO ig_a_rooms (\"Id\", room_id, valid_during) VALUES (1, 7, '[2024-01-01,2025-01-01)')");
+        Sql("INSERT INTO ig_b_reservations (\"Id\", room_id, booked_during) VALUES (1, 7, '[2024-03-01,2024-04-01)')");
+
+        // Failed with 2BP01 (other objects depend on ig_a_rooms) while the foreign key was left to
+        // go with its dependent table.
+        Apply(GetDifferences(source: BuildRelationalModel<RoomReservationContext>(), target: null), wireUpGenerator: false);
+
+        using var connection = new NpgsqlConnection(ConnectionString);
+        connection.Open();
+        using var cmd = new NpgsqlCommand(
+            "SELECT count(*) FROM pg_tables WHERE tablename IN ('ig_a_rooms', 'ig_b_reservations')", connection);
+        Assert.AreEqual(0L, cmd.ExecuteScalar());
+    }
+
     // ── Expression index: renders, applies, and enforces case-insensitive uniqueness ──
 
     private class Person
@@ -434,6 +498,58 @@ public class PostgresIntegrationTests
                 b.ComplexProperty(x => x.Name, c => c.ToJson("name"));
                 b.HasComplexIndex(x => x.Name.ShortName, isUnique: true, indexName: "ux_ig_employers_short_name");
             });
+    }
+
+    // ── Exclusion constraint filtered on non-string JSON members ──
+
+    private class Terms
+    {
+        public int  Priority { get; set; }
+        public bool Active   { get; set; }
+    }
+
+    private class Lease
+    {
+        public int                   Id     { get; set; }
+        public int                   UnitId { get; set; }
+        public NpgsqlRange<DateOnly> Period { get; set; }
+        public Terms                 Terms  { get; set; } = new();
+    }
+
+    private class LeaseContext(DbContextOptions<LeaseContext> options) : DbContext(options)
+    {
+        public DbSet<Lease> Leases => Set<Lease>();
+
+        protected override void OnModelCreating(ModelBuilder modelBuilder) =>
+            modelBuilder.Entity<Lease>(b =>
+            {
+                b.ToTable("ig_leases");
+                b.HasKey(x => x.Id);
+                b.Property(x => x.UnitId).HasColumnName("unit_id");
+                b.Property(x => x.Period).HasColumnName("period");
+                b.ComplexProperty(x => x.Terms, c => c.ToJson("terms"));
+                b.HasExclusionConstraint(x => x.UnitId, x => x.Period, x => x.Terms.Priority > 5, name: "ex_ig_leases_priority");
+                b.HasExclusionConstraint(ex => ex.WithEquality(x => x.UnitId).WithOverlaps(x => x.Period)
+                                                 .HasFilter(x => x.Terms.Active).HasName("ex_ig_leases_active"));
+            });
+    }
+
+    [TestMethod(DisplayName = "Exclusion constraints filtered on int and bool JSON members apply and enforce")]
+    public void Exclusion_filter_on_non_string_json_members_applies()
+    {
+        // Failed with 42883 (text > integer) and 42804 (argument of WHERE must be type boolean)
+        // while exclusion filters rendered every JSON member as text.
+        MigrateWithoutRuntimeWiring<LeaseContext>();
+
+        Sql("""INSERT INTO ig_leases ("Id", unit_id, period, terms) VALUES (1, 1, '[2024-01-01,2024-06-01)', '{"Priority":9,"Active":false}')""");
+        Sql("""INSERT INTO ig_leases ("Id", unit_id, period, terms) VALUES (2, 1, '[2024-03-01,2024-09-01)', '{"Priority":1,"Active":false}')""");
+
+        // Two overlapping high-priority leases on one unit: the priority constraint.
+        AssertRejected("""INSERT INTO ig_leases ("Id", unit_id, period, terms) VALUES (3, 1, '[2024-02-01,2024-03-01)', '{"Priority":7,"Active":false}')""");
+
+        // Two overlapping active leases on one unit: the active constraint.
+        Sql("""INSERT INTO ig_leases ("Id", unit_id, period, terms) VALUES (4, 2, '[2024-01-01,2024-06-01)', '{"Priority":1,"Active":true}')""");
+        AssertRejected("""INSERT INTO ig_leases ("Id", unit_id, period, terms) VALUES (5, 2, '[2024-02-01,2024-03-01)', '{"Priority":1,"Active":true}')""");
     }
 
     [TestMethod(DisplayName = "Unique index on a ToJson complex member applies and enforces")]
