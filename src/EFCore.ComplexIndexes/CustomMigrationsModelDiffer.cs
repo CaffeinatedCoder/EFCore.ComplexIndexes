@@ -157,6 +157,7 @@ public class CustomMigrationsModelDiffer(
         ValidateFilterComparisons(targetIndexes);
         ValidateRenderableParts(targetIndexes);
         ValidateNoSatelliteOptions(target);
+        ValidateIncludedColumns(target, targetIndexes);
         if (target is not null)
             ValidateTargetIndexes(target, targetIndexes);
 
@@ -659,7 +660,9 @@ public class CustomMigrationsModelDiffer(
     /// <summary>
     /// Resolves each entry of an INCLUDE-style column list: an entry that matches a property path
     /// (including complex members) becomes its mapped column name; anything else passes through
-    /// verbatim as a column name, so pre-v5 declarations keep working.
+    /// verbatim as a column name, so pre-v5 declarations keep working. In the target model, an
+    /// entry under <c>Npgsql:IndexInclude</c> or <c>SqlServer:Include</c> that names no column of
+    /// the table fails at <c>migrations add</c>.
     /// </summary>
     protected static object? ResolveIncludeList(IEntityType entityType, object? value, StoreObjectIdentifier storeObject)
     {
@@ -1179,6 +1182,51 @@ public class CustomMigrationsModelDiffer(
                 $"The complex index '{descriptor.IndexName}' on table '{descriptor.TableName}' {what}, which this package "
               + $"renders only on PostgreSQL, through the EFCore.ComplexIndexes.PostgreSQL satellite. {_provider} has no "
               + $"satellite, so the index would fail to apply or apply without it. {remedy}");
+        }
+    }
+
+    // The INCLUDE lists ResolveIncludeList resolves, by the key the satellite stores them under.
+    private static readonly HashSet<string> IncludeListAnnotations = ["Npgsql:IndexInclude", "SqlServer:Include"];
+
+    /// <summary>
+    /// Fails when an <c>INCLUDE</c> entry names no column of the index's table.
+    /// </summary>
+    /// <remarks>
+    /// <see cref="ResolveIncludeList"/> passes an entry that names no property through verbatim, as a
+    /// column name. When the property an entry named is removed, both sides of the diff resolve to
+    /// the same text, no index operation is emitted, and the migration is a bare <c>DROP COLUMN</c>:
+    /// PostgreSQL drops the index with the column and applies cleanly, SQL Server refuses the drop
+    /// (Msg 5074). Names compare by <see cref="IndexNameComparer"/>, the provider's identifier rule.
+    /// Only the list of the provider being diffed is checked, after <see cref="ValidateNoSatelliteOptions"/>
+    /// has made sure its satellite resolved it: a model shared with SQLite tests carries options SQLite
+    /// ignores. Target model only, so that a snapshot holding such an entry stays diffable and the
+    /// declaration can be fixed.
+    /// </remarks>
+    private void ValidateIncludedColumns(IRelationalModel? target, HashSet<IndexDescriptor> descriptors)
+    {
+        if (target is null || _satellite is null)
+            return;
+
+        foreach (var descriptor in descriptors)
+        {
+            if (target.FindTable(descriptor.TableName, descriptor.Schema) is not { } table)
+                continue;
+
+            foreach (var (key, value) in descriptor.ProviderAnnotations)
+            {
+                if (!IncludeListAnnotations.Contains(key) || !_satellite.IsOption(key) || value is not string[] entries)
+                    continue;
+
+                var missing = entries.FirstOrDefault(entry => !table.Columns.Any(c => IndexNameComparer.Equals(c.Name, entry)));
+                if (missing is null)
+                    continue;
+
+                throw new InvalidOperationException(
+                    $"The complex index '{descriptor.IndexName}' on table '{descriptor.TableName}' includes '{missing}', which is "
+                  + "neither a property path of the entity nor a column of the table. An INCLUDE entry naming a removed property "
+                  + "leaves the index unchanged in the migration, and dropping the column then drops the index on PostgreSQL "
+                  + "and fails on SQL Server. Remove the entry from IncludeProperties, or name a mapped property or column.");
+            }
         }
     }
 

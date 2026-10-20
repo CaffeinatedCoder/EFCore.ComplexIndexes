@@ -294,3 +294,21 @@ Nothing is re-created. An application with that registration now fails in `Ensur
 Replace `UseComplexIndexes()` with the satellite's method. A database `EnsureCreated()` built that
 way has the indexes without their options: drop and re-create them, or rebuild the database. A model
 shared with SQLite tests is unaffected, since the check covers only the provider being diffed.
+
+### INCLUDE entries must name a column
+
+On PostgreSQL and SQL Server, an `IncludeProperties(…)` entry that names neither a property path nor
+a column of the index's table fails at `migrations add`, naming the entry. An entry that names no
+property passes through as a column name, so when the property an entry named was removed and the
+entry kept, both sides of the diff read the same text and the migration held only the
+`DROP COLUMN`. PostgreSQL drops an index with a column it includes, so a unique index vanished and
+the migration applied cleanly; the snapshot still listed it, so no later migration re-created it.
+SQL Server refused the drop (Msg 5074).
+
+With `UseNpgsqlComplexIndexes()` or `UseSqlServerComplexIndexes()`, an application with such a model
+also fails in `EnsureCreated()`, `GenerateCreateScript()` and `Migrate()`, whose pending-model-changes
+check runs the same differ. Remove the entry, or name a property. An entry naming a column that exists in the database but not
+in the model fails too: map the column, as a shadow property if nothing reads it. A snapshot that
+holds such an entry stays diffable. On PostgreSQL, check a database that a migration of that shape
+reached with `SELECT indexname FROM pg_indexes WHERE tablename = '<table>'`. The migrations do not
+know the index is missing, so re-create it by hand with `migrationBuilder.Sql(…)`.

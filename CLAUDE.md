@@ -355,7 +355,9 @@ name-insensitively and the temporal FK doesn't churn. Indexes that need the cust
 stock generator fails loudly at apply time — deliberate, because a column-only NULLS-ordered index
 would otherwise apply silently minus its NULLS clause. INCLUDE lists are transformed via
 `TransformIndexAnnotation` → `ResolveIncludeList`: entries resolve as property paths with verbatim
-column-name fallback.
+column-name fallback, and in the target model an entry must name a column of the table. Without
+that check an entry whose property was removed read the same on both sides, and the migration's
+`DROP COLUMN` took a PostgreSQL index with it in silence (#142).
 
 ### Index identity and dedup
 
