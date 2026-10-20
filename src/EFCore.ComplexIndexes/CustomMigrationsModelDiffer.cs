@@ -1284,7 +1284,7 @@ public class CustomMigrationsModelDiffer(
             return;
 
         foreach (var descriptor in descriptors)
-            ThrowIfIdentifierTooLong(target.Model, descriptor.IndexName, "complex index", descriptor.TableName, "indexName");
+            ThrowIfIdentifierTooLong(target.Model, descriptor.IndexName, "complex index", descriptor.TableName, "indexName", descriptor.Origin);
     }
 
     /// <summary>
@@ -1293,7 +1293,8 @@ public class CustomMigrationsModelDiffer(
     /// names of the constraints they emit; the core calls it for every complex index name.
     /// </summary>
     /// <remarks>
-    /// The names this package derives are never truncated, unlike EF's own default names. PostgreSQL
+    /// The names this package derives are not truncated, unlike EF's own default names, but for the
+    /// default names of a TPC declaration's copies (<see cref="IsLongDefaultCopyName"/>). PostgreSQL
     /// cuts a longer identifier down to 63 bytes with a NOTICE and applies the migration cleanly, so
     /// the index exists under a name that neither the declaration nor a later constraint-violation
     /// error ever matches — a slice that dispatches on the constraint name falls through in silence.
@@ -1307,6 +1308,12 @@ public class CustomMigrationsModelDiffer(
     /// <param name="table">The table the declaration targets, for the message.</param>
     /// <param name="parameter">The declaration parameter that sets an explicit name, for the message.</param>
     protected void ThrowIfIdentifierTooLong(IReadOnlyModel model, string name, string kind, string table, string parameter)
+        => ThrowIfIdentifierTooLong(model, name, kind, table, parameter, origin: null);
+
+    // A declaration on a TPC type with derived tables gets other advice: a default name is shortened
+    // to fit there, so only an explicit one reaches this, and a shorter explicit name would still
+    // repeat on every table, which TpcDeclaration.RepeatedName refuses where names are per schema.
+    internal void ThrowIfIdentifierTooLong(IReadOnlyModel model, string name, string kind, string table, string parameter, TpcDeclaration? origin)
     {
         var limit            = model.GetMaxIdentifierLength();
         var (length, unit)   = MeasureIdentifier(name);
@@ -1318,7 +1325,10 @@ public class CustomMigrationsModelDiffer(
             $"The {kind} name '{name}' on table '{table}' is {length} {unit} long, but the provider allows at most {limit}. "
           + $"A longer name is truncated or rejected when the migration is applied, so the {kind} would exist under a "
           + "name that neither this declaration nor a constraint-violation error ever reports. "
-          + $"Give the declaration an explicit, shorter name ({parameter}).");
+          + (origin is null
+                 ? $"Give the declaration an explicit, shorter name ({parameter})."
+                 : $"Leave the name out: declared on a TPC type, the {kind} is created on the table of every type derived "
+                 + "from it, and each table's copy then takes a default name, shortened to fit as EF Core shortens its own."));
     }
 
     /// <summary>
@@ -1338,6 +1348,8 @@ public class CustomMigrationsModelDiffer(
     {
         var result = new HashSet<IndexDescriptor>();
         if (relationalModel is null) return result;
+
+        var longCopies = new HashSet<IndexDescriptor>();
 
         foreach (var entityType in relationalModel.Model.GetEntityTypes())
         {
@@ -1364,12 +1376,109 @@ public class CustomMigrationsModelDiffer(
                                          ? ResolvePropertyLevelIndex(tableType, declaration, property, storeObject.Name, storeObject.Schema, storeObject)
                                          : ResolveEntityLevelIndex(tableType, declaration, storeObject.Name, storeObject.Schema, storeObject);
 
-                    result.Add(descriptor with { Origin = origin });
+                    if (IsLongDefaultCopyName(relationalModel.Model, origin, declaration.Name, descriptor.IndexName))
+                        longCopies.Add(descriptor with { Origin = origin });
+                    else
+                        result.Add(descriptor with { Origin = origin });
                 }
             }
         }
 
+        if (longCopies.Count > 0)
+            ShortenIndexCopyNames(relationalModel, longCopies, result);
+
         return result;
+    }
+
+    /// <summary>
+    /// True when <paramref name="name"/> is the default name of one table's copy of a declaration
+    /// on a TPC type and runs past the provider's identifier limit: the one name
+    /// <see cref="ShortenIdentifier"/> shortens.
+    /// </summary>
+    /// <remarks>
+    /// A derived table's name is often longer than its base's, and no explicit name helps there: one
+    /// would repeat on every table, which <see cref="TpcDeclaration.RepeatedName"/> refuses where
+    /// names are unique per schema or database. Every other default name keeps the refusal of
+    /// <see cref="ThrowIfIdentifierTooLong(IReadOnlyModel, string, string, string, string)"/>,
+    /// since an explicit name fixes it.
+    /// </remarks>
+    internal bool IsLongDefaultCopyName(IReadOnlyModel model, TpcDeclaration? origin, string? explicitName, string name)
+        => origin is not null && explicitName is null && MeasureIdentifier(name).Length > model.GetMaxIdentifierLength();
+
+    // Copies sharing a full name in one scope share the shortened name, so the name checks still
+    // report two declarations that resolve alike. Sorted, so both sides of a diff assign alike.
+    private void ShortenIndexCopyNames(IRelationalModel model, HashSet<IndexDescriptor> copies, HashSet<IndexDescriptor> result)
+    {
+        var taken = new HashSet<(string? Schema, string? Table, string Name)>(NameKeys);
+        foreach (var descriptor in result)
+            taken.Add(NameKey(descriptor.TableName, descriptor.Schema, descriptor.IndexName));
+
+        // EF Core's own names, which it shortened the same way: a native index over the same
+        // columns of the derived table ends in the same '~'.
+        foreach (var table in model.Tables)
+        {
+            foreach (var index in table.Indexes)
+                taken.Add(NameKey(table.Name, table.Schema, index.Name));
+
+            foreach (var key in table.UniqueConstraints)
+                taken.Add(NameKey(table.Name, table.Schema, key.Name));
+        }
+
+        var limit    = model.Model.GetMaxIdentifierLength();
+        var assigned = new Dictionary<(string? Schema, string? Table, string Name), string>(NameKeys);
+
+        foreach (var copy in copies.OrderBy(c => c.Schema, StringComparer.Ordinal)
+                                   .ThenBy(c => c.TableName, StringComparer.Ordinal)
+                                   .ThenBy(c => c.IndexName, StringComparer.Ordinal))
+        {
+            var full = NameKey(copy.TableName, copy.Schema, copy.IndexName);
+            if (!assigned.TryGetValue(full, out var name))
+            {
+                name = ShortenIdentifier(copy.IndexName, limit, candidate => taken.Contains(NameKey(copy.TableName, copy.Schema, candidate)));
+                assigned[full] = name;
+                taken.Add(NameKey(copy.TableName, copy.Schema, name));
+            }
+
+            result.Add(copy with { IndexName = name });
+        }
+    }
+
+    /// <summary>
+    /// Shortens <paramref name="name"/> to <paramref name="limit"/> as EF Core 10's
+    /// <c>Uniquifier.Uniquify</c> shortens its own default names: cut and marked <c>~</c>, then
+    /// <c>~1</c>, <c>~2</c>, … in place of the last characters until <paramref name="isTaken"/>
+    /// says no to it.
+    /// </summary>
+    /// <remarks>
+    /// EF Core counts characters; this counts as <see cref="MeasureIdentifier"/> does, so on
+    /// PostgreSQL a name with non-ASCII characters is cut to 63 bytes, at a whole character. For an
+    /// ASCII name both give the same result.
+    /// </remarks>
+    internal string ShortenIdentifier(string name, int limit, Func<string, bool> isTaken)
+    {
+        var shortened = Truncate(null);
+        for (var uniquifier = 1; isTaken(shortened); uniquifier++)
+            shortened = Truncate(uniquifier);
+
+        return shortened;
+
+        string Truncate(int? uniquifier)
+        {
+            var suffix = uniquifier?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "";
+            if (MeasureIdentifier(name + suffix).Length <= limit)
+                return name + suffix;
+
+            var prefix = new StringBuilder();
+            foreach (var rune in name.EnumerateRunes())
+            {
+                if (MeasureIdentifier($"{prefix}{rune}~{suffix}").Length > limit)
+                    break;
+
+                prefix.Append(rune.ToString());
+            }
+
+            return $"{prefix}~{suffix}";
+        }
     }
 
     // Every property path a declaration reads: its parts, the placeholders of its templates and
@@ -1535,7 +1644,8 @@ public class CustomMigrationsModelDiffer(
         public string RepeatedName(string kind, string name, string rule)
             => $"The {kind} '{name}' is declared on '{_declaredOn.DisplayName()}', a TPC type, so it is created on the table of every "
              + $"type derived from it too ({string.Join(", ", _tables.Select(t => $"'{t.Name}'"))}), each time under the same explicit "
-             + $"name. {rule} Leave the name out: each table's copy then takes a default name that includes its table.";
+             + $"name. {rule} Leave the name out: each table's copy then takes a default name that includes its table, "
+             + "shortened to fit as EF Core shortens its own where the table's name is long.";
     }
 
     /// <summary>

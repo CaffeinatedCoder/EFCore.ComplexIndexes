@@ -139,7 +139,13 @@ tables.
 
 The first `migrations add` creates the copies on the derived tables, each under the default name
 for its table, such as `IX_special_bookings_Code`, and changes nothing on the declaring type's
-table. Before you apply it, remove the rows in the derived tables that violate a unique index or
+table. Where a derived table's long name puts that default name past the provider's identifier
+limit (63 bytes on PostgreSQL), the copy's name is shortened as EF Core shortens its own: cut and
+ended with `~`, or with `~1`, `~2`, … where the shortened name is already taken
+([#145](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/issues/145)). A table of 57
+characters gives `IX_special_bookings_for_corporate_customer_accounts_xyz_1234_C~`. Only the
+copies are shortened: a default name too long elsewhere still fails at `migrations add`, and an
+explicit name fixes it. Before you apply it, remove the rows in the derived tables that violate a unique index or
 an exclusion constraint. The migration fails on them, with 23505 or 23P01 on PostgreSQL and
 Msg 1505 on SQL Server, and in its transaction applies nothing.
 
@@ -147,7 +153,8 @@ Some of these declarations fail at `migrations add` now:
 
 - One with an explicit name, where index names are unique per schema or database: on PostgreSQL
   for every kind but the temporal foreign key, and on SQLite. The name would repeat on each table.
-  Leave it out. SQL Server keeps index names per table and takes the name on each, as EF Core does.
+  Leave it out, also where the default name is too long: it is then shortened, as above. SQL
+  Server keeps index names per table and takes the name on each, as EF Core does.
 - One that reads a member of a complex property. EF Core 10 keeps a TPC type's complex properties
   in that type's own table, so a derived table has no column for it. Map the member as a regular
   property, or remove the declaration.
