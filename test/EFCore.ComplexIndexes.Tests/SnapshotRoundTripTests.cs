@@ -1,5 +1,6 @@
 using System.Reflection;
 using EFCore.ComplexIndexes.PostgreSQL;
+using EFCore.ComplexIndexes.SqlServer;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.EntityFrameworkCore;
@@ -10,6 +11,7 @@ using Microsoft.EntityFrameworkCore.Metadata;
 using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Migrations.Design;
 using Microsoft.EntityFrameworkCore.Migrations.Operations;
+using Microsoft.EntityFrameworkCore.SqlServer.Design.Internal;
 using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.EntityFrameworkCore.Update.Internal;
 using Microsoft.Extensions.DependencyInjection;
@@ -32,11 +34,12 @@ public class SnapshotRoundTripTests
 {
     // ── Harness ──
 
-    private static TContext CreateContext<TContext>() where TContext : DbContext
+    private static TContext CreateContext<TContext>(bool sqlServer = false) where TContext : DbContext
     {
-        var options = new DbContextOptionsBuilder<TContext>()
-                     .UseNpgsql("Host=localhost;Database=test")
-                     .Options;
+        var builder = new DbContextOptionsBuilder<TContext>();
+        var options = sqlServer
+                          ? builder.UseSqlServer(MigrationHarness.SqlServerConnection).Options
+                          : builder.UseNpgsql("Host=localhost;Database=test").Options;
 
         return (TContext)Activator.CreateInstance(typeof(TContext), options)!;
     }
@@ -46,13 +49,16 @@ public class SnapshotRoundTripTests
     /// the model from the compiled <see cref="ModelSnapshot"/> — the exact source-model path of
     /// `dotnet ef migrations add`.
     /// </summary>
-    private static IRelationalModel BuildModelViaSnapshot<TContext>(Func<string, string>? editSnapshot = null) where TContext : DbContext
+    private static IRelationalModel BuildModelViaSnapshot<TContext>(Func<string, string>? editSnapshot = null, bool sqlServer = false) where TContext : DbContext
     {
-        using var context = CreateContext<TContext>();
+        using var context = CreateContext<TContext>(sqlServer);
 
         var designServices = new ServiceCollection();
         designServices.AddEntityFrameworkDesignTimeServices();
-        new NpgsqlDesignTimeServices().ConfigureDesignTimeServices(designServices);
+        if (sqlServer)
+            new SqlServerDesignTimeServices().ConfigureDesignTimeServices(designServices);
+        else
+            new NpgsqlDesignTimeServices().ConfigureDesignTimeServices(designServices);
         designServices.AddDbContextDesignTimeServices(context);
 
         using var designProvider = designServices.BuildServiceProvider();
@@ -103,9 +109,9 @@ public class SnapshotRoundTripTests
         return (ModelSnapshot)Activator.CreateInstance(snapshotType)!;
     }
 
-    private static IRelationalModel BuildLiveModel<TContext>() where TContext : DbContext
+    private static IRelationalModel BuildLiveModel<TContext>(bool sqlServer = false) where TContext : DbContext
     {
-        using var context = CreateContext<TContext>();
+        using var context = CreateContext<TContext>(sqlServer);
         return context.GetService<IDesignTimeModel>().Model.GetRelationalModel();
     }
 
@@ -143,6 +149,26 @@ public class SnapshotRoundTripTests
             source: BuildModelViaSnapshot<RoundTripIndexContext>(),
             target: BuildLiveModel<RoundTripIndexContext>());
 
+        Assert.IsEmpty(operations, string.Join("\n", operations.Select(o => o.GetType().Name)));
+    }
+
+    /// <summary>
+    /// The SQL Server satellite's options survive the snapshot: every option, property-level and
+    /// entity-level, a descending part and a placeholder filter. A property-level option is a plain
+    /// property annotation the snapshot writes in its own form (the data-compression enum, the
+    /// INCLUDE array), and one that came back different would rebuild the index on every
+    /// <c>migrations add</c>.
+    /// </summary>
+    [TestMethod(DisplayName = "SQL Server complex indexes survive the snapshot round trip without churn")]
+    public void SqlServer_complex_index_roundtrip_is_noop()
+    {
+        var source = BuildModelViaSnapshot<RoundTripSqlServerContext>(sqlServer: true);
+        var target = BuildLiveModel<RoundTripSqlServerContext>(sqlServer: true);
+
+        // Not vacuous: from nothing, the target creates every declared index.
+        Assert.HasCount(4, MigrationHarness.SqlServerDiff(null, target).OfType<CreateIndexOperation>());
+
+        var operations = MigrationHarness.SqlServerDiff(source, target);
         Assert.IsEmpty(operations, string.Join("\n", operations.Select(o => o.GetType().Name)));
     }
 
@@ -445,3 +471,41 @@ internal class RoundTripJsonContext(DbContextOptions<RoundTripJsonContext> optio
 }
 
 #pragma warning restore EF1001
+
+internal class RoundTripSqlServerContact
+{
+    public string Email { get; set; } = "";
+    public string Phone { get; set; } = "";
+}
+
+internal class RoundTripSqlServerCustomer
+{
+    public Guid                      Id        { get; set; }
+    public string                    Name      { get; set; } = "";
+    public DateTime?                 RevokedAt { get; set; }
+    public RoundTripSqlServerContact Contact   { get; set; } = new();
+}
+
+internal class RoundTripSqlServerContext(DbContextOptions<RoundTripSqlServerContext> options) : DbContext(options)
+{
+    public DbSet<RoundTripSqlServerCustomer> Customers => Set<RoundTripSqlServerCustomer>();
+
+    protected override void OnModelCreating(ModelBuilder modelBuilder)
+        => modelBuilder.Entity<RoundTripSqlServerCustomer>(b =>
+        {
+            b.ToTable("rt_customers");
+            b.HasKey(x => x.Id).IsClustered(false);
+            b.Property(x => x.Name).HasMaxLength(100);
+            b.ComplexProperty(x => x.Contact, c =>
+            {
+                c.Property(x => x.Email).HasMaxLength(256).HasComplexIndex(ix => ix
+                    .HasName("cx_rt_email").IsClustered().HasFillFactor(70).SortInTempDb().UseDataCompression(DataCompressionType.Row));
+                c.Property(x => x.Phone).HasMaxLength(32).HasComplexIndex(ix => SqlServerComplexIndexBuilderExtensions
+                    .IncludeProperties(ix.HasName("ix_rt_phone"), "Name").IsCreatedOnline());
+            });
+            b.HasComplexCompositeIndex(x => new { x.Name, Phone = DbOrder.Desc(x.Contact.Phone) }, ix => SqlServerComplexIndexBuilderExtensions
+                .IncludeProperties(ix.HasName("ix_rt_name_phone"), "Contact.Email")
+                .HasFillFactor(80).IsCreatedOnline().SortInTempDb().UseDataCompression(DataCompressionType.Page));
+            b.HasComplexIndex(x => x.Contact.Email, isUnique: true, filter: "{RevokedAt} IS NULL", indexName: "ux_rt_email_active");
+        });
+}

@@ -3,8 +3,8 @@
 # that ships one needs the same checks as main's: release/10.x holds the LTS line once the v10.0.0
 # tag exists, and net11 holds the .NET 11 retarget and ships 11.0.0-preview.N until then.
 #
-# Split into two jobs on purpose: the unit suite and the integration suite, the latter needing
-# Docker for its PostgreSQL container.
+# Split into jobs on purpose: the unit suite and one integration job per database, which need
+# Docker for their PostgreSQL and SQL Server containers.
 #
 # Actions are pinned to commit SHAs, not tags. A tag can be moved to a different commit — that is
 # how the tj-actions/changed-files compromise (March 2025) reached every workflow that trusted
@@ -112,7 +112,7 @@ jobs:
           CI: true
         run: >
           dotnet test -c Release --no-build
-          --filter "TestCategory=Integration"
+          --filter "TestCategory=Integration&TestCategory!=SqlServer"
           --logger "trx;LogFileName=integration.trx"
           --results-directory TestResults
 
@@ -121,6 +121,46 @@ jobs:
         if: always()
         with:
           name: test-results-integration
+          path: TestResults/*.trx
+          if-no-files-found: ignore
+
+  # Applies the SQL Server satellite's migrations to a live SQL Server 2022 and reads the indexes
+  # back (#100). Rendered SQL cannot show what the server refuses: #84, #88 and #90 each passed
+  # every SQL-text test and failed only here. A job of its own, so its name can be a required check
+  # and a slow SQL Server image start does not hold up the PostgreSQL lane. The image is amd64 only.
+  integration-sqlserver:
+    name: Integration (SQL Server 2022)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5.4.0
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Restore dependencies
+        run: dotnet restore
+
+      - name: Build
+        run: dotnet build -c Release --no-restore
+
+      # CI=true, as above: an unavailable container fails the job instead of going inconclusive.
+      - name: Integration tests
+        env:
+          CI: true
+        run: >
+          dotnet test -c Release --no-build
+          --filter "TestCategory=Integration&TestCategory=SqlServer"
+          --logger "trx;LogFileName=integration-sqlserver.trx"
+          --results-directory TestResults
+
+      - name: Upload test results
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        if: always()
+        with:
+          name: test-results-integration-sqlserver
           path: TestResults/*.trx
           if-no-files-found: ignore
 
@@ -147,7 +187,7 @@ jobs:
   pack:
     name: Pack
     runs-on: ubuntu-latest
-    needs: [ test, integration ]
+    needs: [ test, integration, integration-sqlserver ]
 
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0

@@ -152,10 +152,11 @@ public class FilterPlaceholderTests
     [TestMethod(DisplayName = "SQL Server delimits resolved columns with brackets")]
     public void SqlServer_quotes_with_brackets()
     {
-        var operations = MigrationHarness.SqlServerDiff(null, MigrationHarness.SqlServerModel<PortableContext>());
+        var target     = MigrationHarness.SqlServerModel<PortableContext>();
+        var operations = MigrationHarness.SqlServerDiff(null, target);
 
         Assert.AreEqual("[revoked_at] IS NULL", FilterOf(operations, "ux_email_active"));
-        StringAssert.Contains(MigrationHarness.SqlServerSql(operations), "WHERE [revoked_at] IS NULL");
+        StringAssert.Contains(MigrationHarness.SqlServerSql(operations, target), "WHERE [revoked_at] IS NULL");
     }
 
     [TestMethod(DisplayName = "A provider without a satellite resolves with ANSI quotes")]

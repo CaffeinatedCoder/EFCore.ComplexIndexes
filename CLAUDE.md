@@ -25,8 +25,11 @@ Tests run in parallel at the method level (`Scope = ExecutionScope.MethodLevel`)
 `PostgresIntegrationTests` class (`[TestCategory("Integration")]`, `[DoNotParallelize]`) spins up a
 PostgreSQL 18 Testcontainer and applies generated DDL for real; `Postgres16IntegrationTests` does
 the same on PostgreSQL 16, one fresh database per test, so an extension an earlier test installed
-cannot hide a migration that would not install it. Without Docker they need excluding via
-`--filter "TestCategory!=Integration"`.
+cannot hide a migration that would not install it. `SqlServerIntegrationTests` (also
+`[TestCategory("SqlServer")]`, run by a CI job of its own) does the same against SQL Server 2022, a
+database per test, and reads the indexes back from `sys.indexes`. Without Docker they need excluding
+via `--filter "TestCategory!=Integration"`. The SQL Server image is amd64 only: on Apple Silicon it
+needs Rosetta in the Docker VM (OrbStack: `orb config set rosetta true`), and crashes under QEMU.
 
 Locally, no Docker means those tests go **inconclusive**. When the `CI` environment variable is set
 they **fail** instead — an unreachable container must not quietly retire the end-to-end layer while
@@ -35,7 +38,8 @@ the build reports green.
 ## CI
 
 `.github/workflows/dotnet.yml` runs on pushes and PRs to `main`, `release/**` and `net11`: the
-unit suite, the integration suite (Docker), then a pack job whose value is partly that packing
+unit suite, the integration suites (Docker; `Integration (PostgreSQL 18)` and
+`Integration (SQL Server 2022)`, one job each), then a pack job whose value is partly that packing
 *is* a check — a package declaring `PackageReadmeFile` without packing the file fails with
 NU5019. Everything runs on
 ubuntu-latest. Actions in both workflows are pinned to commit SHAs with the tag in a trailing

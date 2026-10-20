@@ -124,15 +124,25 @@ internal static class MigrationHarness
         return Render(context, operations);
     }
 
-    public static string SqlServerSql(IEnumerable<MigrationOperation> operations)
+    /// <summary>
+    /// Renders operations to SQL with the stock SQL Server generator and the target model, as
+    /// <c>database update</c> does.
+    /// </summary>
+    /// <remarks>
+    /// The model is required because SQL Server's generator answers differently without one: it
+    /// takes a missing model for a pre-2.0 one and adds its legacy <c>IS NOT NULL</c> filter to every
+    /// unique index over nullable columns (<c>UseLegacyIndexFilters</c>). Rendering with no model
+    /// showed a filter <c>database update</c> never adds, which is what hid #88.
+    /// </remarks>
+    public static string SqlServerSql(IEnumerable<MigrationOperation> operations, IRelationalModel target)
     {
         using var context = new EmptyContext(new DbContextOptionsBuilder().UseSqlServer(SqlServerConnection).Options);
-        return Render(context, operations);
+        return Render(context, operations, target.Model);
     }
 
-    private static string Render(DbContext context, IEnumerable<MigrationOperation> operations)
+    private static string Render(DbContext context, IEnumerable<MigrationOperation> operations, IModel? model = null)
         => string.Join("\n", context.GetService<IMigrationsSqlGenerator>()
-                                    .Generate([.. operations], model: null)
+                                    .Generate([.. operations], model)
                                     .Select(command => command.CommandText));
 
     public static DbContextOptions SqliteOptions(DbConnection connection)
