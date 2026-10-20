@@ -118,9 +118,11 @@ covers your current model only.
 ## Changed answers in 5.5.0
 
 Most of these make the first `migrations add` after the upgrade drop and re-create some indexes or
-constraints. On every provider, the model's `CustomIndex:RenderingVersion` becomes 3, and a model
-that declares only PostgreSQL constraints gets the key for the first time. So that migration also
-rewrites the snapshot. No other index changes.
+constraints. Until that migration exists, `has-pending-model-changes` reports changes and
+`Migrate()` raises EF Core's pending-model-changes error. On every provider, the model's
+`CustomIndex:RenderingVersion` becomes 3, and a model that declares only PostgreSQL constraints
+gets the key for the first time. So that migration also rewrites the snapshot. No other index
+changes. The new version alone is not a pending change.
 
 ### Unique indexes over nullable columns on SQL Server
 
@@ -273,9 +275,10 @@ transaction leaves the table as it was. Don't edit the marker: the generator thr
 didn't write.
 
 `migrations add` still fails when `UseComplexIndexes()` is called before `UseSqlite()`, or when
-another package replaces `IMigrationsSqlGenerator` with a generator that does not derive from
-SQLite's, since EF Core keeps only one replacement. The error names the generator in effect. A
-replacement keyed on SQLite's generator
+another package replaces `IMigrationsSqlGenerator` without naming SQLite's generator as the one it
+replaces (`ReplaceService<IMigrationsSqlGenerator, TNew>()`), since EF Core keeps only one
+replacement. That holds even when `TNew` derives from SQLite's generator. The error names the
+generator in effect. A replacement keyed on SQLite's generator
 (`ReplaceService<IMigrationsSqlGenerator, SqliteMigrationsSqlGenerator, TNew>()`), or a provider
 extension registered before `UseComplexIndexes()`, is wrapped and keeps working.
 
@@ -313,6 +316,44 @@ Nothing is re-created. An application with that registration now fails in `Ensur
 Replace `UseComplexIndexes()` with the provider package's method. A database `EnsureCreated()` built that
 way has the indexes without their options: drop and re-create them, or rebuild the database. A model
 shared with SQLite tests is unaffected, since the check covers only the provider the context uses.
+
+### The core differ refuses the satellites' constraints and null filter
+
+On PostgreSQL, the core differ also refuses a model with an exclusion constraint, a temporal
+constraint or a temporal foreign key. On SQL Server, it refuses a unique complex index over nullable
+columns declared without a filter, which the satellite gives EF Core's `IS NOT NULL` filter. The
+error names the declaration and the satellite's registration.
+
+This affects an application that calls `UseComplexIndexes()` with `UseNpgsql(…)` or
+`UseSqlServer(…)` instead of `UseNpgsqlComplexIndexes()` or `UseSqlServerComplexIndexes()`, and a
+`dotnet ef` run without the satellite's `.targets`. The core differ never renders these
+declarations, so `EnsureCreated()` created the tables without the constraints and the unique index
+without its filter, and applied cleanly. Such an application now fails in `EnsureCreated()`,
+`GenerateCreateScript()` and `Migrate()`, whose pending-model-changes check runs the same differ.
+Replace `UseComplexIndexes()` with the satellite's method. Nothing is re-created, and migrations
+that `dotnet ef` scaffolded with the satellite's `.targets` already hold the right DDL.
+
+A database `EnsureCreated()` built under `UseComplexIndexes()` lacks what was dropped. On
+PostgreSQL, list the exclusion and temporal constraints it has and compare them with the model:
+
+```sql
+SELECT conrelid::regclass AS table_name, conname, contype
+FROM pg_constraint
+WHERE contype = 'x' OR conperiod;
+```
+
+`conperiod` exists from PostgreSQL 18, which temporal constraints need; on an earlier server, leave
+out `OR conperiod`. On SQL Server, list the unique indexes without a filter, and look for complex
+indexes over nullable columns among them:
+
+```sql
+SELECT OBJECT_NAME(object_id) AS table_name, name
+FROM sys.indexes
+WHERE is_unique = 1 AND is_primary_key = 0 AND is_unique_constraint = 0 AND has_filter = 0;
+```
+
+Add what is missing from the script `GenerateCreateScript()` writes under the satellite's
+registration, or rebuild the database. A model shared with SQLite tests is unaffected.
 
 ### INCLUDE entries must name a column
 

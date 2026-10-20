@@ -22,7 +22,7 @@ public partial class PackagingConventionTests
     private const string ReleaseNotesTarget = "SetPackageReleaseNotesFromChangelog";
 
     // Both packing tests write the same obj/ nuspec, so they take turns.
-    [TestMethod(DisplayName = "Each package's release notes are its changelog's section for the shipped version")]
+    [TestMethod(DisplayName = "Each package's release notes are its changelog's section for the shipped version, and its README links the docs at the tag")]
     [DoNotParallelize]
     public void Packed_release_notes_are_the_versions_changelog_section()
     {
@@ -44,11 +44,23 @@ public partial class PackagingConventionTests
                 var expected = ExpectedReleaseNotes(File.ReadAllText(project.Changelog), version, project.PackageId);
                 Assert.IsNotNull(expected, $"{project.Changelog} has no section for {version}.");
 
+                var package = Path.Combine(output, $"{project.PackageId}.{version}.nupkg");
+
                 Assert.AreEqual(
                     expected,
-                    PackedReleaseNotes(Path.Combine(output, $"{project.PackageId}.{version}.nupkg")),
+                    PackedReleaseNotes(package),
                     $"{project}'s packed release notes are not the {version} section of its CHANGELOG.md. "
                   + "The target that sets them is in src/Directory.Build.targets.");
+
+                // A published package cannot change, and main moves on after the tag (#151).
+                var source = File.ReadAllText(project.Readme).Replace("\r", "");
+
+                StringAssert.Contains(source, $"{RepositoryUrl}/blob/main/", $"{project.Readme} no longer links the docs at main, so this check checks nothing.");
+                Assert.AreEqual(
+                    FrozenLinks(source, version).TrimEnd('\n'),
+                    PackedReadme(package).Replace("\r", "").TrimEnd('\n'),
+                    $"{project}'s packed README is not its README.md with the docs linked at v{version}. "
+                  + "The target that rewrites it is in src/Directory.Build.targets.");
             }
         }
         finally
@@ -118,6 +130,8 @@ public partial class PackagingConventionTests
             "",
             "- **`Type.Member`**, a hook: `@(Compile)` and 100%3B stay as written; so does 50 % of it.",
             "- Docs: [`HasExclusionConstraint`](https://example.com/docs.md#exclusion-constraints-exclude), see also [#1](https://example.com/issues/1).",
+            $"- Docs: [the guide]({RepositoryUrl}/blob/main/docs/upgrading.md#changed-answers-in-550), [the folder]({RepositoryUrl}/tree/main/docs/), [the issues]({RepositoryUrl}/issues/151).",
+            $"- Docs: [another repository]({RepositoryUrl}.Extra/blob/main/README.md) and [another branch]({RepositoryUrl}/blob/release/5.x/README.md) stay as written.",
             "",
             "## [11.0.0-preview.1] — 2026-10-01",
             "",
@@ -185,9 +199,9 @@ public partial class PackagingConventionTests
                            .TakeWhile(line => !line.StartsWith("## ", StringComparison.Ordinal))
                            .Select(PlainText);
 
-        return string.Join("\n", section).Trim()
+        return FrozenLinks(string.Join("\n", section).Trim(), version)
              + "\n\nFull changelog: "
-             + $"https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/v{version}/src/{packageId}/CHANGELOG.md";
+             + $"{RepositoryUrl}/blob/v{version}/src/{packageId}/CHANGELOG.md";
 
         static string PlainText(string line)
         {
@@ -198,6 +212,27 @@ public partial class PackagingConventionTests
 
             return line.Replace("`", "").Replace("**", "");
         }
+    }
+
+    private const string RepositoryUrl = "https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes";
+
+    /// <summary>
+    /// Links to this repository at <c>main</c> as they read in a package of <paramref name="version"/>:
+    /// at its tag, since a published package cannot follow <c>main</c> (#151).
+    /// </summary>
+    private static string FrozenLinks(string text, string version) =>
+        text.Replace($"{RepositoryUrl}/blob/main/", $"{RepositoryUrl}/blob/v{version}/", StringComparison.Ordinal)
+            .Replace($"{RepositoryUrl}/tree/main/", $"{RepositoryUrl}/tree/v{version}/", StringComparison.Ordinal);
+
+    private static string PackedReadme(string package)
+    {
+        using var archive = ZipFile.OpenRead(package);
+        var readme = archive.GetEntry("README.md");
+
+        Assert.IsNotNull(readme, $"{package} has no README.md at its root.");
+
+        using var reader = new StreamReader(readme.Open());
+        return reader.ReadToEnd();
     }
 
     private static string PackedReleaseNotes(string package)

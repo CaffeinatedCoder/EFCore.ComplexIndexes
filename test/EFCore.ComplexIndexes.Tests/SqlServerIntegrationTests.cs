@@ -229,13 +229,14 @@ public class SqlServerIntegrationTests
         protected virtual string Table       => "customers";
         protected virtual int    PhoneLength => 32;
         protected virtual int    EmailLength => 256;
+        protected virtual int    NameLength  => 100;
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
             => modelBuilder.Entity<Customer>(b =>
             {
                 b.ToTable(Table);
                 b.HasKey(x => x.Id).IsClustered(false);
-                b.Property(x => x.Name).HasColumnName("name").HasMaxLength(100);
+                b.Property(x => x.Name).HasColumnName("name").HasMaxLength(NameLength);
                 b.Property(x => x.RevokedAt).HasColumnName("revoked_at");
                 b.ComplexProperty(x => x.Contact, c =>
                 {
@@ -364,6 +365,65 @@ public class SqlServerIntegrationTests
         Sql("INSERT INTO cars (Registration_Vin) VALUES (NULL)");
         Sql("INSERT INTO cars (Registration_Vin) VALUES (N'WVW00000000000001')");
         AssertDuplicateRefused("INSERT INTO cars (Registration_Vin) VALUES (N'WVW00000000000001')");
+    }
+
+    private class PropertyLevelOptionalContext(DbContextOptions<PropertyLevelOptionalContext> options) : DbContext(options)
+    {
+        protected override void OnModelCreating(ModelBuilder modelBuilder)
+            => modelBuilder.Entity<Car>(b =>
+            {
+                b.ToTable("cars");
+                b.ComplexProperty(x => x.Registration, c => c.Property(r => r.Vin).HasMaxLength(17).HasComplexIndex(isUnique: true, indexName: "ux_vin"));
+            });
+    }
+
+    [TestMethod(DisplayName = "Declared on the property, a unique index over an optional complex property admits rows without a value (#155)")]
+    public void Property_level_unique_index_over_nullable_columns_admits_rows_without_a_value()
+    {
+        Migrate(null, Model<PropertyLevelOptionalContext>());
+
+        Assert.AreEqual("([Registration_Vin] IS NOT NULL)", AssertIndex("cars", "ux_vin").Filter);
+
+        Sql("INSERT INTO cars (Registration_Vin) VALUES (NULL)");
+        Sql("INSERT INTO cars (Registration_Vin) VALUES (NULL)");
+        Sql("INSERT INTO cars (Registration_Vin) VALUES (N'WVW00000000000001')");
+        AssertDuplicateRefused("INSERT INTO cars (Registration_Vin) VALUES (N'WVW00000000000001')");
+    }
+
+    /// <summary>
+    /// With <c>UseComplexIndexes()</c> in place of <c>UseSqlServerComplexIndexes()</c>, the core
+    /// differ ran, left out #88's filter, and <c>EnsureCreated()</c> applied cleanly: the index
+    /// admitted one row without a value and refused the second (#150). It now refuses before
+    /// anything is created.
+    /// </summary>
+    [TestMethod(DisplayName = "UseComplexIndexes() refuses a unique index over nullable columns at EnsureCreated, where it applied without the filter")]
+    public void Core_registration_refuses_a_unique_index_over_nullable_columns()
+    {
+        var options = new DbContextOptionsBuilder<OptionalComplexContext>()
+                     .UseSqlServer(ConnectionString)
+                     .UseComplexIndexes()
+                     .Options;
+
+        InvalidOperationException? refusal = null;
+        using (var context = new OptionalComplexContext(options))
+        {
+            try { context.Database.EnsureCreated(); }
+            catch (InvalidOperationException e) { refusal = e; }
+        }
+
+        if (refusal is null)
+        {
+            var filter = AssertIndex("cars", "ux_vin").Filter ?? "none";
+            Sql("INSERT INTO cars (Registration_Vin) VALUES (NULL)");
+            var second = "admitted";
+            try { Sql("INSERT INTO cars (Registration_Vin) VALUES (NULL)"); }
+            catch (SqlException e) { second = $"refused it with {e.Number}"; }
+
+            Assert.Fail($"EnsureCreated() applied cleanly under UseComplexIndexes(): ux_vin has filter {filter}, and a second row without a VIN was {second}.");
+        }
+
+        StringAssert.Contains(refusal.Message, "call UseSqlServerComplexIndexes() instead of UseComplexIndexes()");
+        Assert.IsNull(ReadIndex("cars", "ux_vin"), "The refusal came after the index was created.");
     }
 
     // ── TPC: a declaration on a concrete base holds on every table of the hierarchy (#93) ──
@@ -551,6 +611,32 @@ public class SqlServerIntegrationTests
         Assert.IsTrue(AssertIndex("clients", "IX_clients_phone").IsUnique);
         CollectionAssert.AreEqual(new[] { "email" }, AssertIndex("clients", "ix_email_v2").Keys);
         AssertDuplicateRefused("INSERT INTO clients (Id, name, email, phone) VALUES (NEWID(), N'b', N'b@x', N'1')");
+    }
+
+    // The index reads name only through its filter, and name shrinks (#156).
+    private class FilterColumnV1Context(DbContextOptions options) : CustomerContext(options)
+    {
+        protected override void Declare(EntityTypeBuilder<Customer> b)
+            => b.HasComplexIndex(x => x.Contact.Email, isUnique: true, filter: "{Name} <> N''", indexName: "ux_email_named");
+    }
+
+    private class FilterColumnV2Context(DbContextOptions<FilterColumnV2Context> options) : FilterColumnV1Context(options)
+    {
+        protected override int NameLength => 50;
+    }
+
+    [TestMethod(DisplayName = "ALTER COLUMN on a column only a filter names applies (#156)")]
+    public void Alter_column_named_only_in_a_filter_applies()
+    {
+        var v1 = Model<FilterColumnV1Context>();
+        Migrate(null, v1);
+        Sql("INSERT INTO customers (Id, name, email, phone) VALUES (NEWID(), N'a', N'a@x', N'1')");
+
+        // A filtered index depends on the columns its filter names: Msg 5074 while it exists.
+        Migrate(v1, Model<FilterColumnV2Context>());
+
+        Assert.AreEqual("([name]<>N'')", AssertIndex("customers", "ux_email_named").Filter);
+        AssertDuplicateRefused("INSERT INTO customers (Id, name, email, phone) VALUES (NEWID(), N'b', N'a@x', N'2')");
     }
 
     // ── The clustered slot and key names (#90) ──

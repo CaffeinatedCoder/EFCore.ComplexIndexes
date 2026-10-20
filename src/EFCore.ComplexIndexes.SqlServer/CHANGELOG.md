@@ -21,6 +21,7 @@ The last 5.x minor with a change of its own: the line refuses EF Core 11, whose 
 ### Changed
 
 - Packaging: each package carries the version's section of its changelog as its NuGet release notes, which nuget.org's Release Notes tab and Visual Studio's Updates tab show.
+- Packaging: the release notes, the README on nuget.org and the GitHub release link the documentation at the version's tag, so they keep describing the version they shipped with after `main` moves on to the next line.
 
 ### Fixed
 

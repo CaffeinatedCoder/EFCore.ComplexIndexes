@@ -262,6 +262,11 @@ not only to its dispatch, or the sweep cannot see it.
   mind that the two `.targets` are redundant, that provider index options do not discriminate which
   differ ran, and that the conditions — cold checkout, pre-built feed, private package cache —
   are the axis the bug hides on.
+- `plain-docs` — the voice for the consumer pages (the root README, the package READMEs, `docs/`):
+  plain, written to "you", example first, edge cases last, every fact as exact as before. Its last
+  section lists what a rewrite must keep: code blocks byte for byte, the headings published
+  changelogs link to, absolute links in packed READMEs, and the API names `DocumentationApiTests`
+  reads. Ported from CodoMetis.ValueRanges and CodoMetis.TypeKit.
 
 ## Architecture
 
@@ -290,7 +295,12 @@ sets `PackageReleaseNotes` from it before `GenerateNuspec`, for the three shippi
 nuget.org renders the field as plain text (measured on real package pages and in NuGetGallery's
 `PreFormattedText`: line breaks kept, bare URLs linked, Markdown shown literally), so links become
 `text (url)`, backticks, bold markers and the `### ` of a heading are dropped, and one footer line
-links the changelog at the version's tag. The pack fails, naming the file, on a missing changelog,
+links the changelog at the version's tag. Links into this repository at `blob/main/` (or
+`tree/main/`) are rewritten to the version's tag, in the notes and in a copy of the README packed in
+place of the source (#151): a package cannot change once published, and after the `v5.5.0` tag
+`main` is SchemaKit. The release job in `release.yml` does the same to the GitHub release's notes.
+The source keeps `blob/main`, which `DocumentationLinkTests` resolves against the checkout, so on
+the tagged commit that test is what proves the frozen links resolve. The pack fails, naming the file, on a missing changelog,
 a missing or empty section, or notes over nuget.org's 35,000 characters: a package with nothing in
 a version says "No change in this package.", so the section always exists. The target also adds
 the changelog to `NuGetPackInput`, since `GenerateNuspec` is incremental and a repack would
