@@ -99,7 +99,7 @@ be the first sign it was running on a version this package never supported.
 
 ## Changed answers in 5.5.0
 
-Each of these makes the first `migrations add` after the upgrade drop and re-create some indexes or
+Most of these make the first `migrations add` after the upgrade drop and re-create some indexes or
 constraints. On every provider the model's `CustomIndex:RenderingVersion` becomes 3, so that
 migration also rewrites the snapshot; no other index changes.
 
@@ -190,3 +190,21 @@ declarations on the table, make the change, then declare them again.
 A SQLite database that went through such a migration before is missing those indexes while its
 snapshot lists them. Check with `SELECT name FROM sqlite_master WHERE type = 'index'`, and re-create
 any missing one with `migrationBuilder.Sql(…)` in a new migration.
+
+### The core differ refuses SQL Server and PostgreSQL index options
+
+On SQL Server and PostgreSQL, the provider-agnostic core differ refuses a complex index that carries
+one of that provider's index options, such as `IsClustered()`, `HasFillFactor(…)`,
+`IncludeProperties(…)` or `UseGin()`. The error names the satellite's registration.
+
+The core differ runs where the satellite's should when an application calls `UseComplexIndexes()`
+instead of `UseSqlServerComplexIndexes()` or `UseNpgsqlComplexIndexes()`, or when `dotnet ef` runs
+without the satellite's `.targets`. It forwards no property-level option, so `EnsureCreated()`
+created such an index without its options and applied cleanly. Entity-level options went through
+without their checks, and an `INCLUDE` list kept its property paths as column names.
+
+Nothing is re-created. An application with that registration now fails in `EnsureCreated()`,
+`GenerateCreateScript()` and `Migrate()`, whose pending-model-changes check runs the same differ.
+Replace `UseComplexIndexes()` with the satellite's method. A database `EnsureCreated()` built that
+way has the indexes without their options: drop and re-create them, or rebuild the database. A model
+shared with SQLite tests is unaffected, since the check covers only the provider being diffed.
