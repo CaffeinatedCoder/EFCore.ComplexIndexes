@@ -902,8 +902,15 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
         var sourceConstraints = BuildExclusionDescriptors(source);
         var targetConstraints = BuildExclusionDescriptors(target);
 
-        // Target only — a snapshot that already contains a collision must stay diffable.
+        // Target only — a snapshot that already contains a collision, or a filter refused since it
+        // was scaffolded, must stay diffable.
         ValidateUniqueExclusionNames(targetConstraints);
+
+        foreach (var constraint in targetConstraints)
+        {
+            if (constraint.FilterRefusal is { } refusal)
+                throw new InvalidOperationException(refusal);
+        }
 
         if (target is not null)
         {
@@ -1139,17 +1146,20 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
             // Pinned to the original JSON rendering: the constraint enforces the same rows
             // either way, so the 5.4.0 rendering change would only drop and re-add it.
             // Non-string members are the exception (ResolveUnmappedPart).
-            ResolveExclusionFilter(entityType, def.Filter, storeObject),
+            ResolveExclusionFilter(entityType, def.Filter, storeObject, out var filterRefusal),
             def.Deferrable,
-            def.InitiallyDeferred);
+            def.InitiallyDeferred)
+        {
+            FilterRefusal = filterRefusal
+        };
     }
 
-    private string? ResolveExclusionFilter(IEntityType entityType, string? filter, StoreObjectIdentifier storeObject)
+    private string? ResolveExclusionFilter(IEntityType entityType, string? filter, StoreObjectIdentifier storeObject, out string? refusal)
     {
         _resolvingExclusionFilter = true;
         try
         {
-            return ResolveFilter(entityType, filter, storeObject, renderingVersion: 1);
+            return ResolveFilter(entityType, filter, storeObject, renderingVersion: 1, out refusal);
         }
         finally
         {
@@ -1603,6 +1613,9 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
     {
         // For messages only, outside equality: the copies of one declaration on a TPC type share it.
         public TpcDeclaration? Origin { get; init; }
+
+        // Outside equality: why the filter cannot apply, raised for the target model only.
+        public string? FilterRefusal { get; init; }
 
         public bool Equals(ExclusionDescriptor? other) =>
             other is not null

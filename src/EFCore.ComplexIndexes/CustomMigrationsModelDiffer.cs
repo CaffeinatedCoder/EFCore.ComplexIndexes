@@ -154,8 +154,10 @@ public class CustomMigrationsModelDiffer(
         ValidateNoNativeIndexNameCollision(target, targetIndexes);
         ValidateIndexNameLengths(target, targetIndexes);
         ValidateQueryUsableLeadingParts(targetIndexes);
+        ValidateFilterComparisons(targetIndexes);
         ValidateRenderableParts(targetIndexes);
         ValidateNoSatelliteOptions(target);
+        ValidateIncludedColumns(target, targetIndexes);
         if (target is not null)
             ValidateTargetIndexes(target, targetIndexes);
 
@@ -678,7 +680,9 @@ public class CustomMigrationsModelDiffer(
     /// <summary>
     /// Resolves each entry of an INCLUDE-style column list: an entry that matches a property path
     /// (including complex members) becomes its mapped column name; anything else passes through
-    /// verbatim as a column name, so pre-v5 declarations keep working.
+    /// verbatim as a column name, so pre-v5 declarations keep working. In the target model, an
+    /// entry under <c>Npgsql:IndexInclude</c> or <c>SqlServer:Include</c> that names no column of
+    /// the table fails at <c>migrations add</c>.
     /// </summary>
     protected static object? ResolveIncludeList(IEntityType entityType, object? value, StoreObjectIdentifier storeObject)
     {
@@ -788,7 +792,10 @@ public class CustomMigrationsModelDiffer(
     /// <param name="storeObject">The table whose column names are used.</param>
     /// <returns>The filter with every placeholder replaced, or <paramref name="filter"/> unchanged when it has none.</returns>
     protected string? ResolveFilter(IEntityType entityType, string? filter, StoreObjectIdentifier storeObject)
-        => ResolveFilter(entityType, filter, storeObject, renderingVersion: null);
+    {
+        var resolved = ResolveFilter(entityType, filter, storeObject, renderingVersion: null, out var refusal);
+        return refusal is null ? resolved : throw new InvalidOperationException(refusal);
+    }
 
     /// <inheritdoc cref="ResolveFilter(IEntityType, string?, StoreObjectIdentifier)"/>
     /// <param name="entityType">The entity type the placeholders are resolved against.</param>
@@ -798,8 +805,19 @@ public class CustomMigrationsModelDiffer(
     /// Renders JSON members under this <see cref="ComplexIndexAnnotations.RenderingVersion"/> instead of
     /// the model's; exclusion constraint filters pass 1 so that their DDL never changes.
     /// </param>
-    internal string? ResolveFilter(IEntityType entityType, string? filter, StoreObjectIdentifier storeObject, int? renderingVersion)
+    /// <param name="refusal">
+    /// The message to fail with when the filter compares a JSON member stored as text with a column,
+    /// or null. Returned rather than thrown so that only the target model is refused: a snapshot
+    /// holding such a filter must still diff, or the migration removing it could not be scaffolded.
+    /// </param>
+    internal string? ResolveFilter(
+        IEntityType           entityType,
+        string?               filter,
+        StoreObjectIdentifier storeObject,
+        int?                  renderingVersion,
+        out string?           refusal)
     {
+        refusal = null;
         if (filter is null || !filter.Contains('{'))
             return filter;
 
@@ -839,7 +857,7 @@ public class CustomMigrationsModelDiffer(
         }
 
         var resolved = sql.ToString();
-        ThrowIfFallbackComparedWithColumn(entityType, resolved, fallbacks, typedSpans);
+        refusal = FallbackComparedWithColumn(entityType, resolved, fallbacks, typedSpans);
         return resolved;
     }
 
@@ -848,7 +866,7 @@ public class CustomMigrationsModelDiffer(
     // refused at apply ("operator does not exist: text < timestamp with time zone"), and the cast
     // EF Core's queries use cannot appear in an index or constraint. The comparison is refused here,
     // at migrations add. A null test and a comparison with a string literal still apply, as before.
-    private static void ThrowIfFallbackComparedWithColumn(
+    private static string? FallbackComparedWithColumn(
         IEntityType                                                      entityType,
         string                                                           sql,
         IReadOnlyList<(int Start, int End, string Path, string StoreType)> fallbacks,
@@ -863,13 +881,15 @@ public class CustomMigrationsModelDiffer(
                           || before.Success && (sql[..before.Index].EndsWith('"') || EndsTypedSpan(before.Index));
 
             if (withColumn)
-                throw new InvalidOperationException(
+                return
                     $"A filter on entity '{entityType.DisplayName()}' compares the JSON member '{fallback.Path}' with a column. "
                   + $"The member is {fallback.StoreType} stored as text in its document, and PostgreSQL can neither compare that text "
                   + "with a typed column nor index the cast EF Core's queries use (it is not IMMUTABLE), so the migration would fail "
                   + "at apply. Test the member with IS NULL or compare it with a string literal in the string filter overload, or "
-                  + "map it to a regular column.");
+                  + "map it to a regular column.";
         }
+
+        return null;
 
         bool StartsTypedSpan(int index) => typedSpans.Any(span => span.Start == index);
         bool EndsTypedSpan(int index) => typedSpans.Any(span => span.End == index);
@@ -1167,6 +1187,17 @@ public class CustomMigrationsModelDiffer(
         }
     }
 
+    // The refusal ResolveFilter recorded while building the descriptor. Target model only: a snapshot
+    // scaffolded before the check existed must stay diffable, so that the filter can be removed.
+    private static void ValidateFilterComparisons(HashSet<IndexDescriptor> descriptors)
+    {
+        foreach (var descriptor in descriptors)
+        {
+            if (descriptor.FilterRefusal is { } refusal)
+                throw new InvalidOperationException(refusal);
+        }
+    }
+
     /// <summary>
     /// Fails, on a provider no satellite serves, when an index has a part only the PostgreSQL
     /// satellite's generator renders: <c>NULLS FIRST</c>/<c>NULLS LAST</c> ordering or an expression.
@@ -1199,6 +1230,51 @@ public class CustomMigrationsModelDiffer(
                 $"The complex index '{descriptor.IndexName}' on table '{descriptor.TableName}' {what}, which this package "
               + $"renders only on PostgreSQL, through the EFCore.ComplexIndexes.PostgreSQL satellite. {_provider} has no "
               + $"satellite, so the index would fail to apply or apply without it. {remedy}");
+        }
+    }
+
+    // The INCLUDE lists ResolveIncludeList resolves, by the key the satellite stores them under.
+    private static readonly HashSet<string> IncludeListAnnotations = ["Npgsql:IndexInclude", "SqlServer:Include"];
+
+    /// <summary>
+    /// Fails when an <c>INCLUDE</c> entry names no column of the index's table.
+    /// </summary>
+    /// <remarks>
+    /// <see cref="ResolveIncludeList"/> passes an entry that names no property through verbatim, as a
+    /// column name. When the property an entry named is removed, both sides of the diff resolve to
+    /// the same text, no index operation is emitted, and the migration is a bare <c>DROP COLUMN</c>:
+    /// PostgreSQL drops the index with the column and applies cleanly, SQL Server refuses the drop
+    /// (Msg 5074). Names compare by <see cref="IndexNameComparer"/>, the provider's identifier rule.
+    /// Only the list of the provider being diffed is checked, after <see cref="ValidateNoSatelliteOptions"/>
+    /// has made sure its satellite resolved it: a model shared with SQLite tests carries options SQLite
+    /// ignores. Target model only, so that a snapshot holding such an entry stays diffable and the
+    /// declaration can be fixed.
+    /// </remarks>
+    private void ValidateIncludedColumns(IRelationalModel? target, HashSet<IndexDescriptor> descriptors)
+    {
+        if (target is null || _satellite is null)
+            return;
+
+        foreach (var descriptor in descriptors)
+        {
+            if (target.FindTable(descriptor.TableName, descriptor.Schema) is not { } table)
+                continue;
+
+            foreach (var (key, value) in descriptor.ProviderAnnotations)
+            {
+                if (!IncludeListAnnotations.Contains(key) || !_satellite.IsOption(key) || value is not string[] entries)
+                    continue;
+
+                var missing = entries.FirstOrDefault(entry => !table.Columns.Any(c => IndexNameComparer.Equals(c.Name, entry)));
+                if (missing is null)
+                    continue;
+
+                throw new InvalidOperationException(
+                    $"The complex index '{descriptor.IndexName}' on table '{descriptor.TableName}' includes '{missing}', which is "
+                  + "neither a property path of the entity nor a column of the table. An INCLUDE entry naming a removed property "
+                  + "leaves the index unchanged in the migration, and dropping the column then drops the index on PostgreSQL "
+                  + "and fails on SQL Server. Remove the entry from IncludeProperties, or name a mapped property or column.");
+            }
         }
     }
 
@@ -1518,10 +1594,13 @@ public class CustomMigrationsModelDiffer(
                 providerAnnotations[annotation.Name] = TransformIndexAnnotation(entityType, annotation.Name, annotation.Value, storeObject);
         }
 
-        var filter = ResolveFilter(entityType, declaration.Filter, storeObject)
+        var filter = ResolveFilter(entityType, declaration.Filter, storeObject, renderingVersion: null, out var filterRefusal)
                   ?? ImplicitFilter(entityType, storeObject, part.IsExpression ? [] : [part.Value], declaration.IsUnique, providerAnnotations);
 
-        return new IndexDescriptor(tableName, schema, [part], indexName, declaration.IsUnique, filter, providerAnnotations);
+        return new IndexDescriptor(tableName, schema, [part], indexName, declaration.IsUnique, filter, providerAnnotations)
+        {
+            FilterRefusal = filterRefusal
+        };
     }
 
     private IndexDescriptor ResolveEntityLevelIndex(
@@ -1570,10 +1649,13 @@ public class CustomMigrationsModelDiffer(
         foreach (var (key, value) in declaration.ProviderAnnotations)
             providerAnnotations[key] = TransformIndexAnnotation(entityType, key, value, storeObject);
 
-        var filter = ResolveFilter(entityType, declaration.Filter, storeObject)
+        var filter = ResolveFilter(entityType, declaration.Filter, storeObject, renderingVersion: null, out var filterRefusal)
                   ?? ImplicitFilter(entityType, storeObject, [.. parts.Where(p => !p.IsExpression).Select(p => p.Value)], declaration.IsUnique, providerAnnotations);
 
-        return new IndexDescriptor(tableName, schema, parts, indexName, declaration.IsUnique, filter, providerAnnotations);
+        return new IndexDescriptor(tableName, schema, parts, indexName, declaration.IsUnique, filter, providerAnnotations)
+        {
+            FilterRefusal = filterRefusal
+        };
     }
 
     // Builds a default index-name token for a part: column names pass through; expressions are
@@ -1676,6 +1758,9 @@ public class CustomMigrationsModelDiffer(
     {
         // For messages only, outside equality: the copies of one declaration on a TPC type share it.
         public TpcDeclaration? Origin { get; init; }
+
+        // Outside equality: why the filter cannot apply, raised for the target model only.
+        public string? FilterRefusal { get; init; }
 
         public IEnumerable<string> ColumnNames => Parts.Where(p => !p.IsExpression).Select(p => p.Value);
 

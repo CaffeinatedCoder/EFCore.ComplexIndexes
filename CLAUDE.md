@@ -359,7 +359,9 @@ falls back to drop-first, create-last, and a temporal constraint takes its tempo
 stock generator fails loudly at apply time — deliberate, because a column-only NULLS-ordered index
 would otherwise apply silently minus its NULLS clause. INCLUDE lists are transformed via
 `TransformIndexAnnotation` → `ResolveIncludeList`: entries resolve as property paths with verbatim
-column-name fallback.
+column-name fallback, and in the target model an entry must name a column of the table. Without
+that check an entry whose property was removed read the same on both sides, and the migration's
+`DROP COLUMN` took a PostgreSQL index with it in silence (#142).
 
 ### Index identity and dedup
 
@@ -532,8 +534,9 @@ differ let satellites resolve what the core cannot:
   (`NpgsqlJsonMemberRenderingTests` asserts each rendering against EF's own `ToQueryString()`).
   Date and time members stay text — their casts are not IMMUTABLE and cannot appear in an index —
   and the part records a `TextFallback`; `ValidateQueryUsableLeadingParts` rejects a non-unique
-  index that starts with one (target model only), and `ResolveFilter` rejects a filter that compares
-  one with a column, which would fail at apply as text against a timestamp (exclusion filters flag
+  index that starts with one (target model only), and `ResolveFilter` records a filter that compares
+  one with a column, which would fail at apply as text against a timestamp, and the differ rejects
+  it for the target model only, so a snapshot holding one still diffs (exclusion filters flag
   their rendering-1 members the same way). A path that *ends* at the JSON-mapped complex
   property — or at a complex collection, which is always JSON — resolves to the container column
   as a plain **column** part (so a whole-document GIN needs no runtime wiring); a complex property

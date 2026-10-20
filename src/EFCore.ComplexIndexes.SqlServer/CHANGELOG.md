@@ -11,6 +11,7 @@ The last 5.x minor with a change of its own: the line refuses EF Core 11, whose 
 ### Changed answers
 
 - Indexes: a unique complex index over nullable columns gets EF Core's `IS NOT NULL` filter, so rows without a value no longer collide. It admitted one such row and refused the second ([#88](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/issues/88), [Upgrading](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/docs/upgrading.md#unique-indexes-over-nullable-columns-on-sql-server)).
+- Indexes: an `IncludeProperties(…)` entry that names neither a property nor a column of the table fails at `migrations add`. When its property was removed, the migration dropped only the column, and failed at apply with Msg 5074 ([#142](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/issues/142), [Upgrading](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/docs/upgrading.md#include-entries-must-name-a-column)).
 
 ### Breaking
 

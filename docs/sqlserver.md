@@ -36,7 +36,8 @@ EF's native operation. A filter may name properties — `filter: "{DeletedAt} IS
 `[deleted_at] IS NULL` at `migrations add`, bracket-quoted, and is baked into the migration.
 
 `IncludeProperties(...)` entries are resolved as property paths — complex members included — with a
-verbatim column-name fallback, so `IncludeProperties("Email.Value")` finds the real column.
+verbatim column-name fallback, so `IncludeProperties("Email.Value")` finds the real column. An entry
+that is neither a property path nor a column of the table fails at `migrations add`.
 
 ## Deliberate rejections
 

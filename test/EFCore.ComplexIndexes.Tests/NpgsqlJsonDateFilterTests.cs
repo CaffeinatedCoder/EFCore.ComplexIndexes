@@ -56,6 +56,26 @@ public class NpgsqlJsonDateFilterTests
             });
     }
 
+    // A snapshot 5.4.x scaffolded: the comparison was accepted then, at rendering version 2, the
+    // first to resolve a JSON date member to its text.
+    private class ColumnFirstSnapshotContext(DbContextOptions<ColumnFirstSnapshotContext> options) : DbContext(options)
+    {
+        protected override void OnModelCreating(ModelBuilder modelBuilder)
+        {
+            modelBuilder.Entity<Session>(b =>
+            {
+                Map(b);
+                b.HasComplexIndex(x => x.Id, isUnique: false, filter: "\"ValidFrom\" >= ({Profile.At})", indexName: "ix_at");
+            });
+            modelBuilder.HasAnnotation(ComplexIndexAnnotations.RenderingVersion, 2);
+        }
+    }
+
+    private class NoDeclarationContext(DbContextOptions<NoDeclarationContext> options) : DbContext(options)
+    {
+        protected override void OnModelCreating(ModelBuilder modelBuilder) => modelBuilder.Entity<Session>(Map);
+    }
+
     private class ExclusionContext(DbContextOptions<ExclusionContext> options) : DbContext(options)
     {
         protected override void OnModelCreating(ModelBuilder modelBuilder) =>
@@ -100,6 +120,28 @@ public class NpgsqlJsonDateFilterTests
             () => MigrationHarness.NpgsqlDiff(null, MigrationHarness.NpgsqlModel<ExclusionContext>()));
 
         StringAssert.Contains(exception.Message, "'Profile.At'");
+    }
+
+    [TestMethod(DisplayName = "A snapshot holding a refused index filter still diffs, so the index can be dropped")]
+    public void Refused_index_filter_in_the_snapshot_is_dropped()
+    {
+        var operations = MigrationHarness.NpgsqlDiff(
+            MigrationHarness.NpgsqlModel<ColumnFirstSnapshotContext>(),
+            MigrationHarness.NpgsqlModel<NoDeclarationContext>());
+
+        Assert.AreEqual("ix_at", operations.OfType<DropIndexOperation>().Single().Name);
+    }
+
+    [TestMethod(DisplayName = "A snapshot holding a refused exclusion filter still diffs, so the constraint can be dropped")]
+    public void Refused_exclusion_filter_in_the_snapshot_is_dropped()
+    {
+        var operations = MigrationHarness.NpgsqlDiff(
+            MigrationHarness.NpgsqlModel<ExclusionContext>(),
+            MigrationHarness.NpgsqlModel<NoDeclarationContext>());
+
+        Assert.IsTrue(
+            operations.OfType<SqlOperation>().Any(o => o.Sql.Contains("DROP CONSTRAINT IF EXISTS \"ex_at\"")),
+            "Expected the exclusion constraint to be dropped.");
     }
 
     [TestMethod(DisplayName = "A null test, a string literal and a typed member still resolve")]
