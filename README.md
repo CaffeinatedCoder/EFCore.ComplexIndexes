@@ -161,6 +161,14 @@ identifier limit: PostgreSQL would otherwise truncate it to 63 bytes with a NOTI
 migration cleanly, leaving the index under a name that no declaration and no constraint-violation
 error ever reports. Default names are checked too, since this package never truncates them.
 
+On SQLite, a migration that alters or drops a column, or changes a key, foreign key, unique or check
+constraint, runs as a table rebuild, and EF Core re-creates only its own indexes afterwards. A
+complex index on that table would be dropped with no way for the same migration to create it again,
+since the rebuild runs after every other operation. `dotnet ef migrations add` therefore refuses
+such a migration and names the indexes. Split it into three: remove the complex index declarations
+on the table, make the change, declare them again. A table rename counts: EF renames its primary key
+along with it.
+
 ### Composite index across scalar and nested properties
 
 ```csharp

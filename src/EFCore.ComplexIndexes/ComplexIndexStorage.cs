@@ -64,7 +64,7 @@ internal static class ComplexIndexStorage
     }
 
     /// <summary>The rendering rules this version writes; see <see cref="ComplexIndexAnnotations.RenderingVersion"/>.</summary>
-    public const int CurrentRenderingVersion = 2;
+    public const int CurrentRenderingVersion = 3;
 
     /// <summary>
     /// Records on the model that its declarations were made under <see cref="CurrentRenderingVersion"/>.
