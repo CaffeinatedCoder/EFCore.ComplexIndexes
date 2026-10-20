@@ -66,8 +66,11 @@ on PostgreSQL, which would otherwise truncate silently), and the package enforce
 `dotnet ef migrations add` rather than letting the database reject — or quietly shorten — the name.
 
 On SQLite, a migration that rebuilds a table (altering or dropping a column, a key or constraint
-change, or a table rename) would drop the table's complex indexes with no way to re-create them in
-the same migration; `dotnet ef migrations add` refuses it and says how to split it.
+change, or a table rename) drops the table's complex indexes, and EF Core's SQL generator runs the
+rebuild after everything else. Register `UseComplexIndexes()` after `UseSqlite()`, both where
+`dotnet ef` builds the context and where the migration is applied, and the indexes are created again
+after the rebuild. Without it, `dotnet ef migrations add` refuses the migration and says how to split
+it ([Upgrading](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/docs/upgrading.md#sqlite-re-creates-complex-indexes-after-a-table-rebuild)).
 
 ### Composite index across scalar and nested properties
 
@@ -90,8 +93,9 @@ Direction maps onto EF Core's native `CreateIndexOperation.IsDescending`, so **e
 provider renders it. Because a wrapped member is a method call, C# requires you to name it in the
 anonymous type.
 
-`DbOrder.NullsFirst`/`NullsLast` are declared here too, but rendering them is provider-specific —
-see the PostgreSQL package.
+`DbOrder.NullsFirst`/`NullsLast` are declared here too, but only the PostgreSQL package renders
+them. On SQL Server and on providers without a satellite, such as SQLite, an index that uses them
+fails at `dotnet ef migrations add`.
 
 ---
 

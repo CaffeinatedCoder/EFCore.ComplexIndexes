@@ -11,7 +11,7 @@ namespace EFCore.ComplexIndexes.Tests;
 /// provider all produce a package that builds fine and misbehaves only once a consumer installs it.
 /// </summary>
 [TestClass]
-public class PackagingConventionTests
+public partial class PackagingConventionTests
 {
     private static IEnumerable<RepositoryLayout.ShippingProject> Projects => RepositoryLayout.ShippingProjects;
 

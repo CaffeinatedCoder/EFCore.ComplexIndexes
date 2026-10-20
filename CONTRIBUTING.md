@@ -192,7 +192,10 @@ issue has a row there, and into a patch it fails outright.
 
 A version's section of the root `CHANGELOG.md` is the GitHub release's notes, word for word, so it
 is written for someone deciding what to change before they upgrade. The package changelogs use the
-same form, with the lines that affect that package. The form is CodoMetis.ValueRanges'.
+same form, with the lines that affect that package. The form is CodoMetis.ValueRanges'. A package
+changelog's section is also that package's release notes on nuget.org and in Visual Studio, set at
+pack and shown as plain text: links read as "text (url)" and code marks are dropped, so a line has
+to read well without them. A missing or empty section fails the pack.
 
 - **The heading** is `## [x.y.z] — yyyy-mm-dd` (`## [11.0.0-preview.N] — yyyy-mm-dd` for a
   preview), and the root changelog ends with a `[x.y.z]: …/releases/tag/vx.y.z` definition per
