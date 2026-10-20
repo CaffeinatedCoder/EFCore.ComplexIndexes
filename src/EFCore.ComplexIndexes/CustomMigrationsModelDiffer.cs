@@ -1,6 +1,7 @@
 using System.Reflection;
 using System.Text;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
 using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Migrations.Internal;
@@ -53,6 +54,35 @@ public class CustomMigrationsModelDiffer(
     /// message rather than applying a silently wrong index.
     /// </summary>
     public const string RuntimeWiringSentinel = "__requires_UseNpgsqlComplexIndexes__";
+
+    /// <summary>
+    /// Constructs the differ with the context it diffs for, which on SQLite decides whether a table
+    /// rebuild may drop and re-create the complex indexes on that table.
+    /// </summary>
+    /// <remarks>
+    /// The differ asks the context which migrations SQL generator would apply the migration. Only the
+    /// one <c>UseComplexIndexes()</c> registers runs the re-creates after SQLite's rebuild; with any
+    /// other, a migration that rebuilds a table carrying a complex index is refused.
+    /// </remarks>
+    /// <param name="typeMappingSource">EF Core relational type mapping source.</param>
+    /// <param name="migrationsAnnotationProvider">EF Core migrations annotation provider.</param>
+    /// <param name="relationalAnnotationProvider">EF Core relational annotation provider.</param>
+    /// <param name="rowIdentityMapFactory">EF Core row identity map factory.</param>
+    /// <param name="commandBatchPreparerDependencies">EF Core command batch preparer dependencies.</param>
+    /// <param name="currentContext">The context the migration is diffed for.</param>
+    public CustomMigrationsModelDiffer(
+        IRelationalTypeMappingSource     typeMappingSource,
+        IMigrationsAnnotationProvider    migrationsAnnotationProvider,
+        IRelationalAnnotationProvider    relationalAnnotationProvider,
+        IRowIdentityMapFactory           rowIdentityMapFactory,
+        CommandBatchPreparerDependencies commandBatchPreparerDependencies,
+        ICurrentDbContext                currentContext
+    )
+        : this(typeMappingSource, migrationsAnnotationProvider, relationalAnnotationProvider, rowIdentityMapFactory,
+               commandBatchPreparerDependencies)
+        => _currentContext = currentContext;
+
+    private readonly ICurrentDbContext? _currentContext;
 
     // Read from the type mapping source because the differ has no other view of the provider; the
     // core serves SQLite without a satellite.
@@ -125,8 +155,11 @@ public class CustomMigrationsModelDiffer(
         if (sourceIndexes.Count == 0 && targetIndexes.Count == 0)
             return operations;
 
-        if (_rebuildsTablesLikeSqlite)
-            ThrowIfSqliteRebuildDropsIndexes(operations, targetIndexes);
+        // SQLite rebuilds these tables after every other operation, and only the generator
+        // UseComplexIndexes() registers runs anything after the rebuild.
+        var rebuiltTables = _rebuildsTablesLikeSqlite
+                                ? SqliteRebuiltTables(operations, targetIndexes)
+                                : [];
 
         var droppedTables = operations
                            .OfType<DropTableOperation>()
@@ -203,6 +236,17 @@ public class CustomMigrationsModelDiffer(
             }
         }
 
+        // A rebuild drops every index on the table and re-creates only EF Core's. Each complex index
+        // on it is dropped before the base operations, which the rebuild would do anyway, and created
+        // after the rebuild, unchanged ones included.
+        var afterRebuild = targetIndexes.Where(i => rebuiltTables.ContainsKey((i.TableName, i.Schema))).ToList();
+        foreach (var index in afterRebuild)
+        {
+            pendingCreates.Remove(index);
+            if (normalizedSource.ContainsKey(index) && !pendingDrops.Contains(index))
+                pendingDrops.Add(index);
+        }
+
         // Placed before the base operations: an index that moves between a native HasIndex and a
         // complex-index declaration surfaces as a base-emitted CreateIndex plus our DropIndex of the
         // same name, and a removed complex property surfaces as a base DropColumn that would take
@@ -219,57 +263,77 @@ public class CustomMigrationsModelDiffer(
                       });
         }
 
+        // Placed after the drops and before the base operations, under the table's name at that
+        // point. The generator UseComplexIndexes() registers moves them behind SQLite's rebuild and
+        // follows the table's renames; any other generator runs them where they stand and fails on
+        // the filter's marker, before the rebuild has dropped anything. Further down, EF's SQLite
+        // generator would hold back a create whose column the rebuild adds back, and lose it.
+        var rebuildCreates = new List<CreateIndexOperation>();
+        foreach (var tgt in afterRebuild)
+        {
+            var op = BuildCreateIndexOperation(tgt);
+            (op.Table, op.Schema) = rebuiltTables[(tgt.TableName, tgt.Schema)];
+            op.Filter = SqliteRebuildMigrationsSqlGenerator.Mark(op.Filter);
+            op.AddAnnotation(ComplexIndexAnnotations.AfterTableRebuild, true);
+            rebuildCreates.Add(op);
+        }
+
         // Placed after the base operations, so newly added columns exist before their indexes.
         var creates = new List<CreateIndexOperation>();
         foreach (var tgt in pendingCreates)
-        {
-            var op = new CreateIndexOperation
-                     {
-                         Name     = tgt.IndexName,
-                         Table    = tgt.TableName,
-                         Schema   = tgt.Schema,
-                         // EF's MigrationBuilder.CreateIndex rejects an empty column list, so for
-                         // expression indexes we fill Columns with the verbatim part values (the
-                         // provider SQL generator renders from the IndexParts annotation instead).
-                         // The sentinel makes a missing runtime wiring fail loudly at apply time.
-                         Columns = tgt.RequiresPartsAnnotation
-                                       ? [.. tgt.Parts.Select(p => p.Value), RuntimeWiringSentinel]
-                                       : [.. tgt.Parts.Select(p => p.Value)],
-                         IsUnique = tgt.IsUnique,
-                         Filter   = tgt.Filter
-                     };
+            creates.Add(BuildCreateIndexOperation(tgt));
 
-            // null means all-ascending — leave it so existing ascending indexes don't churn.
-            if (tgt.Parts.Any(p => p.Descending))
-                op.IsDescending = tgt.RequiresPartsAnnotation
-                                      ? [.. tgt.Parts.Select(p => p.Descending), false]
-                                      : [.. tgt.Parts.Select(p => p.Descending)];
+        ValidateCreatedIndexes([.. rebuildCreates, .. creates]);
 
-            // Forward the whitelisted provider annotations — provider SQL generators handle their own
-            foreach (var (key, value) in tgt.ProviderAnnotations)
-                op.AddAnnotation(ToOperationAnnotationName(key), value);
-
-            // Ordered parts are needed when the stock generator can't render the index: expression
-            // parts have no slot in Columns, and NULLS FIRST/LAST has no slot on the native
-            // operation. Plain column indexes render from Columns and stay annotation-free.
-            if (tgt.RequiresPartsAnnotation)
-                op.AddAnnotation(ComplexIndexAnnotations.IndexParts, IndexPartsSerializer.Serialize(tgt.Parts));
-
-            ValidateCreateIndexOperation(op);
-
-            creates.Add(op);
-        }
-
-        ValidateCreatedIndexes(creates);
-
-        if (drops.Count == 0 && renames.Count == 0 && creates.Count == 0)
+        if (drops.Count == 0 && renames.Count == 0 && rebuildCreates.Count == 0 && creates.Count == 0)
             return operations;
 
-        return [.. drops, .. operations, .. renames, .. creates];
+        return [.. drops, .. rebuildCreates, .. operations, .. renames, .. creates];
+    }
+
+    private CreateIndexOperation BuildCreateIndexOperation(IndexDescriptor tgt)
+    {
+        var op = new CreateIndexOperation
+                 {
+                     Name     = tgt.IndexName,
+                     Table    = tgt.TableName,
+                     Schema   = tgt.Schema,
+                     // EF's MigrationBuilder.CreateIndex rejects an empty column list, so for
+                     // expression indexes we fill Columns with the verbatim part values (the
+                     // provider SQL generator renders from the IndexParts annotation instead).
+                     // The sentinel makes a missing runtime wiring fail loudly at apply time.
+                     Columns = tgt.RequiresPartsAnnotation
+                                   ? [.. tgt.Parts.Select(p => p.Value), RuntimeWiringSentinel]
+                                   : [.. tgt.Parts.Select(p => p.Value)],
+                     IsUnique = tgt.IsUnique,
+                     Filter   = tgt.Filter
+                 };
+
+        // null means all-ascending — leave it so existing ascending indexes don't churn.
+        if (tgt.Parts.Any(p => p.Descending))
+            op.IsDescending = tgt.RequiresPartsAnnotation
+                                  ? [.. tgt.Parts.Select(p => p.Descending), false]
+                                  : [.. tgt.Parts.Select(p => p.Descending)];
+
+        // Forward the whitelisted provider annotations — provider SQL generators handle their own
+        foreach (var (key, value) in tgt.ProviderAnnotations)
+            op.AddAnnotation(ToOperationAnnotationName(key), value);
+
+        // Ordered parts are needed when the stock generator can't render the index: expression
+        // parts have no slot in Columns, and NULLS FIRST/LAST has no slot on the native
+        // operation. Plain column indexes render from Columns and stay annotation-free.
+        if (tgt.RequiresPartsAnnotation)
+            op.AddAnnotation(ComplexIndexAnnotations.IndexParts, IndexPartsSerializer.Serialize(tgt.Parts));
+
+        ValidateCreateIndexOperation(op);
+
+        return op;
     }
 
     /// <summary>
-    /// Fails when SQLite would rebuild a table that carries a complex index.
+    /// The tables SQLite rebuilds for these operations that carry a complex index in the target
+    /// model, each under its name after the migration, mapped to its name before the migration's
+    /// renames. Fails when no generator that runs after the rebuild is registered.
     /// </summary>
     /// <remarks>
     /// SQLite runs an <c>ALTER COLUMN</c>, a <c>DROP COLUMN</c> and every key, foreign key, unique or
@@ -279,9 +343,10 @@ public class CustomMigrationsModelDiffer(
     /// listed the index. Dropping it before and creating it after does not help here:
     /// <c>SqliteMigrationsSqlGenerator</c> emits every rebuild after all other operations of the
     /// migration, so any <c>CREATE INDEX</c> from this differ runs first and goes down with the old
-    /// table. The list mirrors that generator's <c>RewriteOperations</c> (EF Core 10).
+    /// table. Only the generator <c>UseComplexIndexes()</c> registers can run one after the rebuild.
+    /// The list mirrors that generator's <c>RewriteOperations</c> (EF Core 10).
     /// </remarks>
-    private static void ThrowIfSqliteRebuildDropsIndexes(
+    private Dictionary<(string Name, string? Schema), (string Name, string? Schema)> SqliteRebuiltTables(
         IReadOnlyList<MigrationOperation> operations, HashSet<IndexDescriptor> targetIndexes)
     {
         var created = operations.OfType<CreateTableOperation>().Select(o => (o.Name, o.Schema)).ToHashSet();
@@ -321,6 +386,7 @@ public class CustomMigrationsModelDiffer(
                 rebuilt.TryAdd((alterTable.Name, alterTable.Schema), operation);
         }
 
+        var result = new Dictionary<(string Name, string? Schema), (string Name, string? Schema)>();
         foreach (var ((table, schema), trigger) in rebuilt)
         {
             var lost = targetIndexes.Where(i => i.TableName == table && i.Schema == schema)
@@ -329,21 +395,67 @@ public class CustomMigrationsModelDiffer(
             if (lost.Count == 0)
                 continue;
 
-            var what = trigger switch
+            if (RefusesSqliteRebuild() is { } remedy)
             {
-                AlterColumnOperation alter => $"altering column '{alter.Name}'",
-                DropColumnOperation drop   => $"dropping column '{drop.Name}'",
-                _                          => $"a {trigger.GetType().Name.Replace("Operation", "")}",
-            };
+                var what = trigger switch
+                {
+                    AlterColumnOperation alter => $"altering column '{alter.Name}'",
+                    DropColumnOperation drop   => $"dropping column '{drop.Name}'",
+                    _                          => $"a {trigger.GetType().Name.Replace("Operation", "")}",
+                };
 
-            throw new InvalidOperationException(
-                $"SQLite rebuilds table '{table}' for this migration ({what}) and re-creates only the indexes EF Core "
-              + $"knows, so the complex index{(lost.Count == 1 ? "" : "es")} {string.Join(", ", lost)} on it would be dropped "
-              + "and not created again, while the migration applies cleanly. No operation in the same migration can "
-              + "re-create it: EF Core's SQLite generator runs every table rebuild after all other operations. Split the "
-              + $"change into three migrations: remove the complex index declarations on '{table}' and add a migration; "
-              + "make this change and add a migration; declare the indexes again and add a migration.");
+                throw new InvalidOperationException(
+                    $"SQLite rebuilds table '{table}' for this migration ({what}) and re-creates only the indexes EF Core "
+                  + $"knows, so the complex index{(lost.Count == 1 ? "" : "es")} {string.Join(", ", lost)} on it would be dropped "
+                  + "and not created again, while the migration applies cleanly. EF Core's SQLite generator runs every table "
+                  + $"rebuild after all other operations, so only a generator wrapped around it can re-create them. {remedy} "
+                  + "Or split the change into three migrations: remove the complex index declarations on "
+                  + $"'{table}' and add a migration; make this change and add a migration; declare the indexes again and "
+                  + "add a migration.");
+            }
+
+            result[(table, schema)] = renamed.Where(r => r.Value == (table, schema))
+                                             .Select(r => r.Key)
+                                             .DefaultIfEmpty((table, schema))
+                                             .First();
         }
+
+        return result;
+    }
+
+    /// <summary>
+    /// Why a migration that rebuilds a table carrying a complex index cannot re-create it, and what
+    /// to do about it; <c>null</c> when the generator in effect is the one that can.
+    /// </summary>
+    /// <remarks>
+    /// Asked of the context rather than of the options, because the generator in effect is what EF
+    /// Core resolves once every extension and every <c>ReplaceService</c> has had its turn: two
+    /// packages replacing one service leave one of them, without a word.
+    /// </remarks>
+    private string? RefusesSqliteRebuild()
+    {
+        const string call = "Call UseComplexIndexes() after UseSqlite() on the context dotnet ef uses, and this package "
+                          + "re-creates them after the rebuild.";
+        if (_currentContext is null)
+            return call;
+
+        var context   = _currentContext.Context;
+        var generator = context.GetService<IMigrationsSqlGenerator>();
+        if (generator is SqliteRebuildMigrationsSqlGenerator)
+            return null;
+
+        var extensions = context.GetService<IDbContextOptions>().Extensions.ToList();
+        var ours       = extensions.FindIndex(e => e is ComplexIndexOptionsExtension);
+        if (ours < 0)
+            return call;
+
+        // EF Core applies the extensions in the order they were first added.
+        if (extensions.Skip(ours).Any(e => e.Info.IsDatabaseProvider))
+            return "UseComplexIndexes() was called before UseSqlite(), when there was no migrations SQL generator to wrap: "
+                 + "call it after UseSqlite(), and this package re-creates them after the rebuild.";
+
+        return $"UseComplexIndexes() wrapped the migrations SQL generator, but the one in effect is {generator.GetType().FullName}: "
+             + "another registration replaces IMigrationsSqlGenerator, and EF Core keeps only one.";
     }
 
     /// <summary>
@@ -1011,7 +1123,7 @@ public class CustomMigrationsModelDiffer(
 
     /// <summary>
     /// Fails when <paramref name="name"/> is longer than the provider's identifier limit
-    /// (<see cref="RelationalModelExtensions.GetMaxIdentifierLength"/>). Satellites call it for the
+    /// (<see cref="Microsoft.EntityFrameworkCore.RelationalModelExtensions.GetMaxIdentifierLength"/>). Satellites call it for the
     /// names of the constraints they emit; the core calls it for every complex index name.
     /// </summary>
     /// <remarks>
@@ -1045,7 +1157,7 @@ public class CustomMigrationsModelDiffer(
 
     /// <summary>
     /// Measures an identifier the way the provider does when enforcing
-    /// <see cref="RelationalModelExtensions.GetMaxIdentifierLength"/>. The core counts characters,
+    /// <see cref="Microsoft.EntityFrameworkCore.RelationalModelExtensions.GetMaxIdentifierLength"/>. The core counts characters,
     /// which is what SQL Server's 128-character limit means; PostgreSQL's 63 is a byte count, so its
     /// satellite overrides this to measure UTF-8 bytes.
     /// </summary>

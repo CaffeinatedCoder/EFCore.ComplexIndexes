@@ -66,8 +66,11 @@ on PostgreSQL, which would otherwise truncate silently), and the package enforce
 `dotnet ef migrations add` rather than letting the database reject — or quietly shorten — the name.
 
 On SQLite, a migration that rebuilds a table (altering or dropping a column, a key or constraint
-change, or a table rename) would drop the table's complex indexes with no way to re-create them in
-the same migration; `dotnet ef migrations add` refuses it and says how to split it.
+change, or a table rename) drops the table's complex indexes, and EF Core's SQL generator runs the
+rebuild after everything else. Register `UseComplexIndexes()` after `UseSqlite()`, both where
+`dotnet ef` builds the context and where the migration is applied, and the indexes are created again
+after the rebuild. Without it, `dotnet ef migrations add` refuses the migration and says how to split
+it ([Upgrading](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/docs/upgrading.md#sqlite-re-creates-complex-indexes-after-a-table-rebuild)).
 
 ### Composite index across scalar and nested properties
 

@@ -34,6 +34,13 @@ public static class ComplexIndexAnnotations
     public const string IndexParts = "CustomIndex:IndexParts";
 
     /// <summary>
+    /// Stamped onto a <c>CreateIndexOperation</c> by the differ on SQLite for a complex index on a
+    /// table the migration rebuilds. The SQL generator <c>UseComplexIndexes()</c> registers runs it
+    /// after the rebuild; any other generator fails on the marker the differ adds to its filter.
+    /// </summary>
+    public const string AfterTableRebuild = "CustomIndex:AfterTableRebuild";
+
+    /// <summary>
     /// Set on the model by every index declaration, recording which rules the differ renders the
     /// model's index parts with. A snapshot written before the key existed carries none and is
     /// rendered by the original rules, so a change of rules reaches existing databases as one

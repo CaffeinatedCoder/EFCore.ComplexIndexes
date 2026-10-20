@@ -431,6 +431,22 @@ runs EF's protected `Diff`, not `GetDifferences`, so the core overrides it to ro
 pending-changes warning and `migrations remove` all reported "no changes" for a complex-index-only
 change (`PendingModelChangesTests`).
 
+On SQLite the runtime seam also carries a **generator** (#95). EF Core's `SqliteMigrationsSqlGenerator`
+rebuilds a table after every other operation and re-creates only EF's indexes, so nothing the differ
+emits can run after it. `UseComplexIndexes()` adds `ComplexIndexOptionsExtension`, whose
+`ApplyServices` wraps the registered SQLite generator in `SqliteRebuildMigrationsSqlGenerator`
+(wrapping the registration keeps another package's earlier one; a `ReplaceService` keyed on SQLite's
+type is honoured by building the replacement as the inner). The differ asks the *context* for the
+generator in effect (`ICurrentDbContext`, the second constructor) and only when it is the wrapper
+turns a rebuild of a table with complex indexes into drops plus creates marked
+`CustomIndex:AfterTableRebuild`; otherwise it refuses (#86). The marked creates sit *before* the base
+operations, with `__requires_UseComplexIndexes__()` ANDed onto the filter: the wrapper moves them
+behind the rebuild, any other generator fails on them before anything is dropped. The marker is in
+the filter, not `Columns`, on purpose: with SQLite's double-quoted string literals on (a default
+build), an unknown quoted column is taken for a string and the index applies. And before the base
+operations, because further down EF's generator holds back a create over a column renamed into a
+dropped one's name and loses it.
+
 Anything that depends on the runtime seam silently degrades when a consumer forgets the wiring, so
 **prefer rendering DDL at design time** (a `SqlOperation` baked into the migration) whenever the
 statement can be built from resolved column names — that is why exclusion *and* temporal
