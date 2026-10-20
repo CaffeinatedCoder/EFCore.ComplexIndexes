@@ -7,7 +7,8 @@ namespace EFCore.ComplexIndexes.Tests;
 
 /// <summary>
 /// This package serves EF Core 10 only, and its <c>[10.0.0, 11.0.0)</c> ranges do not keep EF Core
-/// 11 out: a direct provider reference overrides them with NU1608, a warning. So every registration
+/// 11 out: an EF Core 11 prerelease is inside them, and a direct reference to a release overrides
+/// them with NU1608, a warning. So every registration
 /// entry point refuses another major and names the successor package. Each entry point is a row,
 /// because one that skips the check is exactly the hole an EF Core 11 application walks through.
 /// </summary>
@@ -41,7 +42,8 @@ public class EfCoreVersionGuardTests
         var ex = Assert.ThrowsExactly<InvalidOperationException>(register, entryPoint);
 
         Assert.Contains("CodoMetis.EFCore.SchemaKit", ex.Message, entryPoint);
-        Assert.Contains("EF Core 11.0", ex.Message, entryPoint);
+        Assert.Contains("loaded EF Core 11. NuGet", ex.Message, entryPoint);
+        Assert.Contains("issues/37", ex.Message, entryPoint);
     }
 
     [TestMethod(DisplayName = "EF Core 10 registers")]
