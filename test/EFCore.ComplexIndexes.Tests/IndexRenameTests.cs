@@ -147,13 +147,26 @@ public class IndexRenameTests : IDisposable
     [TestMethod(DisplayName = "A renamed table keeps its complex indexes without churn")]
     public void Renamed_table_produces_no_index_operations()
     {
-        var operations = CoreDifferences(
-            BuildSqliteModel<OldNameContext>(),
-            BuildSqliteModel<RenamedTableContext>());
+        var operations = NpgsqlDifferences(
+            BuildNpgsqlModel<OldNameContext>(),
+            BuildNpgsqlModel<RenamedTableContext>());
 
         Assert.IsNotEmpty(operations.OfType<RenameTableOperation>());
         Assert.IsEmpty(operations.OfType<DropIndexOperation>());
         Assert.IsEmpty(operations.OfType<CreateIndexOperation>());
+    }
+
+    // This test ran on SQLite and asserted "no churn" there. On SQLite the rename comes with the
+    // primary key's drop and add, which EF runs as a table rebuild, and the rebuild silently dropped
+    // the index (see SqliteTableRebuildTests); no index operation was the wrong answer.
+    [TestMethod(DisplayName = "SQLite: renaming a table with a complex index is refused, the rebuild would drop the index")]
+    public void Sqlite_renamed_table_is_refused()
+    {
+        var exception = Assert.ThrowsExactly<InvalidOperationException>(() => CoreDifferences(
+            BuildSqliteModel<OldNameContext>(),
+            BuildSqliteModel<RenamedTableContext>()));
+
+        StringAssert.Contains(exception.Message, "'ix_person_email_v1'");
     }
 
     [TestMethod(DisplayName = "Index removed while its table is renamed: drop targets the old table, before the rename")]
