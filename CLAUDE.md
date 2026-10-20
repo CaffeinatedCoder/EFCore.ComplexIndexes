@@ -548,7 +548,10 @@ as bare text. Both throw at the declaration.
 rides on the parts as `NullSort`. EF's native `CreateIndexOperation` has no slot for it, so any
 index containing a nulls-ordered part is routed through the `IndexParts` annotation and the custom
 Npgsql generator — i.e. it needs `UseNpgsqlComplexIndexes()` even when column-only. The SQL Server
-differ rejects nulls-ordered and expression parts with targeted errors.
+differ rejects nulls-ordered and expression parts with targeted errors, and the core differ does the
+same on a provider no satellite serves (`ValidateRenderableParts`, target model only). There the
+sentinel column is no guard: SQLite with double-quoted string literals on (a default build) takes
+it, and a quoted expression, for a string, and the index applied with a constant column (#134).
 
 `CreateIndexOperation.Columns` is a `string[]` of quoted identifiers with no slot for an expression, so:
 - The differ stamps the ordered, resolved parts onto the operation as the `CustomIndex:IndexParts` annotation (`ResolvedIndexPart` + `IndexPartsSerializer`), **only when a part is an expression** (column-only indexes are untouched).

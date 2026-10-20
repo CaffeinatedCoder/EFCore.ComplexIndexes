@@ -93,8 +93,9 @@ Direction maps onto EF Core's native `CreateIndexOperation.IsDescending`, so **e
 provider renders it. Because a wrapped member is a method call, C# requires you to name it in the
 anonymous type.
 
-`DbOrder.NullsFirst`/`NullsLast` are declared here too, but rendering them is provider-specific —
-see the PostgreSQL package.
+`DbOrder.NullsFirst`/`NullsLast` are declared here too, but only the PostgreSQL package renders
+them. On SQL Server and on providers without a satellite, such as SQLite, an index that uses them
+fails at `dotnet ef migrations add`.
 
 ---
 

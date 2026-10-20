@@ -392,11 +392,16 @@ public class MigrationsModelDifferTests : IDisposable
         }
     }
 
+    // The core differ's handling of parts, on PostgreSQL: on a provider no satellite serves, such as
+    // SQLite, it refuses an expression part (SqliteNullOrderingTests).
+    private static IReadOnlyList<MigrationOperation> CoreDiffOnPostgreSql(IRelationalModel? source, IRelationalModel? target)
+        => MigrationHarness.Diff<CustomMigrationsModelDiffer>(MigrationHarness.NpgsqlOptions(), source, target);
+
     [TestMethod(DisplayName = "Expression index emits IndexParts annotation and no columns")]
     public void Expression_index_emits_parts_annotation()
     {
-        var target     = BuildRelationalModel<ContextWithExpressionIndex>();
-        var operations = GetDifferences(source: null, target: target);
+        var target     = MigrationHarness.NpgsqlModel<ContextWithExpressionIndex>();
+        var operations = CoreDiffOnPostgreSql(source: null, target: target);
 
         var createIndex = Assert.ContainsSingle(operations.OfType<CreateIndexOperation>());
         Assert.AreEqual("person", createIndex.Table);
@@ -418,9 +423,9 @@ public class MigrationsModelDifferTests : IDisposable
     [TestMethod(DisplayName = "Unchanged expression index produces no operations")]
     public void Unchanged_expression_index_is_noop()
     {
-        var source     = BuildRelationalModel<ContextWithExpressionIndex>();
-        var target     = BuildRelationalModel<ContextWithExpressionIndex>();
-        var operations = GetDifferences(source, target);
+        var source     = MigrationHarness.NpgsqlModel<ContextWithExpressionIndex>();
+        var target     = MigrationHarness.NpgsqlModel<ContextWithExpressionIndex>();
+        var operations = CoreDiffOnPostgreSql(source, target);
 
         Assert.IsEmpty(operations.OfType<CreateIndexOperation>());
         Assert.IsEmpty(operations.OfType<DropIndexOperation>());
@@ -683,8 +688,8 @@ public class MigrationsModelDifferTests : IDisposable
     [TestMethod(DisplayName = "Null ordering routes a column-only index through the parts annotation")]
     public void Null_ordering_carries_parts_annotation()
     {
-        var target     = BuildRelationalModel<NullOrderedCompositeContext>();
-        var operations = GetDifferences(source: null, target: target);
+        var target     = MigrationHarness.NpgsqlModel<NullOrderedCompositeContext>();
+        var operations = CoreDiffOnPostgreSql(null, target);
 
         var createIndex = Assert.ContainsSingle(operations.OfType<CreateIndexOperation>());
         // Nulls ordering needs the custom generator, so the wiring sentinel rides along in Columns —
