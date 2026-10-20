@@ -154,6 +154,7 @@ public class CustomMigrationsModelDiffer(
         ValidateNoNativeIndexNameCollision(target, targetIndexes);
         ValidateIndexNameLengths(target, targetIndexes);
         ValidateQueryUsableLeadingParts(targetIndexes);
+        ValidateFilterComparisons(targetIndexes);
         ValidateRenderableParts(targetIndexes);
         ValidateNoSatelliteOptions(target);
         ValidateIncludedColumns(target, targetIndexes);
@@ -771,7 +772,10 @@ public class CustomMigrationsModelDiffer(
     /// <param name="storeObject">The table whose column names are used.</param>
     /// <returns>The filter with every placeholder replaced, or <paramref name="filter"/> unchanged when it has none.</returns>
     protected string? ResolveFilter(IEntityType entityType, string? filter, StoreObjectIdentifier storeObject)
-        => ResolveFilter(entityType, filter, storeObject, renderingVersion: null);
+    {
+        var resolved = ResolveFilter(entityType, filter, storeObject, renderingVersion: null, out var refusal);
+        return refusal is null ? resolved : throw new InvalidOperationException(refusal);
+    }
 
     /// <inheritdoc cref="ResolveFilter(IEntityType, string?, StoreObjectIdentifier)"/>
     /// <param name="entityType">The entity type the placeholders are resolved against.</param>
@@ -781,8 +785,19 @@ public class CustomMigrationsModelDiffer(
     /// Renders JSON members under this <see cref="ComplexIndexAnnotations.RenderingVersion"/> instead of
     /// the model's; exclusion constraint filters pass 1 so that their DDL never changes.
     /// </param>
-    internal string? ResolveFilter(IEntityType entityType, string? filter, StoreObjectIdentifier storeObject, int? renderingVersion)
+    /// <param name="refusal">
+    /// The message to fail with when the filter compares a JSON member stored as text with a column,
+    /// or null. Returned rather than thrown so that only the target model is refused: a snapshot
+    /// holding such a filter must still diff, or the migration removing it could not be scaffolded.
+    /// </param>
+    internal string? ResolveFilter(
+        IEntityType           entityType,
+        string?               filter,
+        StoreObjectIdentifier storeObject,
+        int?                  renderingVersion,
+        out string?           refusal)
     {
+        refusal = null;
         if (filter is null || !filter.Contains('{'))
             return filter;
 
@@ -822,7 +837,7 @@ public class CustomMigrationsModelDiffer(
         }
 
         var resolved = sql.ToString();
-        ThrowIfFallbackComparedWithColumn(entityType, resolved, fallbacks, typedSpans);
+        refusal = FallbackComparedWithColumn(entityType, resolved, fallbacks, typedSpans);
         return resolved;
     }
 
@@ -831,7 +846,7 @@ public class CustomMigrationsModelDiffer(
     // refused at apply ("operator does not exist: text < timestamp with time zone"), and the cast
     // EF Core's queries use cannot appear in an index or constraint. The comparison is refused here,
     // at migrations add. A null test and a comparison with a string literal still apply, as before.
-    private static void ThrowIfFallbackComparedWithColumn(
+    private static string? FallbackComparedWithColumn(
         IEntityType                                                      entityType,
         string                                                           sql,
         IReadOnlyList<(int Start, int End, string Path, string StoreType)> fallbacks,
@@ -846,13 +861,15 @@ public class CustomMigrationsModelDiffer(
                           || before.Success && (sql[..before.Index].EndsWith('"') || EndsTypedSpan(before.Index));
 
             if (withColumn)
-                throw new InvalidOperationException(
+                return
                     $"A filter on entity '{entityType.DisplayName()}' compares the JSON member '{fallback.Path}' with a column. "
                   + $"The member is {fallback.StoreType} stored as text in its document, and PostgreSQL can neither compare that text "
                   + "with a typed column nor index the cast EF Core's queries use (it is not IMMUTABLE), so the migration would fail "
                   + "at apply. Test the member with IS NULL or compare it with a string literal in the string filter overload, or "
-                  + "map it to a regular column.");
+                  + "map it to a regular column.";
         }
+
+        return null;
 
         bool StartsTypedSpan(int index) => typedSpans.Any(span => span.Start == index);
         bool EndsTypedSpan(int index) => typedSpans.Any(span => span.End == index);
@@ -1119,6 +1136,17 @@ public class CustomMigrationsModelDiffer(
               + $"'{fallback.Path}', which EF Core's queries compare as {fallback.StoreType}. PostgreSQL cannot index that conversion from "
               + "the stored text (it is not IMMUTABLE), so no query would ever use this index. Declare it unique if it "
               + "exists to enforce uniqueness, put another part first, or map the member to a regular column.");
+        }
+    }
+
+    // The refusal ResolveFilter recorded while building the descriptor. Target model only: a snapshot
+    // scaffolded before the check existed must stay diffable, so that the filter can be removed.
+    private static void ValidateFilterComparisons(HashSet<IndexDescriptor> descriptors)
+    {
+        foreach (var descriptor in descriptors)
+        {
+            if (descriptor.FilterRefusal is { } refusal)
+                throw new InvalidOperationException(refusal);
         }
     }
 
@@ -1518,10 +1546,13 @@ public class CustomMigrationsModelDiffer(
                 providerAnnotations[annotation.Name] = TransformIndexAnnotation(entityType, annotation.Name, annotation.Value, storeObject);
         }
 
-        var filter = ResolveFilter(entityType, declaration.Filter, storeObject)
+        var filter = ResolveFilter(entityType, declaration.Filter, storeObject, renderingVersion: null, out var filterRefusal)
                   ?? ImplicitFilter(entityType, storeObject, part.IsExpression ? [] : [part.Value], declaration.IsUnique, providerAnnotations);
 
-        return new IndexDescriptor(tableName, schema, [part], indexName, declaration.IsUnique, filter, providerAnnotations);
+        return new IndexDescriptor(tableName, schema, [part], indexName, declaration.IsUnique, filter, providerAnnotations)
+        {
+            FilterRefusal = filterRefusal
+        };
     }
 
     private IndexDescriptor ResolveEntityLevelIndex(
@@ -1570,10 +1601,13 @@ public class CustomMigrationsModelDiffer(
         foreach (var (key, value) in declaration.ProviderAnnotations)
             providerAnnotations[key] = TransformIndexAnnotation(entityType, key, value, storeObject);
 
-        var filter = ResolveFilter(entityType, declaration.Filter, storeObject)
+        var filter = ResolveFilter(entityType, declaration.Filter, storeObject, renderingVersion: null, out var filterRefusal)
                   ?? ImplicitFilter(entityType, storeObject, [.. parts.Where(p => !p.IsExpression).Select(p => p.Value)], declaration.IsUnique, providerAnnotations);
 
-        return new IndexDescriptor(tableName, schema, parts, indexName, declaration.IsUnique, filter, providerAnnotations);
+        return new IndexDescriptor(tableName, schema, parts, indexName, declaration.IsUnique, filter, providerAnnotations)
+        {
+            FilterRefusal = filterRefusal
+        };
     }
 
     // Builds a default index-name token for a part: column names pass through; expressions are
@@ -1676,6 +1710,9 @@ public class CustomMigrationsModelDiffer(
     {
         // For messages only, outside equality: the copies of one declaration on a TPC type share it.
         public TpcDeclaration? Origin { get; init; }
+
+        // Outside equality: why the filter cannot apply, raised for the target model only.
+        public string? FilterRefusal { get; init; }
 
         public IEnumerable<string> ColumnNames => Parts.Where(p => !p.IsExpression).Select(p => p.Value);
 
