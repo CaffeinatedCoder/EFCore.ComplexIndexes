@@ -59,6 +59,38 @@ public class CustomMigrationsModelDiffer(
     private readonly bool _rebuildsTablesLikeSqlite =
         typeMappingSource.GetType().Namespace?.StartsWith("Microsoft.EntityFrameworkCore.Sqlite", StringComparison.Ordinal) == true;
 
+    // The satellite whose differ this provider's models need, when one exists.
+    private readonly Satellite? _satellite =
+        Satellites.FirstOrDefault(s => typeMappingSource.GetType().Namespace?.StartsWith(s.ProviderNamespace, StringComparison.Ordinal) == true);
+
+    /// <summary>
+    /// The index options each satellite forwards — its <c>IsForwardedIndexAnnotation</c> whitelist —
+    /// and the registration that selects its differ. <c>SatelliteOptionCoverageTests</c> holds these
+    /// lists to the satellites' builders, so an option added there cannot be missing here.
+    /// </summary>
+    internal static readonly Satellite[] Satellites =
+    [
+        new("Microsoft.EntityFrameworkCore.SqlServer", "SQL Server", "EFCore.ComplexIndexes.SqlServer", "UseSqlServerComplexIndexes()",
+            ["SqlServer:Clustered", "SqlServer:Include", "SqlServer:Online", "SqlServer:FillFactor", "SqlServer:SortInTempDb", "SqlServer:DataCompression"],
+            OptionPrefix: null),
+        new("Npgsql.EntityFrameworkCore.PostgreSQL", "PostgreSQL", "EFCore.ComplexIndexes.PostgreSQL", "UseNpgsqlComplexIndexes()",
+            ["Npgsql:IndexMethod", "Npgsql:IndexOperators", "Npgsql:IndexInclude", "Npgsql:CreatedConcurrently", "Npgsql:NullsDistinct", "Npgsql:IndexCollation"],
+            OptionPrefix: "Npgsql:StorageParameter:"),
+    ];
+
+    internal sealed record Satellite(
+        string                ProviderNamespace,
+        string                Provider,
+        string                Package,
+        string                Registration,
+        HashSet<string>       Options,
+        string?               OptionPrefix)
+    {
+        public bool IsOption(string annotationName)
+            => Options.Contains(annotationName)
+            || OptionPrefix is not null && annotationName.StartsWith(OptionPrefix, StringComparison.Ordinal);
+    }
+
     /// <summary>
     /// Runs EF Core's own diff, then adds the operations for complex-type indexes.
     /// </summary>
@@ -86,6 +118,7 @@ public class CustomMigrationsModelDiffer(
         ValidateNoNativeIndexNameCollision(target, targetIndexes);
         ValidateIndexNameLengths(target, targetIndexes);
         ValidateQueryUsableLeadingParts(targetIndexes);
+        ValidateNoSatelliteOptions(target);
         if (target is not null)
             ValidateTargetIndexes(target, targetIndexes);
 
@@ -739,6 +772,46 @@ public class CustomMigrationsModelDiffer(
             var parts = string.Join(", ", descriptor.Parts.Select(p => p.Value));
             var facets = descriptor.Filter is null ? "" : $" WHERE {descriptor.Filter}";
             return $"({parts}){(descriptor.IsUnique ? " UNIQUE" : "")}{facets}";
+        }
+    }
+
+    /// <summary>
+    /// Fails when a declaration carries an index option of the provider's satellite that this
+    /// differ does not forward: the model is being diffed by the core differ where the satellite's
+    /// should run.
+    /// </summary>
+    /// <remarks>
+    /// That happens with <c>UseComplexIndexes()</c> instead of the satellite's registration at
+    /// runtime, or without the satellite's <c>.targets</c> at design time. The core forwards no
+    /// property-level option, so <c>INCLUDE</c>, <c>FILLFACTOR</c>, a clustered index or a GIN
+    /// method vanished from the DDL and <c>EnsureCreated()</c> applied the rest cleanly; entity-level
+    /// options went through unchecked and unresolved. Only the provider the differ serves is
+    /// checked: a model shared between PostgreSQL and SQLite tests carries Npgsql options that
+    /// SQLite rightly ignores. Target only, like every check here.
+    /// </remarks>
+    private void ValidateNoSatelliteOptions(IRelationalModel? target)
+    {
+        if (target is null || _satellite is null)
+            return;
+
+        foreach (var declaration in target.Model.GetComplexIndexes())
+        {
+            var options = declaration.Property is { } property
+                              ? property.GetAnnotations().Select(a => a.Name)
+                              : declaration.ProviderAnnotations.Keys;
+
+            var option = options.FirstOrDefault(name => _satellite.IsOption(name) && !IsForwardedIndexAnnotation(name));
+            if (option is null)
+                continue;
+
+            var index = declaration.Name is { } name ? $"'{name}'" : $"on ({string.Join(", ", declaration.Parts.Select(p => p.PropertyPath ?? p.Expression ?? p.Template))})";
+
+            throw new InvalidOperationException(
+                $"The complex index {index} on '{declaration.EntityType.DisplayName()}' declares the {_satellite.Provider} index option "
+              + $"'{option}', but the model is diffed by the provider-agnostic core differ, which does not render it: the "
+              + $"index would be created without it. Use the {_satellite.Package} satellite's differ: call {_satellite.Registration} "
+              + "instead of UseComplexIndexes() at runtime, and for `dotnet ef`, reference the satellite package so its .targets "
+              + "selects its differ.");
         }
     }
 
