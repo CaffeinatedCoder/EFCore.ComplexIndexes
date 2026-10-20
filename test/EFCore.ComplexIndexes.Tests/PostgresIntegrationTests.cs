@@ -20,7 +20,7 @@ namespace EFCore.ComplexIndexes.Tests;
 [TestClass]
 [TestCategory("Integration")]
 [DoNotParallelize] // shared container/database; concurrent CREATE EXTENSION IF NOT EXISTS races in PG
-public class PostgresIntegrationTests
+public partial class PostgresIntegrationTests
 {
     private static PostgreSqlContainer? _container;
     private static string?              _connectionString;
