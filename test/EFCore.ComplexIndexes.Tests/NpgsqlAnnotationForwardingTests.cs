@@ -101,8 +101,9 @@ public class NpgsqlAnnotationForwardingTests
                 b.HasKey(x => x.Id);
                 b.Property(x => x.Name).HasColumnName("display_name");
                 b.ComplexProperty(x => x.Email, c => c.Property(x => x.Value).HasColumnName("email"));
-                // "Name" and "Email.Value" are property paths; "raw_col" resolves to nothing and
-                // passes through verbatim as a column name.
+                b.Property<string>("Raw").HasColumnName("raw_col");
+                // "Name" and "Email.Value" are property paths; "raw_col" is no property path and
+                // passes through verbatim as a column name, which must be a column of the table.
                 b.HasComplexIndex(x => x.Email.Value, ix => ix
                     .HasName("ix_contacts_email")
                     .IncludeProperties("Name", "Email.Value", "raw_col"));
