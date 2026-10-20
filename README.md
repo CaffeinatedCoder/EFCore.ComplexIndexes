@@ -99,7 +99,8 @@ about a complex index that was never scaffolded. Register the differ once, next 
 |---|---|
 | PostgreSQL | `UseNpgsqlComplexIndexes()` — the same call as above; since 5.1.0 it registers the differ too |
 | SQL Server | `UseSqlServerComplexIndexes()` |
-| Any other provider (SQLite, …) | `UseComplexIndexes()` from the core package |
+| SQLite | `UseComplexIndexes()` from the core package, after `UseSqlite()`; it also wraps SQLite's migrations SQL generator, so a table rebuild re-creates the complex indexes on the table |
+| Any other provider | `UseComplexIndexes()` from the core package |
 
 With a satellite installed, call only the satellite's method: the core differ would give
 `EnsureCreated()` a schema without the satellite's features, such as exclusion constraints. Each call
@@ -165,12 +166,16 @@ are compared as the database compares them: without regard to case on SQLite and
 `ix_code` and `IX_CODE` are one name there, and as written on PostgreSQL.
 
 On SQLite, a migration that alters or drops a column, or changes a key, foreign key, unique or check
-constraint, runs as a table rebuild, and EF Core re-creates only its own indexes afterwards. A
-complex index on that table would be dropped with no way for the same migration to create it again,
-since the rebuild runs after every other operation. `dotnet ef migrations add` therefore refuses
-such a migration and names the indexes. Split it into three: remove the complex index declarations
-on the table, make the change, declare them again. A table rename counts: EF renames its primary key
-along with it.
+constraint, runs as a table rebuild, and EF Core re-creates only its own indexes afterwards. A table
+rename counts: EF renames its primary key along with it. The rebuild runs after every other operation
+of the migration, so only a step after EF's SQL generator can create a complex index again. With
+`UseComplexIndexes()` registered after `UseSqlite()` on the context `dotnet ef` uses, the migration
+drops each complex index on the table and creates it after the rebuild; that registration must also
+be there when the migration is applied, or the first create fails before the rebuild. Without it,
+`dotnet ef migrations add` refuses such a migration, names the indexes, and offers the other way out:
+remove the complex index declarations on the table, make the change, declare them again, a
+migration each. See
+[Upgrading](docs/upgrading.md#sqlite-re-creates-complex-indexes-after-a-table-rebuild).
 
 ### Composite index across scalar and nested properties
 

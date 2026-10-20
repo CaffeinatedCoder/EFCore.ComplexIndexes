@@ -223,19 +223,44 @@ brace in a string literal.
 
 ### SQLite refuses a table rebuild that would drop complex indexes
 
-On SQLite, `dotnet ef migrations add` refuses a migration that rebuilds a table carrying a complex
-index. SQLite runs an `ALTER COLUMN`, a `DROP COLUMN`, a change to a key, foreign key, unique or
-check constraint, and a table rename by rebuilding the table, and EF Core re-creates only its own
-indexes. Every complex index on the table vanished, unique ones included, while the migration
-applied cleanly and the snapshot still listed them.
+On SQLite without `UseComplexIndexes()`, `dotnet ef migrations add` refuses a migration that
+rebuilds a table carrying a complex index. SQLite runs an `ALTER COLUMN`, a `DROP COLUMN`, a change
+to a key, foreign key, unique or check constraint, a table comment, a new column with a comment
+and a table rename (EF renames the primary key with it) by rebuilding the table, and EF Core
+re-creates only its own indexes. Every complex index on the
+table vanished, unique ones included, while the migration applied cleanly and the snapshot still
+listed them.
 
-No operation in the same migration can re-create them, because EF Core's SQLite generator runs
-every rebuild last. The error names the indexes and the way out, three migrations: remove the
+No operation in the migration can re-create them, because EF Core's SQLite generator runs every
+rebuild last. The error names the indexes and two ways out: register `UseComplexIndexes()` after
+`UseSqlite()` (see the next section), or split the change into three migrations: remove the
 declarations on the table, make the change, then declare them again.
 
 A SQLite database that went through such a migration before is missing those indexes while its
 snapshot lists them. Check with `SELECT name FROM sqlite_master WHERE type = 'index'`, and re-create
 any missing one with `migrationBuilder.Sql(…)` in a new migration.
+
+### SQLite re-creates complex indexes after a table rebuild
+
+With `UseComplexIndexes()` called after `UseSqlite()` on the context `dotnet ef` uses, the migration
+the previous section refuses is scaffolded instead. It drops each complex index on the rebuilt
+table, unchanged ones included, and creates it again, marked with the
+`CustomIndex:AfterTableRebuild` annotation and a call to `__requires_UseComplexIndexes__()` ANDed
+onto its filter. The SQL generator `UseComplexIndexes()` registers moves those creates behind the
+rebuild and removes the marker. TPC copies of a base's index are covered like any other.
+
+The migration needs that generator wherever it is applied: `Migrate()`, `dotnet ef database update`
+and `dotnet ef migrations script` use the context's own services. Applied without it, the first
+create fails with `no such function: __requires_UseComplexIndexes__`, before the rebuild, and the
+transaction leaves the table as it was. Don't edit the marker; the generator refuses a filter it did
+not write.
+
+`migrations add` still refuses when `UseComplexIndexes()` is called before `UseSqlite()`, or when
+another package replaces `IMigrationsSqlGenerator` with a generator that does not derive from
+SQLite's, since EF Core keeps only one replacement. The error names the generator in effect. A
+replacement keyed on SQLite's generator
+(`ReplaceService<IMigrationsSqlGenerator, SqliteMigrationsSqlGenerator, TNew>()`), or a provider
+extension registered before `UseComplexIndexes()`, is wrapped and keeps working.
 
 ### The core differ refuses SQL Server and PostgreSQL index options
 

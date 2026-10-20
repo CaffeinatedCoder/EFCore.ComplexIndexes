@@ -11,7 +11,7 @@
 # silently: `migrations add` still succeeds, it just quietly omits the indexes. So the assertions
 # here are about scaffolded *content*, never about the exit code alone.
 #
-# Both satellites are covered, in separate consumer projects. The SQL Server one is not redundant:
+# Both satellites are covered, in separate consumer projects, and the core package on SQLite. The SQL Server one is not redundant:
 # ForProvider scoping means EF skips a satellite whose provider does not match, so a typo there
 # leaves SQL Server consumers with no differ at all — and nothing else would notice.
 #
@@ -82,8 +82,8 @@ assert_contains() {
 run dotnet tool install dotnet-ef --version "10.*" --tool-path "$work/tools"
 export PATH="$work/tools:$PATH"
 
-# Creates a consumer project and installs the satellite. Program.cs is written by the caller
-# beforehand, at $work/<name>.cs.
+# Creates a consumer project and installs the package, plus any further packages named after it.
+# Program.cs is written by the caller beforehand, at $work/<name>.cs.
 #
 # Source mapping, not just source ordering: this package's own ids must come from the local feed and
 # nowhere else, because these versions also exist on nuget.org and a published one satisfying the
@@ -93,6 +93,7 @@ export PATH="$work/tools:$PATH"
 # machine-level sources.
 scaffold_consumer() {
     local name="$1" package="$2" app="$work/$1"
+    local extra=("${@:3}")
 
     echo "==> $name: consumer project, $package"
     mkdir -p "$app"
@@ -125,7 +126,11 @@ XML
     run dotnet add package "$package" --version "$version"
     # The 10.x line, as for dotnet-ef above. Unversioned, this restores nuget.org's latest, which
     # becomes EF Core 11 the day it ships: a package for net11.0, refused by this net10.0 project.
+    # The same holds for the further packages, all of them EF Core's.
     run dotnet add package Microsoft.EntityFrameworkCore.Design --version "10.*"
+    for extra_package in "${extra[@]+"${extra[@]}"}"; do
+        run dotnet add package "$extra_package" --version "10.*"
+    done
 
     # Built explicitly first: `dotnet ef` reports a compile error only as "Build failed. Use dotnet
     # build to see the errors", which in CI is indistinguishable from the design-time host failing.
@@ -308,6 +313,103 @@ elif grep -qi "clustered" <<<"$reject_output"; then
 else
     echo "  FAIL: migrations add failed, but not with the clustered-index rejection:"
     echo "$reject_output" | tail -5 | sed 's/^/      /'
+    failed=1
+fi
+
+# ── SQLite (core package) ────────────────────────────────────────────────────────────────────────
+#
+# SQLite rebuilds a table to alter a column, after every other operation, and drops the complex
+# indexes on it. UseComplexIndexes() wraps SQLite's SQL generator to create them again after the
+# rebuild, and the design-time differ scaffolds that only when it finds the wrapper on the context
+# dotnet ef builds. In-process tests construct both halves themselves; here dotnet ef does. The
+# environment variables select the model (SMOKE_V2: Nickname optional, a rebuild) and the wiring
+# (SMOKE_UNWIRED: no UseComplexIndexes()); dotnet ef runs each command in a new process.
+
+cat > "$work/sqlite.cs" <<'CSHARP'
+using EFCore.ComplexIndexes;
+using Microsoft.EntityFrameworkCore;
+
+using var db = new ClubContext();
+var connection = db.Database.GetDbConnection();
+connection.Open();
+using var command = connection.CreateCommand();
+command.CommandText = "SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'members'";
+using var reader = command.ExecuteReader();
+while (reader.Read())
+    Console.WriteLine("index: " + reader.GetString(0));
+
+public sealed class EmailAddress
+{
+    public string Value { get; set; } = "";
+}
+
+public sealed class Member
+{
+    public int          Id       { get; set; }
+    public string?      Nickname { get; set; }
+    public EmailAddress Email    { get; set; } = new();
+}
+
+public sealed class ClubContext : DbContext
+{
+    protected override void OnConfiguring(DbContextOptionsBuilder options)
+    {
+        options.UseSqlite("Data Source=club.db");
+        if (Environment.GetEnvironmentVariable("SMOKE_UNWIRED") != "1")
+            options.UseComplexIndexes();
+    }
+
+    protected override void OnModelCreating(ModelBuilder model)
+        => model.Entity<Member>(entity =>
+        {
+            entity.ToTable("members");
+            entity.ComplexProperty(m => m.Email);
+            entity.HasComplexIndex(m => m.Email.Value, isUnique: true, indexName: "ux_members_email");
+            if (Environment.GetEnvironmentVariable("SMOKE_V2") != "1")
+                entity.Property(m => m.Nickname).IsRequired();
+        });
+}
+CSHARP
+
+scaffold_consumer sqlite EFCore.ComplexIndexes Microsoft.EntityFrameworkCore.Sqlite
+run dotnet-ef database update
+
+echo "==> sqlite: a migration that rebuilds the table"
+export SMOKE_V2=1
+run dotnet-ef migrations add Rebuild
+rebuild="$(find "$work/sqlite/Migrations" -name '*_Rebuild.cs' | head -1)"
+assert_contains 'CustomIndex:AfterTableRebuild'  "$rebuild" "the create after the rebuild is marked"
+assert_contains '__requires_UseComplexIndexes__' "$rebuild" "and carries the marker that fails without the wrapper"
+
+if unwired_output="$(SMOKE_UNWIRED=1 dotnet-ef database update 2>&1)"; then
+    echo "  FAIL: the rebuild applied without UseComplexIndexes()"
+    failed=1
+elif grep -q "no such function: __requires_UseComplexIndexes__" <<<"$unwired_output"; then
+    echo "  ok: applied without UseComplexIndexes(), it fails on the marker"
+else
+    echo "  FAIL: database update failed, but not on the marker:"
+    echo "$unwired_output" | tail -5 | sed 's/^/      /'
+    failed=1
+fi
+run dotnet run --no-build
+assert_contains 'index: ux_members_email' <(echo "$output") "the failed update left the index in place"
+
+run dotnet-ef database update
+run dotnet run --no-build
+assert_contains 'index: ux_members_email' <(echo "$output") "the rebuild re-created the complex index"
+
+assert_no_churn sqlite
+
+echo "==> sqlite: without UseComplexIndexes(), the rebuild is refused"
+unset SMOKE_V2
+if refuse_output="$(SMOKE_UNWIRED=1 dotnet-ef migrations add Back 2>&1)"; then
+    echo "  FAIL: a rebuild scaffolded without UseComplexIndexes()"
+    failed=1
+elif grep -q "SQLite rebuilds table 'members'" <<<"$refuse_output"; then
+    echo "  ok: refused at migrations add"
+else
+    echo "  FAIL: migrations add failed, but not with the rebuild refusal:"
+    echo "$refuse_output" | tail -5 | sed 's/^/      /'
     failed=1
 fi
 
