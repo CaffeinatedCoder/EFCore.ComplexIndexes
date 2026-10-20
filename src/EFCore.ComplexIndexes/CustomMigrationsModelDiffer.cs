@@ -89,6 +89,12 @@ public class CustomMigrationsModelDiffer(
     private readonly bool _rebuildsTablesLikeSqlite =
         typeMappingSource.GetType().Namespace?.StartsWith("Microsoft.EntityFrameworkCore.Sqlite", StringComparison.Ordinal) == true;
 
+    // For messages: the provider's assembly, which is what a consumer installed.
+    private readonly string _provider =
+        typeMappingSource.GetType().Namespace?.StartsWith("Microsoft.EntityFrameworkCore.Sqlite", StringComparison.Ordinal) == true
+            ? "SQLite"
+            : typeMappingSource.GetType().Assembly.GetName().Name ?? typeMappingSource.GetType().Name;
+
     // The satellite whose differ this provider's models need, when one exists.
     private readonly Satellite? _satellite =
         Satellites.FirstOrDefault(s => typeMappingSource.GetType().Namespace?.StartsWith(s.ProviderNamespace, StringComparison.Ordinal) == true);
@@ -148,6 +154,7 @@ public class CustomMigrationsModelDiffer(
         ValidateNoNativeIndexNameCollision(target, targetIndexes);
         ValidateIndexNameLengths(target, targetIndexes);
         ValidateQueryUsableLeadingParts(targetIndexes);
+        ValidateRenderableParts(targetIndexes);
         ValidateNoSatelliteOptions(target);
         if (target is not null)
             ValidateTargetIndexes(target, targetIndexes);
@@ -1109,6 +1116,41 @@ public class CustomMigrationsModelDiffer(
               + $"'{fallback.Path}', which EF Core's queries compare as {fallback.StoreType}. PostgreSQL cannot index that conversion from "
               + "the stored text (it is not IMMUTABLE), so no query would ever use this index. Declare it unique if it "
               + "exists to enforce uniqueness, put another part first, or map the member to a regular column.");
+        }
+    }
+
+    /// <summary>
+    /// Fails, on a provider no satellite serves, when an index has a part only the PostgreSQL
+    /// satellite's generator renders: <c>NULLS FIRST</c>/<c>NULLS LAST</c> ordering or an expression.
+    /// </summary>
+    /// <remarks>
+    /// Such an index goes through the parts annotation, which only that generator reads, with
+    /// <see cref="RuntimeWiringSentinel"/> appended to its columns so that any other generator fails.
+    /// On SQLite that held only while double-quoted string literals are off, as in the bundled
+    /// build: with them on (<c>SQLITE_DBCONFIG_DQS_DDL</c>, on in a default build of SQLite) the
+    /// sentinel is taken for a string, and the index applies with a constant column and without its
+    /// ordering. A satellite rejects what its own provider cannot express in its
+    /// <c>ValidateCreateIndexOperation</c>. Target model only, so that a snapshot holding such an
+    /// index stays diffable and the index can be fixed.
+    /// </remarks>
+    private void ValidateRenderableParts(HashSet<IndexDescriptor> descriptors)
+    {
+        if (_satellite is not null)
+            return;
+
+        foreach (var descriptor in descriptors.Where(d => d.RequiresPartsAnnotation))
+        {
+            var what = descriptor.HasExpression
+                           ? "contains a SQL expression part"
+                           : "declares NULLS FIRST/LAST ordering";
+            var remedy = descriptor.HasExpression
+                             ? "Index the column instead, or a computed column holding the expression."
+                             : "Remove the DbOrder.NullsFirst/NullsLast marker.";
+
+            throw new InvalidOperationException(
+                $"The complex index '{descriptor.IndexName}' on table '{descriptor.TableName}' {what}, which this package "
+              + $"renders only on PostgreSQL, through the EFCore.ComplexIndexes.PostgreSQL satellite. {_provider} has no "
+              + $"satellite, so the index would fail to apply or apply without it. {remedy}");
         }
     }
 
