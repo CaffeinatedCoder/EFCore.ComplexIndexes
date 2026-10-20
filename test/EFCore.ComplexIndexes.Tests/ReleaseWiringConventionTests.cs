@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Text.RegularExpressions;
 
 namespace EFCore.ComplexIndexes.Tests;
@@ -269,6 +270,87 @@ public class ReleaseWiringConventionTests
         Assert.IsTrue(
             IndexOf(line => line.StartsWith("gh release create", StringComparison.Ordinal) && line.Contains("\"${flags[@]}\"", StringComparison.Ordinal), guardEnd) > guardEnd,
             "The release step's `gh release create` does not pass the flags it computes.");
+    }
+
+    /// <summary>
+    /// The GitHub release's notes link the docs at the tag, not at <c>main</c>.
+    /// </summary>
+    /// <remarks>
+    /// The changelog links this repository at <c>blob/main</c>, and <c>main</c> becomes another line
+    /// after the <c>v5.5.0</c> tag (#151). This runs the step's own lines, from the extraction up to
+    /// the empty-notes check, against a seeded changelog: matching the text would pass with a rewrite
+    /// that never matches, and the bash on a contributor's Mac (3.2) and on the runner (5.x) read a
+    /// quoted replacement differently.
+    /// </remarks>
+    [TestMethod(DisplayName = "The GitHub release's notes link the docs at the tag")]
+    public void Github_release_notes_link_the_docs_at_the_tag()
+    {
+        const string repository = "https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes";
+
+        var step = Regex.Match(ReleaseWorkflowText, @"(?ms)^      - name: Create the release if it does not exist\n.*?(?=^      - name: |\z)").Value;
+        var run  = step.Split('\n').SkipWhile(line => line.Trim() != "run: |").Skip(1).ToList();
+
+        var start = run.FindIndex(line => line.TrimStart().StartsWith("notes=\"$(awk", StringComparison.Ordinal));
+        var end   = run.FindIndex(Math.Max(start, 0), line => line.Trim() == "if [[ -z \"$notes\" ]]; then");
+
+        Assert.IsTrue(start >= 0 && end > start, "Could not find the notes extraction in the 'Create the release if it does not exist' step.");
+
+        var directory = Directory.CreateTempSubdirectory("release-notes-").FullName;
+
+        try
+        {
+            File.WriteAllText(Path.Combine(directory, "CHANGELOG.md"), string.Join("\n",
+                "# Changelog",
+                "",
+                "## [5.5.1] — 2026-12-01",
+                "",
+                $"- Docs: not this one ({repository}/blob/main/docs/sqlserver.md).",
+                "",
+                "## [5.5.0] — 2026-11-01",
+                "",
+                $"The introduction, with [the guide]({repository}/blob/main/docs/upgrading.md#changed-answers-in-550).",
+                "",
+                "### Fixed",
+                "",
+                $"- Docs: [the folder]({repository}/tree/main/docs/), [the issue]({repository}/issues/151), [main twice]({repository}/blob/main/README.md) ({repository}/blob/main/CHANGELOG.md).",
+                $"- Docs: [another repository]({repository}.Extra/blob/main/README.md) and [another branch]({repository}/blob/release/5.x/README.md) stay as written.",
+                "",
+                "## [5.4.1] — 2026-10-01",
+                "",
+                "- Indexes: nor this one.",
+                ""));
+
+            var script = string.Join("\n", run.Take(end).Skip(start).Select(line => line.StartsWith("          ", StringComparison.Ordinal) ? line[10..] : line))
+                       + "\nprintf '%s' \"$notes\"\n";
+
+            var bash = new ProcessStartInfo("bash") { WorkingDirectory = directory, RedirectStandardOutput = true, RedirectStandardError = true };
+            bash.ArgumentList.Add("-c");
+            bash.ArgumentList.Add(script);
+            bash.Environment["VERSION"]  = "5.5.0";
+            bash.Environment["REPO_URL"] = repository;
+
+            using var process = Process.Start(bash)!;
+            var output = process.StandardOutput.ReadToEnd();
+            var error  = process.StandardError.ReadToEnd();
+            process.WaitForExit();
+
+            Assert.AreEqual(0, process.ExitCode, $"The notes extraction failed:\n{error}\n{script}");
+            Assert.AreEqual(
+                string.Join("\n",
+                    $"The introduction, with [the guide]({repository}/blob/v5.5.0/docs/upgrading.md#changed-answers-in-550).",
+                    "",
+                    "### Fixed",
+                    "",
+                    $"- Docs: [the folder]({repository}/tree/v5.5.0/docs/), [the issue]({repository}/issues/151), [main twice]({repository}/blob/v5.5.0/README.md) ({repository}/blob/v5.5.0/CHANGELOG.md).",
+                    $"- Docs: [another repository]({repository}.Extra/blob/main/README.md) and [another branch]({repository}/blob/release/5.x/README.md) stay as written."),
+                output.TrimEnd('\n'),
+                "The GitHub release's notes do not link the docs at the tag. They are built in release.yml's "
+              + "'Create the release if it does not exist' step.");
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
     }
 
     /// <summary>

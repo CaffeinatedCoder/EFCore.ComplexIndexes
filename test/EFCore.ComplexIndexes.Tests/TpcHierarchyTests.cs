@@ -198,7 +198,8 @@ public class TpcHierarchyTests
             => modelBuilder.Entity<VipBooking>().HasExclusionConstraint(x => x.Level, x => x.During, name: "IX_special_bookings_Code");
     }
 
-    // The derived table's name makes the copy's default name 64 bytes long, one over PostgreSQL's limit.
+    // The derived table's name makes the copy's default name 64 bytes long, one over PostgreSQL's limit,
+    // so it is cut by exactly one character.
     private class LongDerivedTableContext(DbContextOptions<LongDerivedTableContext> options) : TpcContext(options)
     {
         public const string LongTable = "vip_bookings_with_a_rather_long_table_name_for_its_rows_";
@@ -206,6 +207,98 @@ public class TpcHierarchyTests
         protected override void Configure(EntityTypeBuilder<Booking> b) => b.HasComplexIndex(x => x.Code);
 
         protected override void ConfigureModel(ModelBuilder modelBuilder) => modelBuilder.Entity<VipBooking>().ToTable(LongTable);
+    }
+
+    // #145: the derived table's name puts each copy's default name past PostgreSQL's 63 bytes, and an
+    // explicit name would repeat on every table, so the copy takes a name shortened as EF's are.
+    private abstract class LongTableContext(DbContextOptions options, string table) : TpcContext(options)
+    {
+        protected override void ConfigureModel(ModelBuilder modelBuilder)
+        {
+            modelBuilder.Entity<SpecialBooking>().ToTable(table);
+            ConfigureLongTable(modelBuilder);
+        }
+
+        protected virtual void ConfigureLongTable(ModelBuilder modelBuilder) { }
+    }
+
+    // 57 characters: 'IX_…_Code' is 65.
+    private const string LongIndexTable = "special_bookings_for_corporate_customer_accounts_xyz_1234";
+
+    // 51 characters: 'EX_…_RoomId_During' and 'AK_…_RoomId_During' are 68.
+    private const string LongConstraintTable = "special_bookings_for_corporate_customer_accounts_xy";
+
+    private class LongIndexTableContext(DbContextOptions<LongIndexTableContext> options) : LongTableContext(options, LongIndexTable)
+    {
+        protected override void Configure(EntityTypeBuilder<Booking> b) => b.HasComplexIndex(x => x.Code, isUnique: true);
+    }
+
+    private class LongExclusionTableContext(DbContextOptions<LongExclusionTableContext> options) : LongTableContext(options, LongConstraintTable)
+    {
+        protected override void Configure(EntityTypeBuilder<Booking> b) => b.HasExclusionConstraint(x => x.RoomId, x => x.During);
+    }
+
+    private class LongTemporalTableContext(DbContextOptions<LongTemporalTableContext> options) : LongTableContext(options, LongConstraintTable)
+    {
+        protected override void Configure(EntityTypeBuilder<Booking> b) => b.HasTemporalConstraint(x => x.RoomId, x => x.During);
+    }
+
+    // Two declarations whose copies agree in their first 62 characters on the long table.
+    private class LongTableSharedPrefixContext(DbContextOptions<LongTableSharedPrefixContext> options) : LongTableContext(options, LongIndexTable)
+    {
+        protected override void Configure(EntityTypeBuilder<Booking> b)
+        {
+            b.HasComplexIndex(x => x.Code);
+            b.HasComplexCompositeIndex(x => new { x.Code, x.RoomId });
+        }
+    }
+
+    // Two derived tables whose names agree in the first 60 characters: cut to 63 bytes, the copies'
+    // names would be one name, and PostgreSQL keeps index names unique per schema.
+    private const string SiblingPrefix = "bookings_for_corporate_customer_accounts_in_the_region_xyz12";
+
+    private class LongSiblingTablesContext(DbContextOptions<LongSiblingTablesContext> options) : TpcContext(options)
+    {
+        protected override void Configure(EntityTypeBuilder<Booking> b)
+        {
+            b.HasComplexIndex(x => x.Code);
+            b.HasExclusionConstraint(x => x.RoomId, x => x.During);
+        }
+
+        protected override void ConfigureModel(ModelBuilder modelBuilder)
+        {
+            modelBuilder.Entity<SpecialBooking>().ToTable(SiblingPrefix + "_special");
+            modelBuilder.Entity<VipBooking>().ToTable(SiblingPrefix + "_vip");
+        }
+    }
+
+    // EF Core shortens its own name for a native index over (Code, RoomId) on the long table to the
+    // same 'IX_…_C~' as the copy of the complex index over Code.
+    private class LongTableNativeIndexContext(DbContextOptions<LongTableNativeIndexContext> options) : LongTableContext(options, LongIndexTable)
+    {
+        protected override void Configure(EntityTypeBuilder<Booking> b) => b.HasComplexIndex(x => x.Code);
+
+        protected override void ConfigureLongTable(ModelBuilder modelBuilder)
+            => modelBuilder.Entity<SpecialBooking>().HasIndex(x => new { x.Code, x.RoomId });
+    }
+
+    // An explicit name over the limit on a TPC type, all of whose tables share a schema: a shorter
+    // explicit name would repeat on every table, which the name checks refuse.
+    private class LongExplicitExclusionNameContext(DbContextOptions<LongExplicitExclusionNameContext> options) : TpcContext(options)
+    {
+        protected override void Configure(EntityTypeBuilder<Booking> b)
+            => b.HasExclusionConstraint(x => x.RoomId, x => x.During, name: "ex_" + new string('r', 61));
+    }
+
+    // Not on a TPC type, so an explicit name fixes it: the 5.2.0 refusal stands.
+    private class LongPlainTableContext(DbContextOptions<LongPlainTableContext> options) : DbContext(options)
+    {
+        protected override void OnModelCreating(ModelBuilder modelBuilder)
+            => modelBuilder.Entity<Plain>(b =>
+            {
+                b.ToTable(LongIndexTable);
+                b.HasComplexIndex(x => x.Code);
+            });
     }
 
     private class ComplexMemberContext(DbContextOptions<ComplexMemberContext> options) : TpcContext(options)
@@ -445,13 +538,113 @@ public class TpcHierarchyTests
         StringAssert.Contains(exception.Message, "42P07");
     }
 
-    [TestMethod(DisplayName = "The identifier limit applies to the default name of each table's copy")]
-    public void Copy_name_too_long_throws()
+    [TestMethod(DisplayName = "A copy's default name one byte over the limit is cut to 63 bytes and marked '~', as EF Core's are")]
+    public void Copy_name_one_over_the_limit_is_shortened()
     {
-        var exception = Assert.ThrowsExactly<InvalidOperationException>(() => Diff("Npgsql", null, Model<LongDerivedTableContext>("Npgsql")));
+        var creates = Creates(Diff("Npgsql", null, Model<LongDerivedTableContext>("Npgsql")));
 
-        StringAssert.Contains(exception.Message, $"'IX_{LongDerivedTableContext.LongTable}_Code'");
-        StringAssert.Contains(exception.Message, "64 bytes");
+        var name = creates.Single(c => c.Table == LongDerivedTableContext.LongTable).Name;
+        Assert.AreEqual($"IX_{LongDerivedTableContext.LongTable}_Co~", name);
+        Assert.AreEqual(63, name.Length);
+    }
+
+    [TestMethod(DisplayName = "A complex index on a TPC base with a long derived table scaffolds, its copy named as EF Core names its own (#145)")]
+    public void Long_derived_table_index_copy_is_shortened()
+    {
+        var creates = Creates(Diff("Npgsql", null, Model<LongIndexTableContext>("Npgsql")));
+
+        CollectionAssert.AreEqual(
+            new[] { "IX_bookings_Code", $"IX_{LongIndexTable}_C~", "IX_vip_bookings_Code" },
+            creates.Select(c => c.Name).ToArray());
+        Assert.AreEqual(LongIndexTable, creates[1].Table);
+        Assert.IsTrue(creates.All(c => c.IsUnique && c.Columns.SequenceEqual(["Code"])));
+    }
+
+    [TestMethod(DisplayName = "An exclusion constraint on a TPC base with a long derived table scaffolds, its copy's name shortened (#145)")]
+    public void Long_derived_table_exclusion_copy_is_shortened()
+    {
+        var adds = Sql(Diff("Npgsql", null, Model<LongExclusionTableContext>("Npgsql")), "EXCLUDE USING gist");
+
+        Assert.HasCount(3, adds);
+        Assert.IsTrue(adds.Any(s => s.Contains($"ALTER TABLE \"{LongConstraintTable}\" ADD CONSTRAINT \"EX_{LongConstraintTable}_RoomId_~\" EXCLUDE")),
+                      string.Join("\n", adds));
+        Assert.IsTrue(adds.Any(s => s.Contains("ADD CONSTRAINT \"EX_bookings_RoomId_During\"")));
+    }
+
+    [TestMethod(DisplayName = "A temporal constraint on a TPC base with a long derived table scaffolds, its copy's name shortened (#145)")]
+    public void Long_derived_table_temporal_copy_is_shortened()
+    {
+        var adds = Sql(Diff("Npgsql", null, Model<LongTemporalTableContext>("Npgsql")), "WITHOUT OVERLAPS");
+
+        Assert.HasCount(3, adds);
+        Assert.IsTrue(adds.Any(s => s.Contains($"\"AK_{LongConstraintTable}_RoomId_~\"")), string.Join("\n", adds));
+    }
+
+    [TestMethod(DisplayName = "Two copies that agree in their first 62 bytes are told apart by '~' and '~1', as EF Core's are")]
+    public void Long_copies_sharing_a_prefix_are_uniquified()
+    {
+        var names = Creates(Diff("Npgsql", null, Model<LongTableSharedPrefixContext>("Npgsql")))
+                   .Where(c => c.Table == LongIndexTable)
+                   .ToDictionary(c => string.Join(",", c.Columns), c => c.Name);
+
+        Assert.AreEqual($"IX_{LongIndexTable}_C~", names["Code"]);
+        Assert.AreEqual($"IX_{LongIndexTable}_~1", names["Code,RoomId"]);
+    }
+
+    [TestMethod(DisplayName = "Copies on two long sibling tables that would shorten alike take '~' and '~1' within the schema")]
+    public void Long_sibling_table_copies_are_uniquified_across_tables()
+    {
+        Assert.AreEqual(60, SiblingPrefix.Length, "The premise: the tables differ only past the cut.");
+        var operations = Diff("Npgsql", null, Model<LongSiblingTablesContext>("Npgsql"));
+
+        var indexes = Creates(operations).Where(c => c.Table.StartsWith(SiblingPrefix, StringComparison.Ordinal))
+                                         .ToDictionary(c => c.Table, c => c.Name);
+        Assert.AreEqual($"IX_{SiblingPrefix[..59]}~", indexes[SiblingPrefix + "_special"]);
+        Assert.AreEqual($"IX_{SiblingPrefix[..58]}~1", indexes[SiblingPrefix + "_vip"]);
+
+        var constraints = Sql(operations, "EXCLUDE USING gist");
+        Assert.IsTrue(constraints.Any(c => c.Contains($"\"EX_{SiblingPrefix[..59]}~\"")), string.Join("\n", constraints));
+        Assert.IsTrue(constraints.Any(c => c.Contains($"\"EX_{SiblingPrefix[..58]}~1\"")), string.Join("\n", constraints));
+
+        Assert.IsEmpty(Diff("Npgsql", Model<LongSiblingTablesContext>("Npgsql"), Model<LongSiblingTablesContext>("Npgsql")));
+    }
+
+    [TestMethod(DisplayName = "A shortened copy name steps aside for the name EF Core shortened its own index to")]
+    public void Long_copy_avoids_native_shortened_name()
+    {
+        var target = Model<LongTableNativeIndexContext>("Npgsql");
+        var native = target.Tables.Single(t => t.Name == LongIndexTable).Indexes.Single().Name;
+        Assert.AreEqual($"IX_{LongIndexTable}_C~", native, "The premise: EF Core shortens its own name this way.");
+
+        var copy = Creates(Diff("Npgsql", null, target)).Single(c => c.Table == LongIndexTable && c.Columns.SequenceEqual(["Code"]));
+        Assert.AreEqual($"IX_{LongIndexTable}_~1", copy.Name);
+    }
+
+    [TestMethod(DisplayName = "Shortened copy names compare equal on both sides of a diff, so they never churn")]
+    public void Long_copies_do_not_churn()
+    {
+        Assert.IsEmpty(Diff("Npgsql", Model<LongIndexTableContext>("Npgsql"), Model<LongIndexTableContext>("Npgsql")));
+        Assert.IsEmpty(Diff("Npgsql", Model<LongExclusionTableContext>("Npgsql"), Model<LongExclusionTableContext>("Npgsql")));
+        Assert.IsEmpty(Diff("Npgsql", Model<LongTemporalTableContext>("Npgsql"), Model<LongTemporalTableContext>("Npgsql")));
+    }
+
+    [TestMethod(DisplayName = "An explicit name over the limit on a TPC type is refused with advice to leave it out, not to shorten it")]
+    public void Long_explicit_name_on_tpc_type_advises_leaving_it_out()
+    {
+        var exception = Assert.ThrowsExactly<InvalidOperationException>(() => Diff("Npgsql", null, Model<LongExplicitExclusionNameContext>("Npgsql")));
+
+        StringAssert.Contains(exception.Message, "64 bytes long");
+        StringAssert.Contains(exception.Message, "Leave the name out");
+        Assert.DoesNotContain("explicit, shorter name", exception.Message);
+    }
+
+    [TestMethod(DisplayName = "A default name over the limit off a TPC hierarchy is still refused, since an explicit name fixes it")]
+    public void Long_default_name_off_tpc_still_throws()
+    {
+        var exception = Assert.ThrowsExactly<InvalidOperationException>(() => Diff("Npgsql", null, Model<LongPlainTableContext>("Npgsql")));
+
+        StringAssert.Contains(exception.Message, $"'IX_{LongIndexTable}_Code'");
+        StringAssert.Contains(exception.Message, "Give the declaration an explicit, shorter name (indexName)");
     }
 
     // ── Members EF Core 10 leaves out of a derived table ──
