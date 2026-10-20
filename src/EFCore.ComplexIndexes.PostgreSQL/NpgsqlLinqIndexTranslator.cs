@@ -20,6 +20,9 @@ namespace EFCore.ComplexIndexes.PostgreSQL;
 /// </remarks>
 internal static class NpgsqlLinqIndexTranslator
 {
+    // The characters Npgsql's query translation passes for a parameterless Trim/TrimStart/TrimEnd.
+    private const string TrimCharacters = "E' \\t\\n\\r'";
+
     public static string Translate(LambdaExpression lambda)
         => Visit(lambda.Body, lambda.Parameters[0]);
 
@@ -303,28 +306,32 @@ internal static class NpgsqlLinqIndexTranslator
                 case nameof(string.ToUpper) when call.Arguments.Count == 0:
                     return $"upper({target})";
 
+                // Spelled as Npgsql's query translation spells them, character for character: an
+                // index serves only a query whose expression matches it, and btrim(x) alone trims
+                // spaces, so a unique index on it let 'Y\t' and 'Y' coexist where Trim() says equal.
                 case nameof(string.Trim) when call.Arguments.Count == 0:
-                    return $"btrim({target})";
+                    return $"btrim({target}, {TrimCharacters})";
 
                 case nameof(string.TrimStart) when call.Arguments.Count == 0:
-                    return $"ltrim({target})";
+                    return $"ltrim({target}, {TrimCharacters})";
 
                 case nameof(string.TrimEnd) when call.Arguments.Count == 0:
-                    return $"rtrim({target})";
+                    return $"rtrim({target}, {TrimCharacters})";
 
                 case nameof(string.Replace) when call.Arguments.Count == 2 && call.Method.GetParameters()[0].ParameterType == typeof(string):
                     return $"replace({target}, {Visit(call.Arguments[0], root)}, {Visit(call.Arguments[1], root)})";
 
                 case nameof(string.Substring) when call.Arguments.Count is 1 or 2:
                 {
-                    // .NET substrings are 0-based, SQL's substr is 1-based.
+                    // .NET substrings are 0-based, SQL's are 1-based. substring, not substr: they are
+                    // different functions to the planner, and Npgsql's queries call substring.
                     var start = call.Arguments[0] is ConstantExpression { Value: int startIndex }
                                     ? (startIndex + 1).ToString(CultureInfo.InvariantCulture)
                                     : $"({Visit(call.Arguments[0], root)} + 1)";
 
                     return call.Arguments.Count == 1
-                               ? $"substr({target}, {start})"
-                               : $"substr({target}, {start}, {Visit(call.Arguments[1], root)})";
+                               ? $"substring({target}, {start})"
+                               : $"substring({target}, {start}, {Visit(call.Arguments[1], root)})";
                 }
             }
         }

@@ -144,7 +144,7 @@ public class NpgsqlLinqExpressionIndexTests
     {
         var operations = GetDifferences(source: null, target: BuildRelationalModel<SubstringLengthContext>());
 
-        Assert.AreEqual("upper(substr(\"code\", 1, 3))", SingleExpression(operations));
+        Assert.AreEqual("upper(substring(\"code\", 1, 3))", SingleExpression(operations));
     }
 
     [TestMethod(DisplayName = "Typed expressions compose with ToJson members")]
@@ -166,6 +166,61 @@ public class NpgsqlLinqExpressionIndexTests
         Assert.IsEmpty(operations.OfType<DropIndexOperation>());
     }
 
+    // ── Agreement with EF Core's query translation ──
+
+    private class Code
+    {
+        public int    Id    { get; set; }
+        public string Value { get; set; } = "";
+    }
+
+    // PostgreSQL uses an expression index only for a query whose expression matches it, so each
+    // typed expression must render exactly as Npgsql renders the same lambda in a query.
+    // substr(…) and btrim(x) applied cleanly and served no query: substring(…) and
+    // btrim(x, E' \t\n\r') are what EF Core sends.
+    private static readonly Dictionary<string, System.Linq.Expressions.Expression<Func<Code, string>>> QueryShapedExpressions = new()
+    {
+        ["ix_substring_length"] = x => x.Value.Substring(1, 3),
+        ["ix_substring"]        = x => x.Value.Substring(1),
+        ["ix_trim"]             = x => x.Value.Trim(),
+        ["ix_trim_start"]       = x => x.Value.TrimStart(),
+        ["ix_trim_end"]         = x => x.Value.TrimEnd(),
+        ["ix_lower"]            = x => x.Value.ToLower(),
+        ["ix_replace"]          = x => x.Value.Replace("-", ""),
+    };
+
+    private class QueryShapedContext(DbContextOptions<QueryShapedContext> options) : DbContext(options)
+    {
+        public DbSet<Code> Codes => Set<Code>();
+
+        protected override void OnModelCreating(ModelBuilder modelBuilder) =>
+            modelBuilder.Entity<Code>(b =>
+            {
+                b.ToTable("codes");
+                foreach (var (name, expression) in QueryShapedExpressions)
+                    b.HasExpressionIndex(expression, indexName: name);
+            });
+    }
+
+    [TestMethod(DisplayName = "Typed expressions render as EF Core's queries render them")]
+    public void Typed_expressions_match_ef_core_queries()
+    {
+        var expressions = GetDifferences(source: null, target: BuildRelationalModel<QueryShapedContext>())
+                         .OfType<CreateIndexOperation>()
+                         .ToDictionary(
+                              o => o.Name,
+                              o => IndexPartsSerializer.Deserialize((string)o[ComplexIndexAnnotations.IndexParts]!).Single().Value);
+
+        using var context = new QueryShapedContext(new DbContextOptionsBuilder<QueryShapedContext>()
+                                                  .UseNpgsql(MigrationHarness.NpgsqlConnection).Options);
+
+        foreach (var (name, expression) in QueryShapedExpressions)
+        {
+            var select = context.Codes.Select(expression).ToQueryString().Split('\n')[0];
+            Assert.AreEqual(select["SELECT ".Length..].Replace("c.", ""), expressions[name], name);
+        }
+    }
+
     // ── Translator-level tests ──
 
     private static string Translate<TResult>(System.Linq.Expressions.Expression<Func<Person, TResult>> expression)
@@ -177,7 +232,7 @@ public class NpgsqlLinqExpressionIndexTests
         Assert.AreEqual("{Email.Value}",        Translate(x => x.Email.Value));
         Assert.AreEqual("lower({Email.Value})", Translate(x => x.Email.Value.ToLower()));
         Assert.AreEqual("length({Last})",       Translate(x => x.Last.Length));
-        Assert.AreEqual("btrim({First})",       Translate(x => x.First.Trim()));
+        Assert.AreEqual("btrim({First}, E' \\t\\n\\r')", Translate(x => x.First.Trim()));
         Assert.AreEqual("replace({Code}, '-', '')", Translate(x => x.Code.Replace("-", "")));
     }
 
@@ -191,7 +246,7 @@ public class NpgsqlLinqExpressionIndexTests
             CultureInfo.CurrentCulture = new CultureInfo("de-DE");
 
             var prefixLength = 3;
-            Assert.AreEqual("substr({Code}, 1, 3)", Translate(x => x.Code.Substring(0, prefixLength)));
+            Assert.AreEqual("substring({Code}, 1, 3)", Translate(x => x.Code.Substring(0, prefixLength)));
 
             var factor = 1.5;
             Assert.AreEqual("({Last} || '1.5')", Translate(x => x.Last + factor.ToString(CultureInfo.InvariantCulture)));
