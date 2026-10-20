@@ -38,6 +38,7 @@ The last 5.x minor with a change of its own: the line refuses EF Core 11, whose 
 
 ### Fixed
 
+- Constraints: on PostgreSQL, a migration that drops both tables of a temporal foreign key applies, `Down()` included, where it failed with 2BP01 when the principal's table sorted first ([Temporal foreign keys](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/docs/postgresql-constraints.md#temporal-foreign-keys-period--requires-postgresql-18)).
 - Migrations: on SQL Server, changing the type, length or nullability of a column a complex index reads applies, where it failed with Msg 5074. The index is dropped before the `ALTER COLUMN` and created after it ([SQL Server](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/docs/sqlserver.md)).
 - Docs: the temporal foreign key samples pass both type arguments to `HasTemporalForeignKey`, and compile ([Temporal foreign keys](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/docs/postgresql-constraints.md#temporal-foreign-keys-period--requires-postgresql-18)).
 
