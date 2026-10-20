@@ -1,3 +1,4 @@
+using System.Globalization;
 using EFCore.ComplexIndexes.PostgreSQL;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Migrations.Operations;
@@ -116,6 +117,30 @@ public class NpgsqlStorageParameterTests
 
         Assert.IsFalse(operations.OfType<CreateIndexOperation>().Any());
         Assert.IsFalse(operations.OfType<DropIndexOperation>().Any());
+    }
+
+    // Npgsql's own generator formats with the current culture (x=0,25 under de-DE, a syntax error at
+    // apply); this package's generator, used for expression and NULLS-ordered indexes, must not.
+    [TestMethod(DisplayName = "The custom generator renders a fractional storage parameter invariantly in every culture")]
+    [DataRow("de-DE")]
+    [DataRow("tr-TR")]
+    [DataRow("ar-SA")]
+    public void Fractional_storage_parameter_is_culture_invariant(string culture)
+    {
+        var op = new CreateIndexOperation { Name = "ix_f", Table = "docs", Columns = ["lower(title)"] };
+        op.AddAnnotation(ComplexIndexAnnotations.IndexParts, IndexPartsSerializer.Serialize([new ResolvedIndexPart(true, "lower(title)")]));
+        op.AddAnnotation("Npgsql:StorageParameter:x", 0.25);
+
+        var previous = CultureInfo.CurrentCulture;
+        CultureInfo.CurrentCulture = new CultureInfo(culture);
+        try
+        {
+            StringAssert.Contains(MigrationHarness.NpgsqlSql([op]), "WITH (x=0.25)");
+        }
+        finally
+        {
+            CultureInfo.CurrentCulture = previous;
+        }
     }
 
     [TestMethod(DisplayName = "A string-valued storage parameter is quoted")]

@@ -21,6 +21,7 @@ The last 5.x minor with a change of its own: the line refuses EF Core 11, whose 
 ### Fixed
 
 - Docs: the temporal foreign key samples pass both type arguments to `HasTemporalForeignKey`, and compile ([Temporal foreign keys](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/docs/postgresql-constraints.md#temporal-foreign-keys-period--requires-postgresql-18)).
+- Docs: the PostgreSQL index guide says to pass a fractional storage parameter as a string, since Npgsql's generator formats numbers with the current culture ([Index methods](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/docs/postgresql-indexes.md#index-methods-on-a-complex-property)).
 
 ## [5.4.0] — 2026-09-22
 
