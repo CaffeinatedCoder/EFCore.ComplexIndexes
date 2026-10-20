@@ -191,6 +191,50 @@ public class NpgsqlNameCollisionTests
         }
     }
 
+    // Tables, views and sequences share the relation namespace with indexes.
+    private class ComplexIndexLikeTableContext(DbContextOptions<ComplexIndexLikeTableContext> o) : ModelContext(o)
+    {
+        protected override void Configure(ModelBuilder m)
+        {
+            m.Entity<Booking>(b =>
+            {
+                MapBooking(b);
+                b.HasComplexIndex(x => x.Code, indexName: "stays");
+            });
+            m.Entity<Stay>(b => MapStay(b));
+        }
+    }
+
+    private class ExclusionLikeViewContext(DbContextOptions<ExclusionLikeViewContext> o) : ModelContext(o)
+    {
+        protected override void Configure(ModelBuilder m)
+        {
+            m.Entity<Booking>(b =>
+            {
+                MapBooking(b);
+                b.HasExclusionConstraint(x => x.RoomId, x => x.Period, name: "stay_view");
+            });
+            m.Entity<Stay>(b =>
+            {
+                b.ToView("stay_view");
+                b.HasKey(x => x.Id);
+            });
+        }
+    }
+
+    private class TemporalLikeSequenceContext(DbContextOptions<TemporalLikeSequenceContext> o) : ModelContext(o)
+    {
+        protected override void Configure(ModelBuilder m)
+        {
+            m.HasSequence<int>("booking_numbers");
+            m.Entity<Booking>(b =>
+            {
+                MapBooking(b);
+                b.HasTemporalConstraint(x => x.RoomId, x => x.Period, name: "booking_numbers");
+            });
+        }
+    }
+
     // ── Legitimate reuse ──
 
     private class TemporalForeignKeysAcrossTablesContext(DbContextOptions<TemporalForeignKeysAcrossTablesContext> o) : ModelContext(o)
@@ -209,6 +253,36 @@ public class NpgsqlNameCollisionTests
                 MapStay(b);
                 b.HasTemporalForeignKey<Stay, Booking>(x => x.RoomId, x => x.Period, x => x.RoomId, x => x.Period, name: "fk_room");
             });
+        }
+    }
+
+    private class TemporalForeignKeyLikeTableContext(DbContextOptions<TemporalForeignKeyLikeTableContext> o) : ModelContext(o)
+    {
+        protected override void Configure(ModelBuilder m)
+        {
+            m.Entity<Booking>(b =>
+            {
+                MapBooking(b);
+                b.HasTemporalConstraint(x => x.RoomId, x => x.Period);
+            });
+            m.Entity<Stay>(b =>
+            {
+                MapStay(b);
+                b.HasTemporalForeignKey<Stay, Booking>(x => x.RoomId, x => x.Period, x => x.RoomId, x => x.Period, name: "bookings");
+            });
+        }
+    }
+
+    private class ComplexIndexLikeTableInOtherSchemaContext(DbContextOptions<ComplexIndexLikeTableInOtherSchemaContext> o) : ModelContext(o)
+    {
+        protected override void Configure(ModelBuilder m)
+        {
+            m.Entity<Booking>(b =>
+            {
+                MapBooking(b);
+                b.HasComplexIndex(x => x.Code, indexName: "stays");
+            });
+            m.Entity<Stay>(b => MapStay(b, "south"));
         }
     }
 
@@ -326,6 +400,39 @@ public class NpgsqlNameCollisionTests
     [TestMethod(DisplayName = "A temporal constraint named like an alternate key on another table is rejected")]
     public void Temporal_constraint_like_alternate_key_elsewhere_collides()
         => StringAssert.Contains(Rejected<TemporalLikeAlternateKeyElsewhereContext>().Message, "the unique constraint on table 'stays'");
+
+    [TestMethod(DisplayName = "A complex index named like a table in its schema is rejected (42P07)")]
+    public void Complex_index_like_table_collides()
+    {
+        var message = Rejected<ComplexIndexLikeTableContext>().Message;
+        StringAssert.Contains(message, "complex index 'stays' on table 'bookings'");
+        StringAssert.Contains(message, "the table 'stays'");
+        StringAssert.Contains(message, "(42P07)");
+    }
+
+    [TestMethod(DisplayName = "An exclusion constraint named like a view in its schema is rejected")]
+    public void Exclusion_constraint_like_view_collides()
+    {
+        var message = Rejected<ExclusionLikeViewContext>().Message;
+        StringAssert.Contains(message, "exclusion constraint 'stay_view'");
+        StringAssert.Contains(message, "the view 'stay_view'");
+    }
+
+    [TestMethod(DisplayName = "A temporal constraint named like a sequence in its schema is rejected")]
+    public void Temporal_constraint_like_sequence_collides()
+    {
+        var message = Rejected<TemporalLikeSequenceContext>().Message;
+        StringAssert.Contains(message, "temporal constraint 'booking_numbers'");
+        StringAssert.Contains(message, "the sequence 'booking_numbers'");
+    }
+
+    [TestMethod(DisplayName = "A temporal foreign key may share a name with a table — it owns no index")]
+    public void Temporal_foreign_key_like_table_is_allowed()
+        => Accepted<TemporalForeignKeyLikeTableContext>();
+
+    [TestMethod(DisplayName = "A complex index may share a name with a table in another schema")]
+    public void Complex_index_like_table_in_other_schema_is_allowed()
+        => Accepted<ComplexIndexLikeTableInOtherSchemaContext>();
 
     [TestMethod(DisplayName = "Temporal foreign keys may share a name across tables — they own no index")]
     public void Temporal_foreign_keys_across_tables_are_allowed()

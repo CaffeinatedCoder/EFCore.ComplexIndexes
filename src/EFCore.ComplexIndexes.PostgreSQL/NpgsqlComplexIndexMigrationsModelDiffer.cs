@@ -402,8 +402,8 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
     /// table: a clash fails the migration with 42710, or — every exclusion constraint being added
     /// after <c>DROP CONSTRAINT IF EXISTS</c> — silently replaces the other constraint. And an index
     /// name, including the index behind every primary key, unique, exclusion and temporal
-    /// constraint, is unique among all relations of its schema, not its table: a clash fails with
-    /// 42P07. Each kind used to be checked against its own kind on the same table at most, so a
+    /// constraint, is unique among all relations of its schema, not its table — tables, views and
+    /// sequences included: a clash fails with 42P07. Each kind used to be checked against its own kind on the same table at most, so a
     /// temporal constraint named like an exclusion constraint, or like an index anywhere in the
     /// schema, scaffolded cleanly. Collisions between two of EF Core's own objects are not this
     /// package's to police. Target model only: a snapshot that already holds a collision must stay
@@ -429,6 +429,14 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
 
         void Add(string name, string table, string? schema, string kind, bool ours, bool constraint, bool indexBacked)
             => names.Add(new NamedObject(name, table, schema ?? defaultSchema, kind, ours, constraint, indexBacked));
+
+        // The relations themselves: an index named like a table, view or sequence of its schema
+        // fails with 42P07 just as one named like another index does.
+        void AddRelation(string name, string? schema, string kind)
+            => names.Add(new NamedObject(name, name, schema ?? defaultSchema, kind, Ours: false, IsConstraint: false, InRelationNamespace: true)
+                         {
+                             IsRelation = true
+                         });
 
         foreach (var index in ExtractAllIndexDescriptors(target))
             Add(index.IndexName, index.TableName, index.Schema, "complex index", ours: true, constraint: false, indexBacked: true);
@@ -457,7 +465,15 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
             // A check constraint without a name gets one from PostgreSQL, which never collides.
             foreach (var check in table.CheckConstraints.Where(c => c.Name is not null))
                 Add(check.Name!, table.Name, table.Schema, "check constraint", ours: false, constraint: true, indexBacked: false);
+
+            AddRelation(table.Name, table.Schema, "table");
         }
+
+        foreach (var view in target.Views)
+            AddRelation(view.Name, view.Schema, "view");
+
+        foreach (var sequence in target.Model.GetSequences())
+            AddRelation(sequence.Name, sequence.Schema, "sequence");
 
         ThrowOnFirstCollision(
             names.Where(n => n.IsConstraint).GroupBy(n => (n.Schema, n.Table, n.Name)),
@@ -467,9 +483,10 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
                           : "."));
 
         ThrowOnFirstCollision(
-            names.Where(n => n.IsIndexBacked).GroupBy(n => (n.Schema, "", n.Name)),
+            names.Where(n => n.InRelationNamespace).GroupBy(n => (n.Schema, "", n.Name)),
             other => "PostgreSQL keeps index names — including the index behind every primary key, unique, exclusion and "
-                   + $"temporal constraint — unique per schema ('{other[0].Schema}'), so the migration would fail when applied (42P07).");
+                   + $"temporal constraint — unique per schema ('{other[0].Schema}'), a namespace they share with its tables, "
+                   + "views and sequences, so the migration would fail when applied (42P07).");
 
         static void ThrowOnFirstCollision(
             IEnumerable<IGrouping<(string Schema, string Table, string Name), NamedObject>> groups,
@@ -484,13 +501,19 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
 
                 var other = members.First(m => !ReferenceEquals(m, ours));
 
+                var otherDescription = other.IsRelation
+                                           ? $"the {other.Kind} '{other.Name}'"
+                                           : $"the {other.Kind} on table '{other.Table}'";
+
                 throw new InvalidOperationException(
-                    $"The {ours.Kind} '{ours.Name}' on table '{ours.Table}' has the same name as the {other.Kind} on table "
-                  + $"'{other.Table}'. {rule([ours, other])} Give one of them a different name.");
+                    $"The {ours.Kind} '{ours.Name}' on table '{ours.Table}' has the same name as {otherDescription}. "
+                  + $"{rule([ours, other])} Give one of them a different name.");
             }
         }
     }
 
+    // InRelationNamespace: an index, a constraint backed by one, or a table, view or sequence —
+    // everything PostgreSQL names in pg_class, whose names are unique per schema.
     private sealed record NamedObject(
         string Name,
         string Table,
@@ -498,7 +521,10 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
         string Kind,
         bool   Ours,
         bool   IsConstraint,
-        bool   IsIndexBacked);
+        bool   InRelationNamespace)
+    {
+        public bool IsRelation { get; init; }
+    }
 
     // Diffs the temporal UNIQUE constraints and temporal FOREIGN KEY constraints declared on entity
     // types. Drops are emitted as EF's own Drop* operations (the stock generator renders those
