@@ -39,6 +39,12 @@ failed=0
 # nothing to do with the working tree. It passed a deliberately sabotaged build that way.
 export NUGET_PACKAGES="$work/packages"
 
+# The repository's SDK, not whichever is newest on the machine. The consumer projects live outside
+# the repository, where its global.json does not reach, so without this copy they would build with
+# any SDK the runner image happens to carry — .NET 11's, once that ships — while every other job
+# builds with the band global.json pins.
+cp "$repo_root/global.json" "$work/global.json"
+
 version="$(dotnet msbuild "$repo_root/src/EFCore.ComplexIndexes/EFCore.ComplexIndexes.csproj" -getProperty:Version)"
 version="$(echo "$version" | tr -d '[:space:]')"
 
@@ -117,7 +123,9 @@ XML
     # No --source flag: it would override the mapping above and restrict the whole restore,
     # transitive dependencies included, to the local feed.
     run dotnet add package "$package" --version "$version"
-    run dotnet add package Microsoft.EntityFrameworkCore.Design
+    # The 10.x line, as for dotnet-ef above. Unversioned, this restores nuget.org's latest, which
+    # becomes EF Core 11 the day it ships: a package for net11.0, refused by this net10.0 project.
+    run dotnet add package Microsoft.EntityFrameworkCore.Design --version "10.*"
 
     # Built explicitly first: `dotnet ef` reports a compile error only as "Build failed. Use dotnet
     # build to see the errors", which in CI is indistinguishable from the design-time host failing.

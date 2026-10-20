@@ -47,7 +47,23 @@ Success even on a required check, whether its own condition or a failed dependen
 per-lane required checks cannot tell a skip from a pass, and every new lane cost an edit to every
 protected branch. `WorkflowGateConventionTests` holds that every job is in the gate's `needs`, that
 it runs `always()`, and that it still reports as `CI`. Everything runs on
-ubuntu-latest. Actions in both workflows are pinned to commit SHAs with the tag in a trailing
+ubuntu-latest.
+
+`dotnet.yml` is also a reusable workflow (`workflow_call`, #111). `release.yml` calls it before
+`verify`, so a release runs every lane on the tagged commit, gated by the same `CI` job, and
+`nightly.yml` calls it on the default branch every night and dispatches it on each release line
+that exists (`release/5.x` after the cut), waiting for the result. The nightly is for the inputs
+that change without a diff: `postgres:18`, `postgres:16` and `mssql/server:2022-latest` float within
+their version on purpose, as a consumer's server does, and each integration job writes the image
+digests it used to its summary so a failure with no diff can be compared with the last green run;
+the consumer smoke test restores from nuget.org, with `Microsoft.EntityFrameworkCore.Design` and
+`dotnet-ef` held to `10.*` so EF Core 11's release does not break it. A failed nightly opens an
+issue titled "Nightly CI failed", or comments on the open one: GitHub's own email reaches only the
+user who last edited the cron line, and nobody for the dispatched release-line runs. GitHub turns
+a public repository's schedules off after 60 days without activity, which is why nothing depends
+on the nightly. The SDK comes from `global.json`: `10.0.400` with `rollForward: latestPatch`, the
+band CI used before the pin, so patches arrive and a new feature band needs a PR (the consumer
+projects get a copy, since they live outside the repository). Actions in all workflows are pinned to commit SHAs with the tag in a trailing
 comment; `.github/dependabot.yml` keeps those pins current (weekly, grouped, minors and patches
 only — majors on the publish path are deliberate, see the artifact-action comments in
 `release.yml`) and covers the test project's NuGet references monthly — not `src/`, whose EF Core
@@ -98,7 +114,8 @@ resulting package inherits all eight advisories.
 source of truth: the tag is verified against it rather than driving it, packages are discovered from
 the pack output (so a future satellite needs no workflow edit), and pushes use `--skip-duplicate` so
 a re-run after a partial failure is safe. The release gate runs the full suite, which means
-`ChangelogConsistencyTests` blocks a version nothing documents.
+`ChangelogConsistencyTests` blocks a version nothing documents. Before that, its `ci` job runs every
+lane of `dotnet.yml` (above); `verify` needs it.
 
 Publishing uses **Trusted Publishing (OIDC)** — there is deliberately no long-lived NuGet key in this
 repository. `NuGet/login@v1` exchanges the run's signed OIDC token for an API key valid one hour,
@@ -154,7 +171,8 @@ below exist because ordinary review does not catch it.
 | `BuilderApiParityTests` | Every key in a satellite's annotation whitelist is reachable from a builder method. `SqlServer:DataCompression` sat whitelisted with no API for a full release; this catches that class of drift by invoking every builder extension and diffing the keys it sets. |
 | `SecurityPolicyConsistencyTests` | SECURITY.md's supported-versions table has one `✅` row per supported line, newest first: this branch's line from `PackageValidationBaselineVersion` (the release on NuGet, never the version being prepared), the other line's from `CompanionLineRelease`; never a preview, at most two, adjacent majors, and the `< x.y` row meets the oldest. Each supported line has a "**N.x** targets **EF Core M**" sentence, and for the line this branch prepares M is the core project's dependency floor. All prose a version bump forgets — the sibling repository shipped 6.2.0 with the table still saying 6.1.x. |
 | `WorkflowGateConventionTests` | The `CI` gate in `dotnet.yml`, the one required build check: every other job is in its `needs`, it runs `if: always()`, it reads `toJSON(needs)` whole and fails any result but `success`, and it reports as `CI` and no other job does. A lane the gate does not need can fail while the PR merges, and a gate without `always()` is skipped when a lane fails, which branch protection reads as Success. |
-| `ReleaseWiringConventionTests` | The release path's silent failures: `release.yml` exists under the file name the nuget.org policy names, the publish job is gated on the `nuget` environment, only that job holds `id-token: write`, no job holds both `id-token: write` and `contents: write`, the tag is checked against `Directory.Build.props`, the GitHub release step passes `--prerelease --latest=false` for a preview and `--latest=false` for a stable tag older than the current Latest by `sort -V` (script lines only — the comment above it explains both rules, and would pass with the code gone), the SBOM tool is pinned in the manifest, and no second publishing path exists under `scripts/`. Rename the environment and nothing else in the build notices — the next tag fails to publish with an authentication error that never mentions the rename. |
+| `CiInputConventionTests` | The CI inputs that change without a diff: `global.json` pins a feature band (`x.y.z00`, `latestPatch`), every job that checks out the repository sets up .NET from it and not from `dotnet-version`, and `nightly.yml` runs on a schedule, calls `dotnet.yml`, and its `report` job needs every other job, runs `always()`, fails on any result but `success` and can open the issue. A job back on `10.0.x` builds with whatever band the runner has and passes. |
+| `ReleaseWiringConventionTests` | The release path's silent failures: `release.yml` exists under the file name the nuget.org policy names, `publish` depends through `needs` on a job that calls `dotnet.yml` (which keeps its `workflow_call` trigger) with no `always()`, `failure()` or `cancelled()` on that path, the publish job is gated on the `nuget` environment, only that job holds `id-token: write`, no job holds both `id-token: write` and `contents: write`, the tag is checked against `Directory.Build.props`, the GitHub release step passes `--prerelease --latest=false` for a preview and `--latest=false` for a stable tag older than the current Latest by `sort -V` (script lines only — the comment above it explains both rules, and would pass with the code gone), the SBOM tool is pinned in the manifest, and no second publishing path exists under `scripts/`. Rename the environment and nothing else in the build notices — the next tag fails to publish with an authentication error that never mentions the rename. |
 
 **`test/consumer-smoke-test.sh`** is the only check that exercises *delivery* rather than code. Every
 other layer is verified in isolation and in-process; this one packs the nupkgs, restores them into a

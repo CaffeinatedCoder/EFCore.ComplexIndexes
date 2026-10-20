@@ -1,0 +1,134 @@
+# Every lane, every night, with nothing pushed (#111).
+#
+# Some of CI's inputs change without a diff: the postgres:18, postgres:16 and
+# mssql/server:2022-latest images float within their version, the consumer smoke test restores
+# EF Core and Npgsql from nuget.org, and the SDK takes the latest patch of the band global.json
+# names. On a branch that takes fixes only, nothing else would run CI for weeks, so such a change
+# would surface in the middle of an unrelated fix, or on release day.
+#
+# Two parts. `default-branch` calls dotnet.yml here, on the default branch, which is the only one a
+# schedule runs on. `release-lines` dispatches dotnet.yml on each release branch that exists, so
+# that branch is tested by its own workflow and its own SDK (after the v5.5.0 cut, main is .NET 11
+# and release/5.x is .NET 10), and waits for the result.
+#
+# A failure opens an issue, or comments on the one already open, rather than relying on GitHub's
+# emails. Those reach only the user who last edited the cron line, and only under their personal
+# notification settings, and the release-line runs are dispatched by github-actions[bot], whose
+# failures email nobody. An issue reaches whoever watches the repository and stays until closed.
+#
+# GitHub turns schedules off in a public repository after 60 days without activity, so nothing may
+# depend on this workflow: release.yml runs the full CI itself before it publishes.
+#
+# Actions are pinned to commit SHAs with the tag in a trailing comment, as in dotnet.yml.
+
+name: Nightly
+
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+concurrency:
+  group: nightly-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  # The branches besides the default one that ship a supported line. A branch that does not exist
+  # yet is skipped with a notice, so release/5.x is covered from the night after it is cut.
+  RELEASE_LINES: release/5.x
+
+jobs:
+  default-branch:
+    name: Default branch
+    uses: ./.github/workflows/dotnet.yml
+    permissions:
+      contents: read
+
+  release-lines:
+    name: Release lines
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    permissions:
+      contents: read
+      actions: write   # dispatch dotnet.yml on another branch, and read its run
+
+    steps:
+      - name: Run dotnet.yml on each release line and wait for it
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          failed=0
+          for branch in $RELEASE_LINES; do
+            if ! gh api "repos/$GH_REPO/branches/$branch" --silent 2>/dev/null; then
+              echo "::notice::$branch does not exist yet; skipped."
+              continue
+            fi
+
+            # return_run_details makes the dispatch answer with the run it created, so the wait below
+            # follows that run and not a push run that happened to start on the same branch.
+            run_id="$(gh api -X POST "repos/$GH_REPO/actions/workflows/dotnet.yml/dispatches" \
+              -f ref="$branch" -F return_run_details=true --jq '.workflow_run_id')"
+            if [[ -z "$run_id" || "$run_id" == "null" ]]; then
+              echo "::error::Dispatching dotnet.yml on $branch returned no run id."
+              failed=1
+              continue
+            fi
+
+            echo "==> $branch: $GITHUB_SERVER_URL/$GH_REPO/actions/runs/$run_id"
+            if gh run watch "$run_id" --exit-status --interval 60 >/dev/null; then
+              conclusion=success
+            else
+              conclusion="$(gh run view "$run_id" --json conclusion --jq .conclusion)"
+              echo "::error::dotnet.yml on $branch: ${conclusion:-did not finish}."
+              failed=1
+            fi
+            echo "- \`$branch\`: [${conclusion:-unknown}]($GITHUB_SERVER_URL/$GH_REPO/actions/runs/$run_id)" >> "$GITHUB_STEP_SUMMARY"
+          done
+          exit "$failed"
+
+  # Runs after both parts whatever they did, and opens or updates the issue when either did not
+  # succeed. A skipped or cancelled part counts as a failure here, as in dotnet.yml's gate.
+  report:
+    name: Report a failure
+    runs-on: ubuntu-latest
+    needs: [ default-branch, release-lines ]
+    if: always()
+    permissions:
+      issues: write
+
+    steps:
+      - name: Open or update the nightly failure issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          NEEDS: ${{ toJSON(needs) }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          failures="$(jq -r 'to_entries[] | select(.value.result != "success") | "- `\(.key)`: \(.value.result)"' <<<"$NEEDS")"
+          if [[ -z "$failures" ]]; then
+            echo "Every part of the nightly run succeeded."
+            exit 0
+          fi
+
+          title="Nightly CI failed"
+          body="$(printf 'The nightly run on %s failed: %s\n\n%s\n\nNothing was pushed, so the cause is an input that changes without a diff: a container image, a package on nuget.org, or the SDK patch level. Each integration job records the image digests it used in its summary.' \
+            "$(date -u +%F)" "$RUN_URL" "$failures")"
+
+          existing="$(gh issue list --state open --search "in:title \"$title\"" --json number,title \
+            --jq ".[] | select(.title == \"$title\") | .number" | head -n1)"
+          if [[ -n "$existing" ]]; then
+            gh issue comment "$existing" --body "$body"
+          else
+            gh issue create --title "$title" --label chore --label area/release --body "$body"
+          fi
+
+          echo "::error::The nightly run failed:"$'\n'"$failures"
+          exit 1
