@@ -112,9 +112,11 @@ Rename one of the two indexes. A snapshot that holds such a pair stays diffable.
 ## Changed answers in 5.5.0
 
 Most of these make the first `migrations add` after the upgrade drop and re-create some indexes or
-constraints. On every provider the model's `CustomIndex:RenderingVersion` becomes 3, and a model
-that declares only PostgreSQL constraints gets the key for the first time, so that migration also
-rewrites the snapshot; no other index changes.
+constraints. Until that migration exists, `has-pending-model-changes` reports changes and
+`Migrate()` raises EF Core's pending-model-changes error. On every provider the model's
+`CustomIndex:RenderingVersion` becomes 3, and a model that declares only PostgreSQL constraints gets
+the key for the first time, so that migration also rewrites the snapshot; no other index changes.
+The new version alone is not a pending change.
 
 ### Unique indexes over nullable columns on SQL Server
 
@@ -256,9 +258,10 @@ transaction leaves the table as it was. Don't edit the marker; the generator ref
 not write.
 
 `migrations add` still refuses when `UseComplexIndexes()` is called before `UseSqlite()`, or when
-another package replaces `IMigrationsSqlGenerator` with a generator that does not derive from
-SQLite's, since EF Core keeps only one replacement. The error names the generator in effect. A
-replacement keyed on SQLite's generator
+another package replaces `IMigrationsSqlGenerator` without naming SQLite's generator as the one it
+replaces (`ReplaceService<IMigrationsSqlGenerator, TNew>()`), since EF Core keeps only one
+replacement. That holds even when `TNew` derives from SQLite's generator. The error names the
+generator in effect. A replacement keyed on SQLite's generator
 (`ReplaceService<IMigrationsSqlGenerator, SqliteMigrationsSqlGenerator, TNew>()`), or a provider
 extension registered before `UseComplexIndexes()`, is wrapped and keeps working.
 
