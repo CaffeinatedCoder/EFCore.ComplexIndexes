@@ -91,6 +91,8 @@ public class TranslatorParitySweepTests
         Assert.AreEqual(PostgresCanonicalForm.Of("NOT (\"A\" = 1 OR \"B\" IS NULL)", rules), PostgresCanonicalForm.Of("\"A\" <> 1 AND \"B\" IS NOT NULL", rules));
         Assert.AreEqual(PostgresCanonicalForm.Of("\"F\" <> TRUE", rules), PostgresCanonicalForm.Of("NOT (\"F\")", rules));
         Assert.AreEqual(PostgresCanonicalForm.Of("length(\"A\")", rules), PostgresCanonicalForm.Of("length(\"A\")::int", rules));
+        Assert.AreEqual(PostgresCanonicalForm.Of("CASE WHEN length(\"A\") < 5 THEN FALSE ELSE TRUE END", rules),
+                        PostgresCanonicalForm.Of("CASE WHEN length(\"A\")::int < 5 THEN FALSE ELSE TRUE END", rules));
 
         // NULL compensation is not a rewrite PostgreSQL makes.
         Assert.AreNotEqual(PostgresCanonicalForm.Of("\"A\" <> 1 OR \"A\" IS NULL", rules), PostgresCanonicalForm.Of("\"A\" <> 1", rules));

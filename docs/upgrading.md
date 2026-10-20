@@ -155,7 +155,9 @@ null `Kind`, so those rows fell out of the partial index and a unique index did 
 them. It is now `("Kind" <> 'federated' OR "Kind" IS NULL)`.
 
 A negation over such a comparison is pushed down to it: `!(x.Maybe > 5)` is
-`("Maybe" <= 5 OR "Maybe" IS NULL)`. A captured variable holding null compares with `IS NULL` or
+`CASE WHEN "Maybe" > 5 THEN FALSE ELSE TRUE END`, true where `Maybe` is null, as in EF Core's query.
+A computed operand is checked through its columns: `x.Name.ToLower() != "a"` adds
+`OR "Name" IS NULL`. A captured variable holding null compares with `IS NULL` or
 `IS NOT NULL` instead of `= NULL`, which matched no row. Operands that can't be null, a
 non-nullable value type or a reference type annotated non-nullable, translate as before.
 

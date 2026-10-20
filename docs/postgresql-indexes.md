@@ -183,8 +183,10 @@ compares with a char literal, `x.Grade == 'A'` as `"Grade" = 'A'`, although C# c
 code. Comparisons keep C#'s answer for null,
 written as EF Core writes the same lambda in a query, so the index covers exactly the rows that
 query selects: on a `string?`, `x.Kind != "federated"` becomes
-`("Kind" <> 'federated' OR "Kind" IS NULL)`, a negated comparison is pushed down to it, and a
-captured variable holding null compares with `IS NULL`. Whether an operand can be null is read from
+`("Kind" <> 'federated' OR "Kind" IS NULL)`, a negated comparison is pushed down to it (a negated
+`<`, `<=`, `>` or `>=` over a nullable operand becomes EF Core's `CASE WHEN … THEN FALSE ELSE TRUE END`),
+a computed operand is null-checked through its columns (`lower("Name") <> 'a' OR "Name" IS NULL`),
+and a captured variable holding null compares with `IS NULL`. Whether an operand can be null is read from
 its C# declaration (a `Nullable<T>`, or a reference type not annotated non-nullable); a `string`
 declared non-nullable but mapped to a nullable column is compared as non-nullable. Two things are refused on
 purpose. An enum comparison: how an enum is stored depends on the property's value conversion,
