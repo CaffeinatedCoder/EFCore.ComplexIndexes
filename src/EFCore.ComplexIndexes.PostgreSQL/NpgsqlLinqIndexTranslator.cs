@@ -33,7 +33,33 @@ internal static class NpgsqlLinqIndexTranslator
     /// <c>{Path}</c> placeholders for the differ to resolve.
     /// </summary>
     public static string TranslatePredicate(LambdaExpression lambda)
-        => VisitPredicate(lambda.Body, lambda.Parameters[0], negated: false);
+        => UnescapeLiteralBraces(VisitPredicate(lambda.Body, lambda.Parameters[0], negated: false));
+
+    // Literals escape braces for templates, which unescape them when resolved. A predicate is a
+    // filter, and the filter resolver has no `{{` escape ('{{1,2},{3,4}}' is an array literal), so
+    // an escaped brace stayed doubled: `x.Code != "{draft}"` compared against '{{draft}}'. Inside a
+    // literal a brace is never a placeholder to the filter resolver, so it can go back to one.
+    private static string UnescapeLiteralBraces(string predicate)
+    {
+        var sql       = new System.Text.StringBuilder(predicate.Length);
+        var inLiteral = false;
+
+        for (var i = 0; i < predicate.Length; i++)
+        {
+            var ch = predicate[i];
+
+            // A doubled quote inside a literal toggles twice and lands back inside it.
+            if (ch == '\'')
+                inLiteral = !inLiteral;
+
+            sql.Append(ch);
+
+            if (inLiteral && ch is '{' or '}' && i + 1 < predicate.Length && predicate[i + 1] == ch)
+                i++;
+        }
+
+        return sql.ToString();
+    }
 
     // C# compares with two-valued logic: `x.Kind != "a"` is true for a null Kind. SQL's `<>` is
     // NULL there, and a partial index or constraint filter that is NULL leaves the row out, so a

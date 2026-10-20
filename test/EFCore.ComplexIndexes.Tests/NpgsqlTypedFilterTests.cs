@@ -88,6 +88,32 @@ public class NpgsqlTypedFilterTests
         Assert.AreEqual("\"is_deleted\"", filters["ix_builder"]);
     }
 
+    private class BraceLiteralContext(DbContextOptions<BraceLiteralContext> options) : DbContext(options)
+    {
+        protected override void OnModelCreating(ModelBuilder modelBuilder) =>
+            modelBuilder.Entity<Grant>(b =>
+            {
+                b.ToTable("grants");
+                b.HasKey(x => x.Id);
+                b.ComplexProperty(x => x.Method);
+                b.HasComplexIndex(x => x.Kind, x => x.Kind != "{draft}" && x.Email != "{{1,2}}", indexName: "ix_kind_final");
+                b.HasExclusionConstraint(x => x.GranteeId, x => x.Period, x => x.Kind == "}{", name: "ex_braces");
+            });
+    }
+
+    [TestMethod(DisplayName = "A brace in a string literal is compared as written")]
+    public void Brace_in_literal_is_kept()
+    {
+        var operations = MigrationHarness.NpgsqlDiff(null, MigrationHarness.NpgsqlModel<BraceLiteralContext>());
+
+        // The filter resolver has no {{ escape, so a doubled brace stayed doubled and the index
+        // compared against '{{draft}}', a different value.
+        Assert.AreEqual("(\"Kind\" <> '{draft}' AND \"Email\" <> '{{1,2}}')",
+                        operations.OfType<CreateIndexOperation>().Single(o => o.Name == "ix_kind_final").Filter);
+        StringAssert.Contains(operations.OfType<SqlOperation>().Single(o => o.Sql.Contains("\"ex_braces\" EXCLUDE")).Sql,
+                              "WHERE (\"Kind\" = '}{')");
+    }
+
     // ── Null semantics ──
 
     private class Account
