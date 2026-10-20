@@ -23,6 +23,97 @@ internal static class NpgsqlLinqIndexTranslator
     // The characters Npgsql's query translation passes for a parameterless Trim/TrimStart/TrimEnd.
     private const string TrimCharacters = "E' \\t\\n\\r'";
 
+    // ── The accepted constructs, as data ──
+    // The dispatch below reads these tables, and TranslatorParitySweepTests enumerates them to
+    // compare every construct with what Npgsql's query translation renders for the same lambda. A
+    // construct added here is swept with no edit there; one added to the dispatch without a table
+    // entry is not, so keep new constructs in the tables.
+
+    /// <summary>Renders a call from its rendered target, its arguments and the operand visitor.</summary>
+    internal delegate string CallRenderer(string target, IReadOnlyList<Expression> arguments, Func<Expression, string> visit);
+
+    /// <summary>The string methods a typed expression or filter operand may call, by exact overload.</summary>
+    internal static readonly IReadOnlyDictionary<MethodInfo, CallRenderer> StringMethods = new Dictionary<MethodInfo, CallRenderer>
+    {
+        [StringMethod(nameof(string.ToLower))] = (target, _, _) => $"lower({target})",
+        [StringMethod(nameof(string.ToUpper))] = (target, _, _) => $"upper({target})",
+
+        // Spelled as Npgsql's query translation spells them, character for character: an index
+        // serves only a query whose expression matches it, and btrim(x) alone trims spaces, so a
+        // unique index on it let 'Y\t' and 'Y' coexist where Trim() says equal.
+        [StringMethod(nameof(string.Trim))]      = (target, _, _) => $"btrim({target}, {TrimCharacters})",
+        [StringMethod(nameof(string.TrimStart))] = (target, _, _) => $"ltrim({target}, {TrimCharacters})",
+        [StringMethod(nameof(string.TrimEnd))]   = (target, _, _) => $"rtrim({target}, {TrimCharacters})",
+
+        [StringMethod(nameof(string.Replace), typeof(string), typeof(string))]
+            = (target, arguments, visit) => $"replace({target}, {visit(arguments[0])}, {visit(arguments[1])})",
+
+        // .NET substrings are 0-based, SQL's are 1-based. substring, not substr: they are different
+        // functions to the planner, and Npgsql's queries call substring.
+        [StringMethod(nameof(string.Substring), typeof(int))]
+            = (target, arguments, visit) => $"substring({target}, {SubstringStart(arguments[0], visit)})",
+        [StringMethod(nameof(string.Substring), typeof(int), typeof(int))]
+            = (target, arguments, visit) => $"substring({target}, {SubstringStart(arguments[0], visit)}, {visit(arguments[1])})",
+    };
+
+    /// <summary>
+    /// The members rendered from their target, keyed by declaring type (a generic one by its
+    /// definition) and name.
+    /// </summary>
+    internal static readonly IReadOnlyDictionary<(Type DeclaringType, string Name), Func<string, string>> ValueMembers
+        = new Dictionary<(Type, string), Func<string, string>>
+        {
+            [(typeof(string), nameof(string.Length))] = target => $"length({target})",
+        };
+
+    /// <summary>The operators an operand may use besides calls and members: concatenation of strings and <c>??</c>.</summary>
+    internal static readonly IReadOnlySet<ExpressionType> ValueOperators
+        = new HashSet<ExpressionType> { ExpressionType.Add, ExpressionType.Coalesce };
+
+    /// <summary>The comparisons a filter may make. Equality carries EF Core's null compensation.</summary>
+    internal static readonly IReadOnlyDictionary<ExpressionType, string> ComparisonOperators = new Dictionary<ExpressionType, string>
+    {
+        [ExpressionType.Equal]              = "=",
+        [ExpressionType.NotEqual]           = "<>",
+        [ExpressionType.LessThan]           = "<",
+        [ExpressionType.LessThanOrEqual]    = "<=",
+        [ExpressionType.GreaterThan]        = ">",
+        [ExpressionType.GreaterThanOrEqual] = ">=",
+    };
+
+    /// <summary>The boolean structure a filter may have.</summary>
+    internal static readonly IReadOnlySet<ExpressionType> LogicalOperators
+        = new HashSet<ExpressionType> { ExpressionType.AndAlso, ExpressionType.OrElse, ExpressionType.Not };
+
+    /// <summary>
+    /// The types a captured value or constant may have: the ones with a portable SQL spelling. A
+    /// DateTime, Guid or enum is IFormattable too, and came out as bare text that is not SQL.
+    /// </summary>
+    internal static readonly IReadOnlySet<Type> LiteralTypes = new HashSet<Type>
+    {
+        typeof(string), typeof(bool), typeof(char),
+        typeof(int), typeof(long), typeof(short), typeof(byte), typeof(sbyte),
+        typeof(uint), typeof(ulong), typeof(ushort), typeof(decimal), typeof(double), typeof(float),
+    };
+
+    private static MethodInfo StringMethod(string name, params Type[] parameters)
+        => typeof(string).GetMethod(name, parameters)
+        ?? throw new InvalidOperationException($"string.{name}({string.Join(", ", parameters.Select(p => p.Name))}) does not exist.");
+
+    private static string SubstringStart(Expression start, Func<Expression, string> visit)
+        => start is ConstantExpression { Value: int startIndex }
+               ? (startIndex + 1).ToString(CultureInfo.InvariantCulture)
+               : $"({visit(start)} + 1)";
+
+    private static bool TryGetValueMember(MemberExpression member, out Func<string, string> render)
+    {
+        var declaringType = member.Member.DeclaringType!;
+        if (declaringType.IsConstructedGenericType)
+            declaringType = declaringType.GetGenericTypeDefinition();
+
+        return ValueMembers.TryGetValue((declaringType, member.Member.Name), out render!);
+    }
+
     public static string Translate(LambdaExpression lambda)
         => Visit(lambda.Body, lambda.Parameters[0]);
 
@@ -76,19 +167,20 @@ internal static class NpgsqlLinqIndexTranslator
             case UnaryExpression { NodeType: ExpressionType.Convert } convert:
                 return VisitPredicate(convert.Operand, root, negated);
 
-            case UnaryExpression { NodeType: ExpressionType.Not } not:
+            case UnaryExpression { NodeType: ExpressionType.Not } not when LogicalOperators.Contains(not.NodeType):
                 return ComparesNullable(not.Operand, root)
                            ? VisitPredicate(not.Operand, root, !negated)
                            : Negate($"NOT ({VisitPredicate(not.Operand, root, negated: false)})", negated);
 
-            case BinaryExpression { NodeType: ExpressionType.AndAlso or ExpressionType.OrElse } logical:
+            case BinaryExpression logical when LogicalOperators.Contains(logical.NodeType):
             {
                 // De Morgan when a negation is being pushed through: NOT (a AND b) = NOT a OR NOT b.
                 var and = logical.NodeType == ExpressionType.AndAlso ^ negated;
                 return $"({VisitPredicate(logical.Left, root, negated)} {(and ? "AND" : "OR")} {VisitPredicate(logical.Right, root, negated)})";
             }
 
-            case BinaryExpression { NodeType: ExpressionType.Equal or ExpressionType.NotEqual } equality:
+            case BinaryExpression { NodeType: ExpressionType.Equal or ExpressionType.NotEqual } equality
+                when ComparisonOperators.ContainsKey(equality.NodeType):
             {
                 var notEqual = equality.NodeType == ExpressionType.NotEqual ^ negated;
 
@@ -116,14 +208,13 @@ internal static class NpgsqlLinqIndexTranslator
                 };
             }
 
-            case BinaryExpression { NodeType: ExpressionType.LessThan or ExpressionType.LessThanOrEqual
-                                            or ExpressionType.GreaterThan or ExpressionType.GreaterThanOrEqual } comparison:
+            case BinaryExpression comparison when ComparisonOperators.ContainsKey(comparison.NodeType):
             {
                 var left  = VisitOperand(comparison.Left, root);
                 var right = VisitOperand(comparison.Right, root);
 
                 if (!negated)
-                    return $"{left} {ComparisonOperator(comparison.NodeType)} {right}";
+                    return $"{left} {ComparisonOperators[comparison.NodeType]} {right}";
 
                 // Negated: C#'s lifted comparison is false for a null, so its negation is true there,
                 // which the complement alone would make NULL.
@@ -139,7 +230,7 @@ internal static class NpgsqlLinqIndexTranslator
                     CanBeNull(comparison.Left, root) ? $" OR {left} IS NULL" : "",
                     CanBeNull(comparison.Right, root) ? $" OR {right} IS NULL" : "");
 
-                return $"({left} {ComparisonOperator(complement)} {right}{nulls})";
+                return $"({left} {ComparisonOperators[complement]} {right}{nulls})";
             }
 
             // A boolean column stands on its own.
@@ -178,14 +269,6 @@ internal static class NpgsqlLinqIndexTranslator
 
     private static string Negate(string predicate, bool negated)
         => negated ? $"NOT ({predicate})" : predicate;
-
-    private static string ComparisonOperator(ExpressionType type) => type switch
-    {
-        ExpressionType.LessThan        => "<",
-        ExpressionType.LessThanOrEqual => "<=",
-        ExpressionType.GreaterThan     => ">",
-        _                              => ">=",
-    };
 
     // A literal null or a captured value that evaluates to null.
     private static bool IsNullValue(Expression node, ParameterExpression root)
@@ -291,9 +374,9 @@ internal static class NpgsqlLinqIndexTranslator
             case UnaryExpression { NodeType: ExpressionType.Convert } convert:
                 return Visit(convert.Operand, root);
 
-            case MemberExpression { Member.Name: nameof(string.Length), Expression: { } target } member
-                when member.Member.DeclaringType == typeof(string) && DependsOnParameter(target, root):
-                return $"length({Visit(target, root)})";
+            case MemberExpression { Expression: { } target } member
+                when DependsOnParameter(target, root) && TryGetValueMember(member, out var render):
+                return render(Visit(target, root));
 
             case MemberExpression member when TryGetPath(member, root, out var path):
                 return "{" + path + "}";
@@ -301,10 +384,11 @@ internal static class NpgsqlLinqIndexTranslator
             case MethodCallExpression call when DependsOnParameter(call, root):
                 return VisitCall(call, root);
 
-            case BinaryExpression { NodeType: ExpressionType.Add } concat when concat.Type == typeof(string):
+            case BinaryExpression { NodeType: ExpressionType.Add } concat
+                when concat.Type == typeof(string) && ValueOperators.Contains(concat.NodeType):
                 return $"({Visit(concat.Left, root)} || {Visit(concat.Right, root)})";
 
-            case BinaryExpression { NodeType: ExpressionType.Coalesce } coalesce:
+            case BinaryExpression { NodeType: ExpressionType.Coalesce } coalesce when ValueOperators.Contains(coalesce.NodeType):
                 return $"coalesce({Visit(coalesce.Left, root)}, {Visit(coalesce.Right, root)})";
 
             case ConstantExpression constant:
@@ -320,47 +404,8 @@ internal static class NpgsqlLinqIndexTranslator
 
     private static string VisitCall(MethodCallExpression call, ParameterExpression root)
     {
-        if (call.Object is not null && call.Method.DeclaringType == typeof(string))
-        {
-            var target = Visit(call.Object, root);
-
-            switch (call.Method.Name)
-            {
-                case nameof(string.ToLower) when call.Arguments.Count == 0:
-                    return $"lower({target})";
-
-                case nameof(string.ToUpper) when call.Arguments.Count == 0:
-                    return $"upper({target})";
-
-                // Spelled as Npgsql's query translation spells them, character for character: an
-                // index serves only a query whose expression matches it, and btrim(x) alone trims
-                // spaces, so a unique index on it let 'Y\t' and 'Y' coexist where Trim() says equal.
-                case nameof(string.Trim) when call.Arguments.Count == 0:
-                    return $"btrim({target}, {TrimCharacters})";
-
-                case nameof(string.TrimStart) when call.Arguments.Count == 0:
-                    return $"ltrim({target}, {TrimCharacters})";
-
-                case nameof(string.TrimEnd) when call.Arguments.Count == 0:
-                    return $"rtrim({target}, {TrimCharacters})";
-
-                case nameof(string.Replace) when call.Arguments.Count == 2 && call.Method.GetParameters()[0].ParameterType == typeof(string):
-                    return $"replace({target}, {Visit(call.Arguments[0], root)}, {Visit(call.Arguments[1], root)})";
-
-                case nameof(string.Substring) when call.Arguments.Count is 1 or 2:
-                {
-                    // .NET substrings are 0-based, SQL's are 1-based. substring, not substr: they are
-                    // different functions to the planner, and Npgsql's queries call substring.
-                    var start = call.Arguments[0] is ConstantExpression { Value: int startIndex }
-                                    ? (startIndex + 1).ToString(CultureInfo.InvariantCulture)
-                                    : $"({Visit(call.Arguments[0], root)} + 1)";
-
-                    return call.Arguments.Count == 1
-                               ? $"substring({target}, {start})"
-                               : $"substring({target}, {start}, {Visit(call.Arguments[1], root)})";
-                }
-            }
-        }
+        if (call.Object is not null && StringMethods.TryGetValue(call.Method, out var render))
+            return render(Visit(call.Object, root), call.Arguments, argument => Visit(argument, root));
 
         throw NotSupported(call);
     }
@@ -386,10 +431,9 @@ internal static class NpgsqlLinqIndexTranslator
         string s   => "'" + s.Replace("'", "''").Replace("{", "{{").Replace("}", "}}") + "'",
         bool b     => b ? "TRUE" : "FALSE",
         char c     => Literal(c.ToString()),
-        // Invariant culture — a de-DE thread culture must never turn 1.5 into '1,5'. Only numbers:
-        // a DateTime, Guid or enum is IFormattable too, and came out as bare text that is not SQL.
-        int or long or short or byte or sbyte or uint or ulong or ushort or decimal or double or float
-            => ((IFormattable)value).ToString(null, CultureInfo.InvariantCulture),
+        // Invariant culture — a de-DE thread culture must never turn 1.5 into '1,5'.
+        IFormattable number when LiteralTypes.Contains(value.GetType())
+            => number.ToString(null, CultureInfo.InvariantCulture),
         _ => throw new NotSupportedException(
                  $"Cannot inline a value of type '{value.GetType().Name}' as a SQL literal in an index expression or filter. " +
                  "Only strings, booleans and numbers have a portable SQL spelling; write anything else in the raw-SQL overload.")
