@@ -78,6 +78,25 @@ public class SqlServerNullableUniqueTests
         protected override int? RenderingVersion => 2;
     }
 
+    private class Truck
+    {
+        public int           Id           { get; set; }
+        public Registration? Registration { get; set; }
+        public Registration  Papers       { get; set; } = new();
+    }
+
+    // The property-level declaration resolves through its own path in the differ (#155).
+    private class PropertyLevelContext(DbContextOptions<PropertyLevelContext> options) : DbContext(options)
+    {
+        protected override void OnModelCreating(ModelBuilder modelBuilder)
+            => modelBuilder.Entity<Truck>(b =>
+            {
+                b.ToTable("trucks");
+                b.ComplexProperty(x => x.Registration, c => c.Property(r => r.Vin).HasMaxLength(17).HasComplexIndex(isUnique: true, indexName: "ux_registration_vin"));
+                b.ComplexProperty(x => x.Papers, c => c.Property(r => r.Vin).HasMaxLength(17).HasComplexIndex(isUnique: true, indexName: "ux_papers_vin"));
+            });
+    }
+
     private static Dictionary<string, CreateIndexOperation> Creates<TContext>() where TContext : DbContext
         => MigrationHarness.SqlServerDiff(null, MigrationHarness.SqlServerModel<TContext>())
                            .OfType<CreateIndexOperation>()
@@ -95,6 +114,19 @@ public class SqlServerNullableUniqueTests
 
         StringAssert.Contains(MigrationHarness.SqlServerSql([creates["ux_complex_vin"]], MigrationHarness.SqlServerModel<OptionalContext>()),
                               "CREATE UNIQUE INDEX [ux_complex_vin] ON [cars] ([Registration_Vin]) WHERE [Registration_Vin] IS NOT NULL;");
+    }
+
+    [TestMethod(DisplayName = "A property-level unique complex index over a nullable column gets the filter too")]
+    public void Property_level_declaration_gets_the_filter()
+    {
+        var creates = Creates<PropertyLevelContext>();
+
+        Assert.AreEqual("[Registration_Vin] IS NOT NULL", creates["ux_registration_vin"].Filter);
+        StringAssert.Contains(MigrationHarness.SqlServerSql([creates["ux_registration_vin"]], MigrationHarness.SqlServerModel<PropertyLevelContext>()),
+                              "CREATE UNIQUE INDEX [ux_registration_vin] ON [trucks] ([Registration_Vin]) WHERE [Registration_Vin] IS NOT NULL;");
+
+        // A required complex property's column is not nullable, so EF Core would add nothing.
+        Assert.IsNull(creates["ux_papers_vin"].Filter);
     }
 
     [TestMethod(DisplayName = "No filter for required columns, a declared filter or a clustered index")]
