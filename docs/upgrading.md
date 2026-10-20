@@ -262,6 +262,21 @@ replacement keyed on SQLite's generator
 (`ReplaceService<IMigrationsSqlGenerator, SqliteMigrationsSqlGenerator, TNew>()`), or a provider
 extension registered before `UseComplexIndexes()`, is wrapped and keeps working.
 
+### NULLS ordering and expression parts fail on SQLite
+
+On SQLite and any other provider without a satellite, a complex index with a
+`DbOrder.NullsFirst`/`DbOrder.NullsLast` part or an expression part (`HasExpressionIndex` from the
+PostgreSQL package, in a model shared with SQLite tests) fails at `migrations add`, `EnsureCreated()`
+and `GenerateCreateScript()`. Only the PostgreSQL satellite's generator renders those parts. The
+migration used to carry a sentinel column that fails with the SQLite bundled with
+Microsoft.Data.Sqlite. Where SQLite accepts double-quoted strings as literals, as a default build does
+(a system `libsqlite3`, other SQLitePCLRaw bundles), the sentinel and the expression were taken for
+strings, and the index applied with a constant column, without its ordering or expression.
+
+Remove the marker, or the expression index, and add a migration. It drops the index and creates it
+from its columns. Check with `SELECT sql FROM sqlite_master WHERE type = 'index'`: an index whose
+definition names `__requires_UseNpgsqlComplexIndexes__` came from such a migration.
+
 ### The core differ refuses SQL Server and PostgreSQL index options
 
 On SQL Server and PostgreSQL, the provider-agnostic core differ refuses a complex index that carries
