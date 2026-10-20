@@ -113,7 +113,8 @@ public class CustomMigrationsModelDiffer(
             ["SqlServer:Clustered", "SqlServer:Include", "SqlServer:Online", "SqlServer:FillFactor", "SqlServer:SortInTempDb", "SqlServer:DataCompression"],
             OptionPrefix: null,
             Declarations: [],
-            FiltersNullableUniqueIndexes: true),
+            FiltersNullableUniqueIndexes: true,
+            RendersIndexParts: false),
         new("Npgsql.EntityFrameworkCore.PostgreSQL", "PostgreSQL", "EFCore.ComplexIndexes.PostgreSQL", "UseNpgsqlComplexIndexes()",
             ["Npgsql:IndexMethod", "Npgsql:IndexOperators", "Npgsql:IndexInclude", "Npgsql:CreatedConcurrently", "Npgsql:NullsDistinct", "Npgsql:IndexCollation"],
             OptionPrefix: "Npgsql:StorageParameter:",
@@ -123,7 +124,8 @@ public class CustomMigrationsModelDiffer(
                 ("CustomTemporal:Constraints",  "temporal constraint"),
                 ("CustomTemporal:ForeignKeys",  "temporal foreign key"),
             ],
-            FiltersNullableUniqueIndexes: false),
+            FiltersNullableUniqueIndexes: false,
+            RendersIndexParts: true),
     ];
 
     internal sealed record Satellite(
@@ -134,7 +136,8 @@ public class CustomMigrationsModelDiffer(
         HashSet<string>                                 Options,
         string?                                         OptionPrefix,
         IReadOnlyList<(string Annotation, string Kind)> Declarations,
-        bool                                            FiltersNullableUniqueIndexes)
+        bool                                            FiltersNullableUniqueIndexes,
+        bool                                            RendersIndexParts)
     {
         public bool IsOption(string annotationName)
             => Options.Contains(annotationName)
@@ -1282,8 +1285,9 @@ public class CustomMigrationsModelDiffer(
     }
 
     /// <summary>
-    /// Fails, on a provider no satellite serves, when an index has a part only the PostgreSQL
-    /// satellite's generator renders: <c>NULLS FIRST</c>/<c>NULLS LAST</c> ordering or an expression.
+    /// Fails, unless a satellite's differ is the one running, when an index has a part only the
+    /// PostgreSQL satellite's generator renders: <c>NULLS FIRST</c>/<c>NULLS LAST</c> ordering or an
+    /// expression.
     /// </summary>
     /// <remarks>
     /// Such an index goes through the parts annotation, which only that generator reads, with
@@ -1291,13 +1295,16 @@ public class CustomMigrationsModelDiffer(
     /// On SQLite that held only while double-quoted string literals are off, as in the bundled
     /// build: with them on (<c>SQLITE_DBCONFIG_DQS_DDL</c>, on in a default build of SQLite) the
     /// sentinel is taken for a string, and the index applies with a constant column and without its
-    /// ordering. A satellite rejects what its own provider cannot express in its
-    /// <c>ValidateCreateIndexOperation</c>. Target model only, so that a snapshot holding such an
-    /// index stays diffable and the index can be fixed.
+    /// ordering. On SQL Server and PostgreSQL the core differ runs in place of the satellite's under
+    /// <c>UseComplexIndexes()</c> or without the satellite's <c>.targets</c>, and the sentinel then
+    /// failed at apply, naming <c>UseNpgsqlComplexIndexes()</c> to a SQL Server consumer, while the
+    /// packed README said <c>migrations add</c> fails (#172). A satellite's own differ rejects what
+    /// its provider cannot express in its <c>ValidateCreateIndexOperation</c>. Target model only, so
+    /// that a snapshot holding such an index stays diffable and the index can be fixed.
     /// </remarks>
     private void ValidateRenderableParts(HashSet<IndexDescriptor> descriptors)
     {
-        if (_satellite is not null)
+        if (_satellite is not null && IsSatelliteDiffer)
             return;
 
         foreach (var descriptor in descriptors.Where(d => d.RequiresPartsAnnotation))
@@ -1308,11 +1315,18 @@ public class CustomMigrationsModelDiffer(
             var remedy = descriptor.HasExpression
                              ? "Index the column instead, or a computed column holding the expression."
                              : "Remove the DbOrder.NullsFirst/NullsLast marker.";
+            var index = $"The complex index '{descriptor.IndexName}' on table '{descriptor.TableName}' {what}";
 
-            throw new InvalidOperationException(
-                $"The complex index '{descriptor.IndexName}' on table '{descriptor.TableName}' {what}, which this package "
-              + $"renders only on PostgreSQL, through the EFCore.ComplexIndexes.PostgreSQL satellite. {_provider} has no "
-              + $"satellite, so the index would fail to apply or apply without it. {remedy}");
+            throw new InvalidOperationException(_satellite switch
+            {
+                null => $"{index}, which this package renders only on PostgreSQL, through the EFCore.ComplexIndexes.PostgreSQL "
+                      + $"satellite. {_provider} has no satellite, so the index would fail to apply or apply without it. {remedy}",
+                { RendersIndexParts: true } =>
+                    $"{index}, which only the {_satellite.Package} satellite renders, but the model is diffed by the "
+                  + $"provider-agnostic core differ: the index would fail to apply. {SatelliteRemedy(_satellite)}",
+                _ => $"{index}, which this package renders only on PostgreSQL. {_satellite.Provider} cannot express it, and "
+                   + $"the {_satellite.Package} satellite refuses it as well, so the index would fail to apply. {remedy}",
+            });
         }
     }
 

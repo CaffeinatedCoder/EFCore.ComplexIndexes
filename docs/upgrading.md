@@ -297,6 +297,14 @@ Remove the marker, or the expression index, and add a migration. It drops the in
 from its columns. Check with `SELECT sql FROM sqlite_master WHERE type = 'index'`: an index whose
 definition names `__requires_UseNpgsqlComplexIndexes__` came from such a migration.
 
+On SQL Server and PostgreSQL, the core differ refuses the same parts when it runs in place of the
+provider package's: under `UseComplexIndexes()`, or in a `dotnet ef` run without the provider
+package's `.targets`. The migration used to carry the same placeholder column and failed when
+applied, naming `UseNpgsqlComplexIndexes()` even on SQL Server, so no database holds such an index.
+On PostgreSQL, call `UseNpgsqlComplexIndexes()` instead of `UseComplexIndexes()`. SQL Server can't
+express these parts, and its package refuses them too: remove the marker, or index a computed
+column that holds the expression.
+
 ### The core differ refuses SQL Server and PostgreSQL index options
 
 On SQL Server and PostgreSQL, the core package's migration code (the core differ) rejects a
