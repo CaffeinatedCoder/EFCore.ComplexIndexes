@@ -10,6 +10,7 @@ The last 5.x minor with a change of its own: the line refuses EF Core 11, whose 
 
 ### Changed answers
 
+- Registration: on SQL Server and PostgreSQL, the core differ refuses a complex index carrying that provider's index options and names `UseSqlServerComplexIndexes()` or `UseNpgsqlComplexIndexes()`. With `UseComplexIndexes()`, `EnsureCreated()` created the index without its property-level options ([#92](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/issues/92), [Upgrading](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/docs/upgrading.md#the-core-differ-refuses-sql-server-and-postgresql-index-options)).
 - Migrations: on SQLite, `migrations add` refuses a migration that rebuilds a table with a complex index, naming the indexes and the way out. It scaffolded a migration that applied cleanly and dropped every complex index on the table ([#86](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/issues/86), [Upgrading](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/docs/upgrading.md#sqlite-refuses-a-table-rebuild-that-would-drop-complex-indexes)).
 
 ### Breaking

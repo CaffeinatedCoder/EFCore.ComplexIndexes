@@ -93,7 +93,7 @@ public class SqlServerNullableUniqueTests
         Assert.AreEqual("[Registration_Vin] IS NOT NULL", creates["ux_complex_vin"].Filter);
         Assert.AreEqual("[Registration_Plate] IS NOT NULL", creates["ux_code_plate"].Filter);
 
-        StringAssert.Contains(MigrationHarness.SqlServerSql([creates["ux_complex_vin"]]),
+        StringAssert.Contains(MigrationHarness.SqlServerSql([creates["ux_complex_vin"]], MigrationHarness.SqlServerModel<OptionalContext>()),
                               "CREATE UNIQUE INDEX [ux_complex_vin] ON [cars] ([Registration_Vin]) WHERE [Registration_Vin] IS NOT NULL;");
     }
 
@@ -105,6 +105,20 @@ public class SqlServerNullableUniqueTests
         Assert.IsNull(creates["ux_code"].Filter);
         Assert.AreEqual("[Registration_Plate] <> N''", creates["ux_plate_filtered"].Filter);
         Assert.IsNull(creates["cx_vin"].Filter);
+    }
+
+    [TestMethod(DisplayName = "Rendered with its model, an index without the filter applies without one, as database update renders it")]
+    public void Rendering_with_the_model_adds_no_legacy_filter()
+    {
+        // Rendered without a model, SQL Server's generator adds its pre-2.0 legacy IS NOT NULL filter
+        // to every unique index over nullable columns, so this index looked filtered while the
+        // migration `database update` applies was not. That is how the harness hid #88.
+        var target = MigrationHarness.SqlServerModel<OptionalV2SnapshotContext>();
+        var create = MigrationHarness.SqlServerDiff(null, target).OfType<CreateIndexOperation>().Single(o => o.Name == "ux_complex_vin");
+
+        Assert.IsNull(create.Filter);
+        StringAssert.Contains(MigrationHarness.SqlServerSql([create], target),
+                              "CREATE UNIQUE INDEX [ux_complex_vin] ON [cars] ([Registration_Vin]);");
     }
 
     [TestMethod(DisplayName = "A snapshot from an earlier 5.x rebuilds the index with the filter, once")]

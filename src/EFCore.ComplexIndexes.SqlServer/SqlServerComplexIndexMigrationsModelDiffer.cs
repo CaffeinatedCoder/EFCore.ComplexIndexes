@@ -109,17 +109,12 @@ public class SqlServerComplexIndexMigrationsModelDiffer(
         object?               value,
         StoreObjectIdentifier storeObject
     )
-    {
-        if (annotationName == SqlServerAnnotations.Clustered && value is true)
-            ValidateClusteredSlotIsFree(entityType);
-
-        return annotationName switch
+        => annotationName switch
                {
                    SqlServerAnnotations.Include         => ResolveIncludeList(entityType, value, storeObject),
                    SqlServerAnnotations.DataCompression => CoerceDataCompression(value),
                    _                                    => base.TransformIndexAnnotation(entityType, annotationName, value, storeObject)
                };
-    }
 
     // Entity-level index definitions are stored as JSON, which flattens the enum to a number. SQL
     // Server's generator reads this option as DataCompressionType? — a boxed int reads back as null,
@@ -205,53 +200,104 @@ public class SqlServerComplexIndexMigrationsModelDiffer(
     }
 
     /// <summary>
-    /// A table can carry at most one clustered index, so two clustered complex indexes on one table
-    /// cannot both be created.
+    /// Checks each table as the target model leaves it: at most one clustered index, and no complex
+    /// index named like one of the table's keys.
     /// </summary>
-    protected override void ValidateCreatedIndexes(IReadOnlyList<CreateIndexOperation> operations)
+    /// <remarks>
+    /// Both checks read the whole target table, not the operations of this migration. A clustered
+    /// complex index declared in an earlier migration is not among the creates of a later one, so
+    /// counting only those scaffolded <c>CREATE CLUSTERED INDEX</c> for a second one, which failed
+    /// at apply. The source model is never checked: a snapshot that already holds a conflict has
+    /// to stay diffable, or the migration that resolves it would be refused too.
+    /// </remarks>
+    internal override void ValidateTargetIndexes(IRelationalModel target, IReadOnlyCollection<IndexDescriptor> indexes)
     {
-        var collision = operations
-                       .Where(o => o[SqlServerAnnotations.Clustered] is true)
-                       .GroupBy(o => (o.Table, o.Schema))
-                       .FirstOrDefault(g => g.Count() > 1);
+        foreach (var onTable in indexes.GroupBy(index => (index.TableName, index.Schema)))
+        {
+            var table = target.FindTable(onTable.Key.TableName, onTable.Key.Schema);
+            if (table is null)
+                continue;
 
-        if (collision is null)
-            return;
+            ValidateClusteredSlot(table, [.. onTable.Where(IsClustered)]);
+            ValidateNoKeyNameCollision(table, onTable);
+        }
 
-        throw new InvalidOperationException(
-            $"Table '{collision.Key.Table}' declares {collision.Count()} clustered complex indexes "
-          + $"({string.Join(", ", collision.Select(o => $"'{o.Name}'"))}). SQL Server allows at most one "
-          + "clustered index per table — the others must be nonclustered.");
+        static bool IsClustered(IndexDescriptor index)
+            => index.ProviderAnnotations.TryGetValue(SqlServerAnnotations.Clustered, out var clustered) && clustered is true;
     }
 
     /// <summary>
-    /// Rejects a clustered complex index on a table whose clustered slot is already taken by the
-    /// primary key or a native index.
+    /// Rejects a clustered complex index on a table whose clustered slot is taken: by another
+    /// clustered complex index, by the primary key or a unique constraint, or by a native index.
     /// </summary>
     /// <remarks>
-    /// This lives on the annotation-transform path because that is the only hook with access to the
-    /// entity type; the operation alone cannot see the table's keys and native indexes. It matters
-    /// disproportionately: the SQL Server provider makes a primary key clustered unless told
+    /// The primary key matters most: the SQL Server provider makes it clustered unless told
     /// otherwise, so on a conventionally mapped entity <em>every</em> clustered complex index
     /// conflicts, and without this check the failure only appears when the migration is applied.
     /// </remarks>
-    private static void ValidateClusteredSlotIsFree(IEntityType entityType)
+    private static void ValidateClusteredSlot(ITable table, IReadOnlyList<IndexDescriptor> clustered)
     {
-        var primaryKey = entityType.FindPrimaryKey();
+        if (clustered.Count == 0)
+            return;
 
-        if (primaryKey is not null && primaryKey.IsClustered() != false)
+        if (clustered.Count > 1)
             throw new InvalidOperationException(
-                $"A clustered complex index is declared on '{entityType.Name}', but its primary key is clustered "
-              + "(the SQL Server default). A table can carry only one clustered index — declare the key with "
-              + "HasKey(...).IsClustered(false), or make the complex index nonclustered.");
+                $"Table '{table.Name}' declares {clustered.Count} clustered complex indexes "
+              + $"({string.Join(", ", clustered.Select(index => $"'{index.IndexName}'"))}). SQL Server allows at most one "
+              + "clustered index per table — the others must be nonclustered.");
 
-        var clusteredIndex = entityType.GetIndexes().FirstOrDefault(i => i.IsClustered() == true);
+        var storeObject = StoreObjectIdentifier.Table(table.Name, table.Schema);
+        var name        = clustered[0].IndexName;
+
+        foreach (var constraint in table.UniqueConstraints)
+        {
+            var isPrimaryKey = constraint.GetIsPrimaryKey();
+
+            // SQL Server clusters a primary key unless told otherwise; a unique constraint only on request.
+            if (!constraint.MappedKeys.Any(key => isPrimaryKey ? key.IsClustered(storeObject) != false : key.IsClustered(storeObject) == true))
+                continue;
+
+            throw new InvalidOperationException(
+                isPrimaryKey
+                    ? $"The clustered complex index '{name}' is declared on table '{table.Name}', but its primary key is clustered "
+                    + "(the SQL Server default). A table can carry only one clustered index — declare the key with "
+                    + "HasKey(...).IsClustered(false), or make the complex index nonclustered."
+                    : $"The clustered complex index '{name}' is declared on table '{table.Name}', but its unique constraint "
+                    + $"'{constraint.Name}' is already clustered. A table can carry only one clustered index.");
+        }
+
+        var clusteredIndex = table.Indexes.FirstOrDefault(index => index.MappedIndexes.Any(i => i.IsClustered(storeObject) == true));
 
         if (clusteredIndex is not null)
             throw new InvalidOperationException(
-                $"A clustered complex index is declared on '{entityType.Name}', but the native index on "
-              + $"({string.Join(", ", clusteredIndex.Properties.Select(p => p.Name))}) is already clustered. "
+                $"The clustered complex index '{name}' is declared on table '{table.Name}', but the native index on "
+              + $"({string.Join(", ", clusteredIndex.Columns.Select(c => c.Name))}) is already clustered. "
               + "A table can carry only one clustered index.");
+    }
+
+    /// <summary>
+    /// Rejects a complex index named like its table's primary key or one of its unique constraints.
+    /// </summary>
+    /// <remarks>
+    /// SQL Server builds an index under each of those names, so <c>CREATE INDEX [PK_things]</c> on
+    /// <c>things</c> scaffolded and failed at apply. The core checks complex indexes against native
+    /// <c>HasIndex</c> declarations only, since keys own no index name on SQLite. Compared without
+    /// regard to case, as a database with the default case-insensitive collation compares them.
+    /// </remarks>
+    private static void ValidateNoKeyNameCollision(ITable table, IEnumerable<IndexDescriptor> indexes)
+    {
+        foreach (var index in indexes)
+        {
+            var constraint = table.UniqueConstraints.FirstOrDefault(c => string.Equals(c.Name, index.IndexName, StringComparison.OrdinalIgnoreCase));
+            if (constraint is null)
+                continue;
+
+            throw new InvalidOperationException(
+                $"The complex index '{index.IndexName}' on table '{table.Name}' has the same name as the table's "
+              + (constraint.GetIsPrimaryKey() ? "primary key" : $"unique constraint on ({string.Join(", ", constraint.Columns.Select(c => c.Name))})")
+              + $" '{constraint.Name}'. SQL Server creates an index under that name, so the migration would fail when applied. "
+              + "Give the complex index a different name.");
+        }
     }
 }
 

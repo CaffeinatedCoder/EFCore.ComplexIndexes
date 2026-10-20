@@ -1,9 +1,11 @@
+using System.Text;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata;
 using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Migrations.Operations;
 using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.EntityFrameworkCore.Update.Internal;
+using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 
 namespace EFCore.ComplexIndexes.PostgreSQL;
 
@@ -437,10 +439,11 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
 
         // The relations themselves: an index named like a table, view or sequence of its schema
         // fails with 42P07 just as one named like another index does.
-        void AddRelation(string name, string? schema, string kind)
+        void AddRelation(string name, string? schema, string kind, string? description = null)
             => names.Add(new NamedObject(name, name, schema ?? defaultSchema, kind, Ours: false, IsConstraint: false, InRelationNamespace: true)
                          {
-                             IsRelation = true
+                             IsRelation  = true,
+                             Description = description
                          });
 
         foreach (var index in ExtractAllIndexDescriptors(target))
@@ -472,6 +475,15 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
                 Add(check.Name!, table.Name, table.Schema, "check constraint", ours: false, constraint: true, indexBacked: false);
 
             AddRelation(table.Name, table.Schema, "table");
+
+            // The sequence PostgreSQL creates for an identity or serial column is in no model, but it
+            // takes its name in the schema all the same.
+            foreach (var column in table.Columns.Where(c => HasImplicitSequence(table, c)))
+            {
+                var sequence = ImplicitSequenceName(table.Name, column.Name);
+                AddRelation(sequence, table.Schema, "sequence",
+                            $"the sequence '{sequence}', which PostgreSQL creates for the identity or serial column '{column.Name}' of table '{table.Name}'");
+            }
         }
 
         foreach (var view in target.Views)
@@ -506,9 +518,10 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
 
                 var other = members.First(m => !ReferenceEquals(m, ours));
 
-                var otherDescription = other.IsRelation
+                var otherDescription = other.Description
+                                    ?? (other.IsRelation
                                            ? $"the {other.Kind} '{other.Name}'"
-                                           : $"the {other.Kind} on table '{other.Table}'";
+                                           : $"the {other.Kind} on table '{other.Table}'");
 
                 throw new InvalidOperationException(
                     $"The {ours.Kind} '{ours.Name}' on table '{ours.Table}' has the same name as {otherDescription}. "
@@ -529,6 +542,72 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
         bool   InRelationNamespace)
     {
         public bool IsRelation { get; init; }
+
+        // How the collision message names this object, where its kind and name are not enough.
+        public string? Description { get; init; }
+    }
+
+    // An identity column — Npgsql's default for an int or long key — and a serial column each get a
+    // sequence from PostgreSQL. A serial store type declared by hand is one too.
+    private static bool HasImplicitSequence(ITable table, IColumn column)
+    {
+        if (column.StoreType.ToLowerInvariant() is "serial" or "serial2" or "serial4" or "serial8" or "smallserial" or "bigserial")
+            return true;
+
+        var storeObject = StoreObjectIdentifier.Table(table.Name, table.Schema);
+        return column.PropertyMappings.Any(m => m.Property.GetValueGenerationStrategy(storeObject)
+                                                    is NpgsqlValueGenerationStrategy.IdentityByDefaultColumn
+                                                    or NpgsqlValueGenerationStrategy.IdentityAlwaysColumn
+                                                    or NpgsqlValueGenerationStrategy.SerialColumn);
+    }
+
+    /// <summary>
+    /// The name PostgreSQL gives the sequence of an identity or serial column, as its
+    /// <c>ChooseRelationName</c> builds it: <c>{table}_{column}_seq</c>, cut to 63 bytes by
+    /// shortening the longer of table and column first, one byte at a time, then back to a whole
+    /// character.
+    /// </summary>
+    /// <remarks>
+    /// When that name is already taken as the table is created, PostgreSQL appends a number instead
+    /// of failing (<c>rows_Id_seq1</c>), which no model can predict. So an index created in an earlier
+    /// migration than the table it is named after would apply, and is reported all the same; the
+    /// rename costs less than a check that guesses the order in which the database was built.
+    /// </remarks>
+    internal static string ImplicitSequenceName(string table, string column)
+    {
+        const int maxBytes  = 63; // NAMEDATALEN - 1
+        const int available = maxBytes - 1 - 4; // "_" and "_seq"
+
+        // PostgreSQL has already cut each identifier to 63 bytes when it created the table.
+        table  = Clip(table, maxBytes);
+        column = Clip(column, maxBytes);
+
+        var tableBytes  = Encoding.UTF8.GetByteCount(table);
+        var columnBytes = Encoding.UTF8.GetByteCount(column);
+        while (tableBytes + columnBytes > available)
+        {
+            if (tableBytes > columnBytes)
+                tableBytes--;
+            else
+                columnBytes--;
+        }
+
+        return $"{Clip(table, tableBytes)}_{Clip(column, columnBytes)}_seq";
+
+        // pg_mbcliplen: the longest run of whole characters within the byte budget.
+        static string Clip(string value, int bytes)
+        {
+            var clipped = new StringBuilder();
+            foreach (var rune in value.EnumerateRunes())
+            {
+                bytes -= rune.Utf8SequenceLength;
+                if (bytes < 0)
+                    break;
+                clipped.Append(rune.ToString());
+            }
+
+            return clipped.ToString();
+        }
     }
 
     // Diffs the temporal UNIQUE constraints and temporal FOREIGN KEY constraints declared on entity
