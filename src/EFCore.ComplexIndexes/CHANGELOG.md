@@ -11,18 +11,25 @@ The last 5.x minor with a change of its own: the line refuses EF Core 11, whose 
 ### Changed answers
 
 - Registration: on SQL Server and PostgreSQL, the core differ refuses a complex index carrying that provider's index options and names `UseSqlServerComplexIndexes()` or `UseNpgsqlComplexIndexes()`. With `UseComplexIndexes()`, `EnsureCreated()` created the index without its property-level options ([#92](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/issues/92), [Upgrading](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/docs/upgrading.md#the-core-differ-refuses-sql-server-and-postgresql-index-options)).
+- Indexes: a complex index declared on a TPC type is created on the table of every type derived from it, as EF Core's own indexes are. On a concrete base it was created on the base's table only, so a unique index admitted duplicates among the derived types' rows ([#93](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/issues/93), [Upgrading](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/docs/upgrading.md#declarations-on-a-tpc-type-cover-every-table-of-the-hierarchy)).
 - Migrations: on SQLite, `migrations add` refuses a migration that rebuilds a table with a complex index, naming the indexes and the way out. It scaffolded a migration that applied cleanly and dropped every complex index on the table ([#86](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/issues/86), [Upgrading](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/docs/upgrading.md#sqlite-refuses-a-table-rebuild-that-would-drop-complex-indexes)).
 
 ### Breaking
 
 - Registration: `UseComplexIndexes()`, `AddComplexIndexes()` and the design-time registration `dotnet ef` runs throw `InvalidOperationException` on an EF Core major other than 10, naming `CodoMetis.EFCore.SchemaKit` for EF Core 11. EF Core 10 on .NET 11 keeps working ([Upgrading](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/docs/upgrading.md#ef-core-11-is-refused-at-registration)).
 - Indexes: on a provider without a satellite whose index names keep their case, complex index names that differ only in case fail at `migrations add`; rename one ([Upgrading](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/docs/upgrading.md#rename-complex-index-names-that-differ-only-in-case)).
+- Indexes: a complex index on a TPC type with derived types fails at `migrations add` when it reads a member of a complex property, which EF Core 10 maps to no column in a derived table; map the member as a regular property ([Upgrading](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/docs/upgrading.md#declarations-on-a-tpc-type-cover-every-table-of-the-hierarchy)).
+- Indexes: on SQLite, an explicit name on a complex index of a TPC type with derived types fails at `migrations add`, since it would repeat within one schema; leave the name out ([Upgrading](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/docs/upgrading.md#declarations-on-a-tpc-type-cover-every-table-of-the-hierarchy)).
 
 ### Added
 
 - **`CustomMigrationsModelDiffer.RequiresIndexRecreation`**, a protected hook through which a provider's differ drops an unchanged complex index before a base operation that cannot run while it exists, and creates it after.
 - **`CustomMigrationsModelDiffer.ImplicitFilter`**, a protected hook through which a provider's differ gives an index declared without a filter the one its EF Core convention would give it.
 - **`CustomMigrationsModelDiffer.IndexNameComparer`**, a protected hook through which a provider's differ says how it compares index names: without regard to case by default and on SQL Server, ordinally on PostgreSQL.
+
+### Changed
+
+- Indexes: a complex index declared on the abstract base of a TPC hierarchy is created on every concrete table, as EF Core's own indexes are, where it failed at `migrations add` ([Upgrading](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/docs/upgrading.md#declarations-on-a-tpc-type-cover-every-table-of-the-hierarchy)).
 
 ### Fixed
 

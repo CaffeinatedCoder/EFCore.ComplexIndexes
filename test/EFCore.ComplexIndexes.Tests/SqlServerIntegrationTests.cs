@@ -366,6 +366,68 @@ public class SqlServerIntegrationTests
         AssertDuplicateRefused("INSERT INTO cars (Registration_Vin) VALUES (N'WVW00000000000001')");
     }
 
+    // ── TPC: a declaration on a concrete base holds on every table of the hierarchy (#93) ──
+
+    private class Voucher
+    {
+        public int    Id   { get; set; }
+        public string Code { get; set; } = "";
+    }
+
+    private class GiftVoucher : Voucher
+    {
+        public string Recipient { get; set; } = "";
+    }
+
+    private abstract class VoucherContextBase(DbContextOptions options) : DbContext(options)
+    {
+        protected override void OnModelCreating(ModelBuilder modelBuilder)
+        {
+            modelBuilder.Entity<Voucher>(b =>
+            {
+                b.UseTpcMappingStrategy();
+                b.ToTable("vouchers");
+                b.Property(x => x.Code).HasMaxLength(32);
+                // One name on every table, as EF names its own: SQL Server scopes index names per table.
+                b.HasComplexIndex(x => x.Code, isUnique: true, indexName: "ux_voucher_code");
+            });
+            modelBuilder.Entity<GiftVoucher>().ToTable("gift_vouchers");
+            ConfigureModel(modelBuilder);
+        }
+
+        protected virtual void ConfigureModel(ModelBuilder modelBuilder) { }
+    }
+
+    private class VoucherContext(DbContextOptions<VoucherContext> options) : VoucherContextBase(options);
+
+    // The same model as a snapshot scaffolded before 5.5.0 holds it: rendering version 2.
+    private class VoucherBefore55Context(DbContextOptions<VoucherBefore55Context> options) : VoucherContextBase(options)
+    {
+        protected override void ConfigureModel(ModelBuilder modelBuilder)
+            => modelBuilder.HasAnnotation(ComplexIndexAnnotations.RenderingVersion, 2);
+    }
+
+    [TestMethod(DisplayName = "On a concrete TPC base, the upgrade migration makes the derived table enforce the unique index")]
+    public void Tpc_derived_table_enforces_after_upgrade()
+    {
+        // What 5.4 scaffolded: the base table only.
+        Migrate(null, Model<VoucherBefore55Context>());
+        Assert.IsNull(ReadIndex("gift_vouchers", "ux_voucher_code"));
+
+        AssertDuplicateRefused("INSERT INTO vouchers (Id, Code) VALUES (1, N'A'), (2, N'A')");
+        Sql("INSERT INTO gift_vouchers (Id, Code, Recipient) VALUES (3, N'B', N'x'), (4, N'B', N'y')");
+
+        // The duplicate has to go before the upgrade migration can create the index.
+        Sql("DELETE FROM gift_vouchers WHERE Id = 4");
+        Migrate(Model<VoucherBefore55Context>(), Model<VoucherContext>());
+
+        var index = AssertIndex("gift_vouchers", "ux_voucher_code");
+        Assert.IsTrue(index.IsUnique);
+        CollectionAssert.AreEqual(new[] { "Code" }, index.Keys);
+
+        AssertDuplicateRefused("INSERT INTO gift_vouchers (Id, Code, Recipient) VALUES (5, N'B', N'z')");
+    }
+
     // ── Changes under an existing index ──
 
     private class RenameV1Context(DbContextOptions<RenameV1Context> options) : CustomerContext(options)
