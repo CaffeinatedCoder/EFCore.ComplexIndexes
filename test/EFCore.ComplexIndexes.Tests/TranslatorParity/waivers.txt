@@ -243,35 +243,6 @@ unchecked: Date and time JSON members compared in a filter (#119)
     - filter: x => !(x.Doc.Date >= x.Date)
     - filter: x => !(x.Doc.Date >= x.NDate)
 
-same: A captured Substring start renders unfolded (#117)
-    substring("Str", (1 + 1)) against EF Core's substring("Str", 2): PostgreSQL folds the constant
-    before it matches an index to a query, so the index serves it. The live sweep checks it.
-    Open: https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/issues/117
-    - expression: x => x.Str.Substring(c)  with int c = 1;
-    - expression: x => x.Str.Substring(c, 3)  with int c = 1;
-    - expression: x => x.NStr.Substring(c)  with int c = 1;
-    - expression: x => x.NStr.Substring(c, 3)  with int c = 1;
-    - expression: x => x.Doc.Str.Substring(c)  with int c = 1;
-    - expression: x => x.Doc.Str.Substring(c, 3)  with int c = 1;
-    - expression: x => x.Doc.NStr.Substring(c)  with int c = 1;
-    - expression: x => x.Doc.NStr.Substring(c, 3)  with int c = 1;
-    - filter: x => x.Str.Substring(c) == "{it's}"  with int c = 1;
-    - filter: x => x.Str.Substring(c) != "{it's}"  with int c = 1;
-    - filter: x => x.Str.Substring(c, 3) == "{it's}"  with int c = 1;
-    - filter: x => x.Str.Substring(c, 3) != "{it's}"  with int c = 1;
-    - filter: x => x.NStr.Substring(c) == "{it's}"  with int c = 1;
-    - filter: x => x.NStr.Substring(c) != "{it's}"  with int c = 1;
-    - filter: x => x.NStr.Substring(c, 3) == "{it's}"  with int c = 1;
-    - filter: x => x.NStr.Substring(c, 3) != "{it's}"  with int c = 1;
-    - filter: x => x.Doc.Str.Substring(c) == "{it's}"  with int c = 1;
-    - filter: x => x.Doc.Str.Substring(c) != "{it's}"  with int c = 1;
-    - filter: x => x.Doc.Str.Substring(c, 3) == "{it's}"  with int c = 1;
-    - filter: x => x.Doc.Str.Substring(c, 3) != "{it's}"  with int c = 1;
-    - filter: x => x.Doc.NStr.Substring(c) == "{it's}"  with int c = 1;
-    - filter: x => x.Doc.NStr.Substring(c) != "{it's}"  with int c = 1;
-    - filter: x => x.Doc.NStr.Substring(c, 3) == "{it's}"  with int c = 1;
-    - filter: x => x.Doc.NStr.Substring(c, 3) != "{it's}"  with int c = 1;
-
 same: Null checks shaped unlike EF Core's (#118)
     The translator tests a computed operand for NULL (lower("NStr") IS NULL) where EF Core tests its
     columns ("NStr" IS NULL), and writes a negated comparison over a nullable operand as a disjunction
@@ -574,3 +545,7 @@ same: Null checks shaped unlike EF Core's (#118)
     - filter: x => !(x.Doc.NInt.Value <= 5)
     - filter: x => !(x.Doc.NInt.Value > 5)
     - filter: x => !(x.Doc.NInt.Value >= 5)
+    - filter: x => x.NStr.Substring(c) != "{it's}"  with int c = 1;
+    - filter: x => x.NStr.Substring(c, 3) != "{it's}"  with int c = 1;
+    - filter: x => x.Doc.NStr.Substring(c) != "{it's}"  with int c = 1;
+    - filter: x => x.Doc.NStr.Substring(c, 3) != "{it's}"  with int c = 1;

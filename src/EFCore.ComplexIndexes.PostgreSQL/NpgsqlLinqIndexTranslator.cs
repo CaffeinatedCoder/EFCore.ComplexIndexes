@@ -105,8 +105,10 @@ internal static class NpgsqlLinqIndexTranslator
         => typeof(string).GetMethod(name, parameters)
         ?? throw new InvalidOperationException($"string.{name}({string.Join(", ", parameters.Select(p => p.Name))}) does not exist.");
 
+    // A start known at the declaration, a literal or a captured variable, is folded as EF Core
+    // folds it: substring("Code", 2), not substring("Code", (1 + 1)).
     private static string SubstringStart(Expression start, Func<Expression, string> visit)
-        => start is ConstantExpression { Value: int startIndex }
+        => !new ParameterFinder(parameter: null).Search(start) && Evaluate(start) is int startIndex
                ? (startIndex + 1).ToString(CultureInfo.InvariantCulture)
                : $"({visit(start)} + 1)";
 
@@ -546,13 +548,20 @@ internal static class NpgsqlLinqIndexTranslator
             "string.Length, string concatenation (+), null coalescing (??), and constants. " +
             "Use the HasExpressionIndex(string) overload with raw SQL for anything else.");
 
-    private sealed class ParameterFinder(ParameterExpression parameter) : ExpressionVisitor
+    // Finds the given parameter, or with none given, any parameter.
+    private sealed class ParameterFinder(ParameterExpression? parameter) : ExpressionVisitor
     {
         public bool Found { get; private set; }
 
+        public bool Search(Expression node)
+        {
+            Visit(node);
+            return Found;
+        }
+
         protected override Expression VisitParameter(ParameterExpression node)
         {
-            if (ReferenceEquals(node, parameter))
+            if (parameter is null || ReferenceEquals(node, parameter))
                 Found = true;
             return base.VisitParameter(node);
         }
