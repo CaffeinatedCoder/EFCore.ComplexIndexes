@@ -27,7 +27,7 @@ ALTER TABLE bookings
 builder.HasTemporalConstraint(
     keyColumns: b => b.RoomId,
     period:     b => b.ValidPeriod);
-// ALTER TABLE "Bookings" ADD CONSTRAINT "AK_Bookings__RoomId_ValidPeriod"
+// ALTER TABLE "Bookings" ADD CONSTRAINT "AK_Bookings_RoomId_ValidPeriod"
 //   UNIQUE ("RoomId", "ValidPeriod" WITHOUT OVERLAPS);
 ```
 

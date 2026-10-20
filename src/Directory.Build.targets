@@ -30,8 +30,66 @@
         <ReleaseNotesChangelog Condition="'$(ReleaseNotesChangelog)' == ''">$(MSBuildProjectDirectory)/CHANGELOG.md</ReleaseNotesChangelog>
     </PropertyGroup>
 
+    <!--
+        A package links the docs as they were when it was built (#151).
+
+        The changelogs and the packed READMEs link this repository at blob/main, which
+        DocumentationLinkTests resolves against the checkout. A package can never change once
+        published, while main moves on: after the v5.5.0 tag it is the SchemaKit line and reshapes
+        docs/. So the release notes and the packed README link the tag of the version being packed
+        instead, the same tag the notes' footer links. On the tagged commit the checkout is the
+        tag's tree, so the link test that passed there proves the frozen links resolve.
+
+        A pack of an untagged version (a PR's pack job, the smoke test) links a tag that does not
+        exist yet. Nothing reads those links, and a package built from the tag gets them right.
+        The release job in release.yml freezes the GitHub release's notes the same way.
+    -->
+    <Target Name="_ComputeFrozenLinks">
+        <Error Condition="'$(RepositoryUrl)' == ''"
+               Text="Cannot freeze the documentation links of $(PackageId): RepositoryUrl is not set." />
+
+        <PropertyGroup>
+            <_FrozenLinkPattern>$([System.Text.RegularExpressions.Regex]::Escape($(RepositoryUrl)))/(blob|tree)/main/</_FrozenLinkPattern>
+            <_FrozenLinkReplacement>$(RepositoryUrl)/$1/v$(PackageVersion)/</_FrozenLinkReplacement>
+        </PropertyGroup>
+    </Target>
+
+    <!--
+        The README is packed from a rewritten copy under obj/, swapped for the original in the pack's
+        file list after NuGet has collected it. The list is NuGet's own item, so a rename on its side
+        would leave the original in place; the pack fails instead when no packed file is the README,
+        and PackagingConventionTests compares the packed README with its source.
+    -->
+    <Target Name="FreezePackageReadmeLinks"
+            BeforeTargets="GenerateNuspec"
+            DependsOnTargets="_ComputeFrozenLinks"
+            Condition="'$(IsPackable)' == 'true' and '$(PackageReadmeFile)' != ''">
+        <ItemGroup>
+            <_ReadmeToFreeze Include="@(_PackageFiles)" Condition="'%(Filename)%(Extension)' == '$(PackageReadmeFile)'" />
+        </ItemGroup>
+
+        <Error Condition="'@(_ReadmeToFreeze->Count())' != '1'"
+               Text="Cannot freeze the documentation links of $(PackageId): expected one packed file named $(PackageReadmeFile), found @(_ReadmeToFreeze->Count())." />
+
+        <PropertyGroup>
+            <_FrozenReadme>$(IntermediateOutputPath)frozen-readme/$(PackageReadmeFile)</_FrozenReadme>
+            <_FrozenReadmeText>$([System.IO.File]::ReadAllText(%(_ReadmeToFreeze.FullPath)))</_FrozenReadmeText>
+            <_FrozenReadmeText>$([System.Text.RegularExpressions.Regex]::Replace($(_FrozenReadmeText), $(_FrozenLinkPattern), $(_FrozenLinkReplacement)))</_FrozenReadmeText>
+        </PropertyGroup>
+
+        <WriteLinesToFile File="$(_FrozenReadme)" Lines="$(_FrozenReadmeText)" Overwrite="true" WriteOnlyWhenDifferent="true" />
+
+        <ItemGroup>
+            <_PackageFiles Remove="@(_ReadmeToFreeze)" />
+            <_PackageFiles Include="@(_ReadmeToFreeze->'$(_FrozenReadme)')" />
+            <NuGetPackInput Include="$(_FrozenReadme)" />
+            <_ReadmeToFreeze Remove="@(_ReadmeToFreeze)" />
+        </ItemGroup>
+    </Target>
+
     <Target Name="SetPackageReleaseNotesFromChangelog"
             BeforeTargets="GenerateNuspec"
+            DependsOnTargets="_ComputeFrozenLinks"
             Condition="'$(IsPackable)' == 'true'">
         <Error Condition="!Exists('$(ReleaseNotesChangelog)')"
                Text="Cannot set the release notes of $(PackageId): $(ReleaseNotesChangelog) does not exist." />
@@ -47,6 +105,7 @@
                Text="Cannot set the release notes of $(PackageId): $(ReleaseNotesChangelog) has no '## [$(PackageVersion)]' section, or it is empty. A version with nothing for this package says 'No change in this package.'" />
 
         <PropertyGroup>
+            <_ReleaseNotes>$([System.Text.RegularExpressions.Regex]::Replace($(_ReleaseNotes), $(_FrozenLinkPattern), $(_FrozenLinkReplacement)))</_ReleaseNotes>
             <_ReleaseNotes>$([System.Text.RegularExpressions.Regex]::Replace($(_ReleaseNotes), '\[([^\]\n]+)\]\((https?://[^)\s]+)\)', '$1 ($2)'))</_ReleaseNotes>
             <_ReleaseNotes>$([System.Text.RegularExpressions.Regex]::Replace($(_ReleaseNotes), '\x60|\*\*', ''))</_ReleaseNotes>
             <_ReleaseNotes>$([System.Text.RegularExpressions.Regex]::Replace($(_ReleaseNotes), '(?m)^### ', ''))</_ReleaseNotes>

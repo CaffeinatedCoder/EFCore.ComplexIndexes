@@ -100,27 +100,41 @@ public class CustomMigrationsModelDiffer(
         Satellites.FirstOrDefault(s => typeMappingSource.GetType().Namespace?.StartsWith(s.ProviderNamespace, StringComparison.Ordinal) == true);
 
     /// <summary>
-    /// The index options each satellite forwards — its <c>IsForwardedIndexAnnotation</c> whitelist —
-    /// and the registration that selects its differ. <c>SatelliteOptionCoverageTests</c> holds these
-    /// lists to the satellites' builders, so an option added there cannot be missing here.
+    /// What only each satellite's differ renders — the index options it forwards (its
+    /// <c>IsForwardedIndexAnnotation</c> whitelist), the entity-type annotations that declare its
+    /// constraints, and whether it filters a unique index's nullable columns — and the registration
+    /// that selects that differ. <c>CoreDifferSatelliteOptionTests</c> holds the options to the
+    /// satellites' builders and the annotation names to the satellites' own constants, so a
+    /// declaration added there cannot be missing here.
     /// </summary>
     internal static readonly Satellite[] Satellites =
     [
         new("Microsoft.EntityFrameworkCore.SqlServer", "SQL Server", "EFCore.ComplexIndexes.SqlServer", "UseSqlServerComplexIndexes()",
             ["SqlServer:Clustered", "SqlServer:Include", "SqlServer:Online", "SqlServer:FillFactor", "SqlServer:SortInTempDb", "SqlServer:DataCompression"],
-            OptionPrefix: null),
+            OptionPrefix: null,
+            Declarations: [],
+            FiltersNullableUniqueIndexes: true),
         new("Npgsql.EntityFrameworkCore.PostgreSQL", "PostgreSQL", "EFCore.ComplexIndexes.PostgreSQL", "UseNpgsqlComplexIndexes()",
             ["Npgsql:IndexMethod", "Npgsql:IndexOperators", "Npgsql:IndexInclude", "Npgsql:CreatedConcurrently", "Npgsql:NullsDistinct", "Npgsql:IndexCollation"],
-            OptionPrefix: "Npgsql:StorageParameter:"),
+            OptionPrefix: "Npgsql:StorageParameter:",
+            Declarations:
+            [
+                ("CustomExclusion:Constraints", "exclusion constraint"),
+                ("CustomTemporal:Constraints",  "temporal constraint"),
+                ("CustomTemporal:ForeignKeys",  "temporal foreign key"),
+            ],
+            FiltersNullableUniqueIndexes: false),
     ];
 
     internal sealed record Satellite(
-        string                ProviderNamespace,
-        string                Provider,
-        string                Package,
-        string                Registration,
-        HashSet<string>       Options,
-        string?               OptionPrefix)
+        string                                          ProviderNamespace,
+        string                                          Provider,
+        string                                          Package,
+        string                                          Registration,
+        HashSet<string>                                 Options,
+        string?                                         OptionPrefix,
+        IReadOnlyList<(string Annotation, string Kind)> Declarations,
+        bool                                            FiltersNullableUniqueIndexes)
     {
         public bool IsOption(string annotationName)
             => Options.Contains(annotationName)
@@ -156,7 +170,7 @@ public class CustomMigrationsModelDiffer(
         ValidateQueryUsableLeadingParts(targetIndexes);
         ValidateFilterComparisons(targetIndexes);
         ValidateRenderableParts(targetIndexes);
-        ValidateNoSatelliteOptions(target);
+        ValidateNothingOnlyTheSatelliteRenders(target, targetIndexes);
         ValidateIncludedColumns(target, targetIndexes);
         if (target is not null)
             ValidateTargetIndexes(target, targetIndexes);
@@ -1010,22 +1024,32 @@ public class CustomMigrationsModelDiffer(
     }
 
     /// <summary>
-    /// Fails when a declaration carries an index option of the provider's satellite that this
-    /// differ does not forward: the model is being diffed by the core differ where the satellite's
-    /// should run.
+    /// True in the satellites' differs, which render what <see cref="Satellites"/> lists for their
+    /// provider; false in the core differ, which does not.
+    /// </summary>
+    internal virtual bool IsSatelliteDiffer => false;
+
+    /// <summary>
+    /// Fails, on a provider a satellite serves, when the target model declares something only the
+    /// satellite's differ renders and the core differ is the one running: one of the satellite's
+    /// index options, one of its constraints, or, on SQL Server, a unique index whose nullable
+    /// columns the satellite filters.
     /// </summary>
     /// <remarks>
     /// That happens with <c>UseComplexIndexes()</c> instead of the satellite's registration at
     /// runtime, or without the satellite's <c>.targets</c> at design time. The core forwards no
-    /// property-level option, so <c>INCLUDE</c>, <c>FILLFACTOR</c>, a clustered index or a GIN
-    /// method vanished from the DDL and <c>EnsureCreated()</c> applied the rest cleanly; entity-level
-    /// options went through unchecked and unresolved. Only the provider the differ serves is
-    /// checked: a model shared between PostgreSQL and SQLite tests carries Npgsql options that
-    /// SQLite rightly ignores. Target only, like every check here.
+    /// property-level option and has never heard of the satellites' constraints, so <c>INCLUDE</c>,
+    /// <c>FILLFACTOR</c>, a GIN method, an exclusion or temporal constraint, a temporal foreign key
+    /// and SQL Server's <c>IS NOT NULL</c> filter vanished from the DDL, and <c>EnsureCreated()</c>
+    /// applied the rest cleanly (#92, #150); entity-level options went through unchecked and
+    /// unresolved. Only the provider the differ serves is checked: a model shared between
+    /// PostgreSQL and SQLite tests carries Npgsql declarations that SQLite rightly ignores. A
+    /// provider no satellite serves is <see cref="ValidateRenderableParts"/>'s. Target only, like
+    /// every check here, so that a snapshot holding such declarations stays diffable.
     /// </remarks>
-    private void ValidateNoSatelliteOptions(IRelationalModel? target)
+    private void ValidateNothingOnlyTheSatelliteRenders(IRelationalModel? target, HashSet<IndexDescriptor> descriptors)
     {
-        if (target is null || _satellite is null)
+        if (target is null || _satellite is null || IsSatelliteDiffer)
             return;
 
         foreach (var declaration in target.Model.GetComplexIndexes())
@@ -1043,10 +1067,69 @@ public class CustomMigrationsModelDiffer(
             throw new InvalidOperationException(
                 $"The complex index {index} on '{declaration.EntityType.DisplayName()}' declares the {_satellite.Provider} index option "
               + $"'{option}', but the model is diffed by the provider-agnostic core differ, which does not render it: the "
-              + $"index would be created without it. Use the {_satellite.Package} satellite's differ: call {_satellite.Registration} "
-              + "instead of UseComplexIndexes() at runtime, and for `dotnet ef`, reference the satellite package so its .targets "
-              + "selects its differ.");
+              + $"index would be created without it. {SatelliteRemedy(_satellite)}");
         }
+
+        foreach (var entityType in target.Model.GetEntityTypes())
+        {
+            if (DeclarationTables(entityType).Count == 0)
+                continue;
+
+            foreach (var (annotation, kind) in _satellite.Declarations)
+            {
+                if (entityType.FindAnnotation(annotation)?.Value is not string json
+                 || DeclaredNames(json) is not { } names)
+                    continue;
+
+                var which = names.Count == 0 ? "" : $" ({string.Join(", ", names.Select(n => $"'{n}'"))})";
+
+                throw new InvalidOperationException(
+                    $"'{entityType.DisplayName()}' declares a {_satellite.Provider} {kind}{which}, but the model is diffed by the "
+                  + $"provider-agnostic core differ, which does not render it: the table would be created without the "
+                  + $"{kind}, and nothing would enforce it. {SatelliteRemedy(_satellite)}");
+            }
+        }
+
+        if (!_satellite.FiltersNullableUniqueIndexes || ComplexIndexStorage.GetRenderingVersion(target.Model) < 3)
+            return;
+
+        foreach (var descriptor in descriptors.Where(d => d.IsUnique && d.Filter is null))
+        {
+            var table    = target.FindTable(descriptor.TableName, descriptor.Schema);
+            var nullable = descriptor.ColumnNames.Where(c => table?.FindColumn(c)?.IsNullable == true).ToList();
+            if (nullable.Count == 0)
+                continue;
+
+            throw new InvalidOperationException(
+                $"The unique complex index '{descriptor.IndexName}' on table '{descriptor.TableName}' covers the nullable "
+              + $"column(s) {string.Join(", ", nullable.Select(c => $"'{c}'"))}, which the {_satellite.Provider} satellite "
+              + "filters with IS NOT NULL, as EF Core does for its own unique indexes. The model is diffed by the "
+              + "provider-agnostic core differ, which does not add that filter: the index would admit one row without "
+              + $"a value and refuse the second. {SatelliteRemedy(_satellite)}");
+        }
+    }
+
+    private static string SatelliteRemedy(Satellite satellite)
+        => $"Use the {satellite.Package} satellite's differ: call {satellite.Registration} instead of UseComplexIndexes() "
+         + "at runtime, and for `dotnet ef`, reference the satellite package so its .targets selects its differ.";
+
+    // The names in a satellite's JSON-stored list of declarations, or null when the list is empty.
+    private static List<string>? DeclaredNames(string json)
+    {
+        using var document = System.Text.Json.JsonDocument.Parse(json);
+        if (document.RootElement.ValueKind != System.Text.Json.JsonValueKind.Array || document.RootElement.GetArrayLength() == 0)
+            return null;
+
+        return
+        [
+            .. document.RootElement.EnumerateArray()
+                       .Select(e => e.ValueKind == System.Text.Json.JsonValueKind.Object
+                                 && e.TryGetProperty("name", out var n)
+                                 && n.ValueKind == System.Text.Json.JsonValueKind.String
+                                        ? n.GetString()
+                                        : null)
+                       .OfType<string>()
+        ];
     }
 
     /// <summary>
@@ -1245,7 +1328,7 @@ public class CustomMigrationsModelDiffer(
     /// the same text, no index operation is emitted, and the migration is a bare <c>DROP COLUMN</c>:
     /// PostgreSQL drops the index with the column and applies cleanly, SQL Server refuses the drop
     /// (Msg 5074). Names compare by <see cref="IndexNameComparer"/>, the provider's identifier rule.
-    /// Only the list of the provider being diffed is checked, after <see cref="ValidateNoSatelliteOptions"/>
+    /// Only the list of the provider being diffed is checked, after <see cref="ValidateNothingOnlyTheSatelliteRenders"/>
     /// has made sure its satellite resolved it: a model shared with SQLite tests carries options SQLite
     /// ignores. Target model only, so that a snapshot holding such an entry stays diffable and the
     /// declaration can be fixed.
