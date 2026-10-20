@@ -17,6 +17,11 @@ dotnet test --filter "ClassName=MigrationModelDifferTests"
 # Run a single test method
 dotnet test --filter "FullyQualifiedName~MigrationModelDifferTests.SingleIndex_IsCreated"
 
+# Test on another EF Core patch: restore and build with the same properties, then check deps.json
+dotnet restore -p:EfFloat=10.0.13 -p:NpgsqlEfFloat=10.0.3
+dotnet build -c Release --no-restore -p:EfFloat=10.0.13 -p:NpgsqlEfFloat=10.0.3
+test/assert-dependency-versions.sh test/EFCore.ComplexIndexes.Tests/bin/Release/net10.0/EFCore.ComplexIndexes.Tests.deps.json 10.0.13 10.0.3
+
 # Pack NuGet packages
 dotnet pack src/EFCore.ComplexIndexes/EFCore.ComplexIndexes.csproj
 ```
@@ -63,7 +68,23 @@ user who last edited the cron line, and nobody for the dispatched release-line r
 a public repository's schedules off after 60 days without activity, which is why nothing depends
 on the nightly. The SDK comes from `global.json`: `10.0.400` with `rollForward: latestPatch`, the
 band CI used before the pin, so patches arrive and a new feature band needs a PR (the consumer
-projects get a copy, since they live outside the repository). Actions in all workflows are pinned to commit SHAs with the tag in a trailing
+projects get a copy, since they live outside the repository).
+
+Every lane above tests the floor the packages declare: the test project pins EF Core, its
+providers and Npgsql EF at 10.0.0, and the unit job reads the test host's deps.json
+(`test/assert-dependency-versions.sh`) to show it. A provider pinned higher pulls EF Core up behind
+it; until 5.5.0 a Sqlite pin at 10.0.11 ran every lane on EF Core 10.0.11 beside Npgsql EF 10.0.0,
+a mix no consumer has (#133). The `Newest EF Core patch` lane runs the unit, integration and smoke
+suites again on the newest 10.x patches on nuget.org, looked up when it runs, so the nightly tests
+a patch the night it ships. `test/Directory.Build.targets` floats the test projects only
+(`-p:EfFloat=… -p:NpgsqlEfFloat=…`; set both, since Npgsql EF 10.0.1 and later need EF Core 10.0.4),
+and `src/` still compiles against its floor, which is what a consumer on a newer patch runs. The
+lane exists because the package replaces EF's differ and SQL generator through internal API that
+carries no promise across patches, and a fixes-only line has no other way to notice a patch that
+breaks it. It reads deps.json as well, since a float that does not take passes every test on the
+floor, and it runs its suites in one step that reports every failing suite, not the first.
+
+Actions in all workflows are pinned to commit SHAs with the tag in a trailing
 comment; `.github/dependabot.yml` keeps those pins current (weekly, grouped, minors and patches
 only — majors on the publish path are deliberate, see the artifact-action comments in
 `release.yml`) and covers the test project's NuGet references monthly — not `src/`, whose EF Core

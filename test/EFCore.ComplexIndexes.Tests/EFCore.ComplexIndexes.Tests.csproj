@@ -10,7 +10,10 @@
     </PropertyGroup>
 
     <ItemGroup>
-        <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="10.0.11" />
+        <!-- EF Core and its providers at the floor src/ declares, every one of them: a provider
+             pinned higher pulls EF Core up behind it, and the suite then tests a mix no consumer
+             has. test/Directory.Build.targets floats them to another patch (#133). -->
+        <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="10.0.0" />
         <PackageReference Include="Microsoft.EntityFrameworkCore.SqlServer" Version="10.0.0" />
         <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="10.0.0" />
         <!-- Design-time services (snapshot code generation) as a regular library reference:
