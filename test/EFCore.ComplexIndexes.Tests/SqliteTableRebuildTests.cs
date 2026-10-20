@@ -437,6 +437,33 @@ public class SqliteTableRebuildTests
         Assert.IsEmpty(operations.OfType<CreateIndexOperation>());
     }
 
+    [TestMethod(DisplayName = "Circular foreign keys between tables the migration creates are no rebuild")]
+    public void Foreign_keys_on_created_tables_are_allowed()
+    {
+        using var connection = new SqliteConnection(MigrationHarness.SqliteConnection);
+        connection.Open();
+        var options = Unwired(connection);
+
+        // A cycle leaves EF Core one foreign key it cannot put in a CREATE TABLE, emitted as
+        // AddForeignKey. Both tables carry a complex index, whichever one the cycle is broken on.
+        var target = Model(connection, modelBuilder =>
+        {
+            Members(b => { V1(b); b.HasOne<Visit>().WithMany().HasForeignKey(x => x.VisitId); })(modelBuilder);
+            modelBuilder.Entity<Visit>(b =>
+            {
+                b.HasOne<Member>().WithMany().HasForeignKey("MemberId");
+                b.HasComplexIndex(x => x.Notes, indexName: "ix_visits_notes");
+            });
+        });
+
+        var operations = Scaffold(options, null, target);
+
+        Assert.IsTrue(operations.OfType<AddForeignKeyOperation>().Any(), string.Join(", ", operations.Select(o => o.GetType().Name)));
+        Apply(options, operations, target);
+        Assert.AreEqual("members", IndexTable(connection, "ux_members_email"));
+        Assert.AreEqual("visits", IndexTable(connection, "ix_visits_notes"));
+    }
+
     [TestMethod(DisplayName = "An unchanged model diffs to nothing")]
     public void Unchanged_model_is_empty()
     {

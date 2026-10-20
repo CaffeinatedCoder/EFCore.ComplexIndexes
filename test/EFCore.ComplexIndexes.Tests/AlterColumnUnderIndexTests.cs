@@ -67,6 +67,31 @@ public class AlterColumnUnderIndexTests
         }
     }
 
+    // The index reads Note only through its filter, and Note changes its length (#156).
+    private abstract class FilteredMemberContext(DbContextOptions options) : DbContext(options)
+    {
+        protected abstract int NoteLength { get; }
+
+        protected override void OnModelCreating(ModelBuilder modelBuilder) =>
+            modelBuilder.Entity<Member>(b =>
+            {
+                b.ToTable("members");
+                b.Property(x => x.Note).HasMaxLength(NoteLength);
+                b.ComplexProperty(x => x.Email, c => c.Property(x => x.Value).HasMaxLength(200));
+                b.HasComplexIndex(x => x.Email.Value, isUnique: true, filter: "{Note} IS NULL", indexName: "ux_members_email_without_note");
+            });
+    }
+
+    private class FilteredV1Context(DbContextOptions<FilteredV1Context> options) : FilteredMemberContext(options)
+    {
+        protected override int NoteLength => 100;
+    }
+
+    private class FilteredV2Context(DbContextOptions<FilteredV2Context> options) : FilteredMemberContext(options)
+    {
+        protected override int NoteLength => 200;
+    }
+
     [TestMethod(DisplayName = "SQL Server: ALTER COLUMN under a complex index runs with the index out of the way")]
     public void SqlServer_alter_column_under_index()
     {
@@ -78,6 +103,20 @@ public class AlterColumnUnderIndexTests
         var create = operations.FindIndex(o => o is CreateIndexOperation { Name: "ux_members_email" });
 
         // Without the drop, SQL Server refuses the ALTER COLUMN: Msg 5074, the index depends on it.
+        Assert.IsTrue(drop >= 0 && drop < alter && alter < create, string.Join(", ", operations.Select(o => o.GetType().Name)));
+    }
+
+    [TestMethod(DisplayName = "SQL Server: ALTER COLUMN on a column only the filter names runs with the index out of the way")]
+    public void SqlServer_alter_filter_column_under_index()
+    {
+        var operations = MigrationHarness.SqlServerDiff(
+            MigrationHarness.SqlServerModel<FilteredV1Context>(), MigrationHarness.SqlServerModel<FilteredV2Context>()).ToList();
+
+        var drop   = operations.FindIndex(o => o is DropIndexOperation { Name: "ux_members_email_without_note" });
+        var alter  = operations.FindIndex(o => o is AlterColumnOperation { Name: "Note" });
+        var create = operations.FindIndex(o => o is CreateIndexOperation { Name: "ux_members_email_without_note" });
+
+        // A filtered index depends on the columns its filter names as much as on its keys: Msg 5074.
         Assert.IsTrue(drop >= 0 && drop < alter && alter < create, string.Join(", ", operations.Select(o => o.GetType().Name)));
     }
 
