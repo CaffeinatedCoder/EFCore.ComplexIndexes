@@ -88,6 +88,18 @@ for package in EFCore.ComplexIndexes EFCore.ComplexIndexes.PostgreSQL EFCore.Com
     fi
 done
 
+# The satellites bind to the core's internals, so each depends on exactly its own version of it
+# (#169); a ProjectReference packs as ">=", and only a target in src/Directory.Build.targets pins it.
+echo "==> Satellite dependencies on the core in the packed nuspecs"
+for package in EFCore.ComplexIndexes.PostgreSQL EFCore.ComplexIndexes.SqlServer; do
+    if unzip -p "$feed/$package.$version.nupkg" "$package.nuspec" | grep -qF "<dependency id=\"EFCore.ComplexIndexes\" version=\"[$version]\""; then
+        echo "  ok: $package depends on EFCore.ComplexIndexes [$version]"
+    else
+        echo "  FAIL: $package.$version.nupkg does not depend on EFCore.ComplexIndexes [$version]"
+        failed=1
+    fi
+done
+
 assert_contains() {
     if grep -q "$1" "$2"; then
         echo "  ok: $3"

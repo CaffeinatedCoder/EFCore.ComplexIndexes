@@ -55,6 +55,7 @@ The last 5.x minor with a change of its own: the line refuses EF Core 11, whose 
 - Indexes: on PostgreSQL and SQLite, an explicit name on a TPC type's complex index, exclusion constraint or temporal constraint stays on that type's table, and each derived table's copy takes the name followed by its table. A copy's name past the identifier limit is shortened as EF Core's are, a temporal foreign key's too ([#145](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/issues/145), [#167](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/issues/167), [#168](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/issues/168), [Upgrading](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/docs/upgrading.md#declarations-on-a-tpc-type-cover-every-table-of-the-hierarchy)).
 - Packaging: each package carries the version's section of its changelog as its NuGet release notes, which nuget.org's Release Notes tab and Visual Studio's Updates tab show.
 - Packaging: the release notes, the README on nuget.org and the GitHub release link the documentation at the version's tag, so they keep describing the version they shipped with after `main` moves on to the next line.
+- Packaging: the PostgreSQL and SQL Server packages depend on exactly their own version of `EFCore.ComplexIndexes`, and the core differ refuses a satellite of another version, naming both. Update the packages together: a 5.4.x satellite beside core 5.5.0 was refused as the core differ ([#169](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/issues/169)).
 
 ### Fixed
 

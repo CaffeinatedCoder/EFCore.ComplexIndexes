@@ -157,6 +157,8 @@ public class CustomMigrationsModelDiffer(
         IRelationalModel? target
     )
     {
+        ThrowIfSatelliteVersionDiffers(GetType());
+
         var operations = base.GetDifferences(source, target);
 
         var sourceIndexes = ExtractAllIndexDescriptors(source);
@@ -1022,7 +1024,58 @@ public class CustomMigrationsModelDiffer(
     /// True in the satellites' differs, which render what <see cref="Satellites"/> lists for their
     /// provider; false in the core differ, which does not.
     /// </summary>
+    /// <remarks>
+    /// A satellite of another version never reaches a check that reads this:
+    /// <see cref="ThrowIfSatelliteVersionDiffers"/> refuses it first. A 5.4.x satellite predates the
+    /// member and would otherwise be taken for the core differ.
+    /// </remarks>
     internal virtual bool IsSatelliteDiffer => false;
+
+    /// <summary>
+    /// Fails when <paramref name="differ"/> is, or derives from, a satellite's differ built as
+    /// another version than this core.
+    /// </summary>
+    /// <remarks>
+    /// The satellites bind to the core's internals (<c>InternalsVisibleTo</c>) and the three
+    /// packages ship together under one version, so a satellite only ever runs against the core it
+    /// was built with. NuGet does not keep a mixed pair out: up to 5.4.1 the satellites declare
+    /// <c>&gt;=</c> on the core, so updating a direct core reference alone runs a 5.4.1 satellite
+    /// against this core without a warning, and from 5.5.0 the exact pin they declare is overridden
+    /// by a direct reference with warning NU1608 only (#169). Such a pair was never built or tested,
+    /// and it fails in ways that name neither package: a 5.4.1 satellite has no
+    /// <see cref="IsSatelliteDiffer"/>, so it was refused as the core differ while its consumer did
+    /// call the satellite's registration. Where the answers of a version are split between the core
+    /// and a satellite, a mixed pair could give one half of them. A provider's own subclass of this
+    /// differ, in an assembly that is no satellite, is not checked.
+    /// </remarks>
+    internal static void ThrowIfSatelliteVersionDiffers(Type differ)
+    {
+        var core = typeof(CustomMigrationsModelDiffer).Assembly;
+
+        for (var type = differ; type is not null && type != typeof(CustomMigrationsModelDiffer); type = type.BaseType)
+        {
+            var assembly = type.Assembly;
+            var name     = assembly.GetName().Name;
+            if (assembly == core || !Satellites.Any(s => s.Package == name))
+                continue;
+
+            var satelliteVersion = PackageVersion(assembly);
+            var coreVersion      = PackageVersion(core);
+            if (satelliteVersion == coreVersion)
+                return;
+
+            throw new InvalidOperationException(
+                $"{name} {satelliteVersion} is running against {core.GetName().Name} {coreVersion}. The satellite is built "
+              + $"against the core's internals, and the packages are released together under one version: a mixed pair "
+              + $"was never built or tested. Reference the same version of both, {name} {coreVersion} with this core.");
+        }
+    }
+
+    // The package version an assembly was built as: its informational version without the commit.
+    private static string PackageVersion(Assembly assembly)
+        => assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion.Split('+')[0]
+        ?? assembly.GetName().Version?.ToString(3)
+        ?? "(unknown)";
 
     /// <summary>
     /// Fails, on a provider a satellite serves, when the target model declares something only the
