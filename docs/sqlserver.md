@@ -1,20 +1,18 @@
 # SQL Server
 
-Provided by the **EFCore.ComplexIndexes.SqlServer** package. The core package is included
-automatically, and migrations need **no runtime wiring** — every option flows as a native SQL Server
-annotation that the provider's own migrations SQL generator renders.
+The **EFCore.ComplexIndexes.SqlServer** package lets you set SQL Server's index options on indexes
+over complex properties. It brings the core package with it. Migrations need **no call in your
+context's configuration**: every option goes into the migration as a SQL Server annotation that EF Core's own
+SQL Server generator writes.
 
-One optional call exists: `UseSqlServerComplexIndexes()` registers the differ at runtime, so
-`Database.EnsureCreated()` and `GenerateCreateScript()` include the complex indexes and the
-pending-model-changes check in `Migrate()` sees one that was never scaffolded. See
+One call is optional. `UseSqlServerComplexIndexes()` registers the package on your context, so
+`Database.EnsureCreated()` and `GenerateCreateScript()` create your complex indexes too. The
+pending-model-changes check in `Migrate()` then also notices a complex index that no migration has
+created yet. See
 [the runtime wiring section](../README.md#ensurecreated-generatecreatescript-and-the-pending-changes-check)
 in the root README.
 
 ## Index options
-
-The **EFCore.ComplexIndexes.SqlServer** package brings the SQL Server option set to complex-property
-indexes. Like the PostgreSQL GIN/GiST options, everything flows as native provider annotations that
-SQL Server's own migrations SQL generator renders:
 
 ```csharp
 builder.ComplexProperty(x => x.Email, c =>
@@ -30,30 +28,39 @@ builder.HasComplexIndex(x => x.Email.Value, ix => ix
 //   INCLUDE ([name]) WITH (FILLFACTOR = 80, ONLINE = ON);
 ```
 
-`IsClustered()`, `SortInTempDb()`, and `UseDataCompression(DataCompressionType.Page)` are also
-available. Filtered indexes (`filter:`) and `DbOrder.Desc` work out of the box, since both ride on
-EF's native operation. A filter may name properties — `filter: "{DeletedAt} IS NULL"` resolves to
-`[deleted_at] IS NULL` at `migrations add`, bracket-quoted, and is baked into the migration.
+The builder also has `IsClustered()`, `SortInTempDb()` and
+`UseDataCompression(DataCompressionType.Page)`.
 
-`IncludeProperties(...)` entries are resolved as property paths — complex members included — with a
-verbatim column-name fallback, so `IncludeProperties("Email.Value")` finds the real column. An entry
-that is neither a property path nor a column of the table fails at `migrations add`.
+Good to know:
+
+- **Filters and sort direction need nothing from this package.** Filtered indexes (`filter:`) and
+  `DbOrder.Desc` are part of EF Core's own index operation.
+- **A unique index over nullable columns gets `WHERE [c] IS NOT NULL`**, as EF Core's own unique
+  indexes do, since SQL Server treats two NULLs as duplicates in a unique index. The filter covers
+  the nullable key columns. It isn't added to a clustered index, or to one you declared with a
+  filter (since 5.5.0).
+- **A filter can name properties.** `migrations add` turns `filter: "{DeletedAt} IS NULL"` into
+  `[deleted_at] IS NULL`, in brackets, and writes it into the migration.
+- **`IncludeProperties(...)` takes property paths**, complex members included, and also accepts a
+  column name as written. So `IncludeProperties("Email.Value")` finds the real column. An entry
+  that is neither a property path nor a column of the table makes `migrations add` fail.
 
 ## Deliberate rejections
 
-Declarations SQL Server cannot express fail at `dotnet ef migrations add` with a targeted error
-rather than producing DDL that cannot apply:
+If you declare something SQL Server can't express, `dotnet ef migrations add` fails and names the
+problem, instead of writing a migration that would fail when it runs:
 
-- **Expression parts** — SQL Server has no functional-index DDL. Model the expression as a persisted
-  computed column and index that column instead.
-- **`DbOrder.NullsFirst` / `NullsLast`** — there is no `NULLS FIRST`/`NULLS LAST` in T-SQL.
-- **Clustered index with `INCLUDE` columns** — included columns are a nonclustered-index feature; a
+- **Expression parts.** SQL Server has no DDL for an index on an expression. Store the expression in
+  a persisted computed column and index that column instead.
+- **`DbOrder.NullsFirst` / `NullsLast`.** T-SQL has no `NULLS FIRST`/`NULLS LAST`.
+- **A clustered index with `INCLUDE` columns.** Included columns belong to nonclustered indexes. A
   clustered index already stores every column.
-- **Clustered filtered index** — filtered indexes must be nonclustered.
-- **A second clustered index on a table** — whether the other one is a complex index declared in the
-  same migration or an earlier one, a native index, a unique constraint, or, the usual case, the
-  primary key. SQL Server clusters the primary key unless you declare
-  `HasKey(...).IsClustered(false)`, so that is normally what a clustered complex index collides with.
-- **A complex index named like its table's primary key or one of its unique constraints** — SQL
+- **A clustered filtered index.** A filtered index must be nonclustered.
+- **A second clustered index on a table.** The other one can be a complex index, declared in the
+  same migration or an earlier one. It can be an EF Core index, a unique constraint, or, most often,
+  the primary key.
+  SQL Server clusters the primary key unless you declare `HasKey(...).IsClustered(false)`, so that is
+  normally what a clustered complex index collides with.
+- **A complex index named like its table's primary key or one of its unique constraints.** SQL
   Server creates an index under each of those names. The comparison ignores case, as the default
   collation does.

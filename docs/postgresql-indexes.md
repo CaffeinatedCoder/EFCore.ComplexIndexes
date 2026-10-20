@@ -1,14 +1,17 @@
 # PostgreSQL — indexes
 
-Provided by the **EFCore.ComplexIndexes.PostgreSQL** package, via
-[Npgsql](https://www.npgsql.org/efcore/). The core package is included automatically.
+This page covers what the **EFCore.ComplexIndexes.PostgreSQL** package adds to your indexes. You
+can choose where nulls sort, set index methods and options, and index SQL expressions, lambdas and
+JSON members. Filters can be lambdas too. The package works through
+[Npgsql](https://www.npgsql.org/efcore/), and brings the core package with it.
 
 For temporal `UNIQUE` and `EXCLUDE` constraints, see
 [PostgreSQL — temporal and exclusion constraints](postgresql-constraints.md).
 
 ## Per-column null ordering
 
-`DbOrder.NullsFirst(...)` / `DbOrder.NullsLast(...)` control where nulls sort; the markers compose with `Desc`:
+Wrap a member in `DbOrder.NullsFirst(...)` or `DbOrder.NullsLast(...)` to choose where its nulls
+sort. You can combine it with `Desc`:
 
 ```csharp
 builder.HasComplexCompositeIndex(
@@ -16,11 +19,16 @@ builder.HasComplexCompositeIndex(
 // CREATE INDEX ... ON ... (name, reviewed_at DESC NULLS LAST);
 ```
 
-Null ordering has no slot on EF's native index operation, so these indexes render through the package's PostgreSQL SQL generator — they require the one-time [`UseNpgsqlComplexIndexes()`](../README.md#runtime-wiring--the-two-features-that-need-it) wiring, and the SQL Server differ rejects the markers (SQL Server has no `NULLS FIRST/LAST` syntax).
+EF Core's index operation has no place for null ordering, so the package's own SQL generator writes
+these indexes. They need
+[`UseNpgsqlComplexIndexes()`](../README.md#runtime-wiring--the-two-features-that-need-it) once in your
+context's configuration. On SQL Server, `migrations add` fails on these markers, because SQL Server
+has no `NULLS FIRST/LAST` syntax.
 
 ## Index methods on a complex property
 
-Use the builder-callback overload to reach the PostgreSQL-specific options (GIN, GiST, BRIN, SP-GiST, Hash, operator classes, `INCLUDE`, concurrent creation, nulls-distinct):
+Pass a builder callback to set PostgreSQL's options: GIN, GiST, BRIN, SP-GiST, Hash, operator classes,
+`INCLUDE`, concurrent creation and nulls-distinct.
 
 ```csharp
 builder.ComplexProperty(x => x.Payload, c =>
@@ -31,9 +39,9 @@ builder.ComplexProperty(x => x.Payload, c =>
 );
 ```
 
-Storage parameters render as `WITH (…)`; call `HasStorageParameter` once per parameter. Strings are
-quoted, booleans render bare. Per-column collations are positional — an empty entry leaves that
-column on its default:
+For storage parameters, call `HasStorageParameter` once per parameter, and they become `WITH (…)`.
+For collations, `UseCollation` takes one per column, by position. An empty entry leaves that column
+on its default:
 
 ```csharp
 builder.HasComplexCompositeIndex(x => new { x.Name, x.Email.Value }, idx => idx
@@ -43,29 +51,33 @@ builder.HasComplexCompositeIndex(x => new { x.Name, x.Email.Value }, idx => idx
 // CREATE INDEX ... ON people ("Name" COLLATE "C", email) WITH (fillfactor=70, deduplicate_items=false);
 ```
 
-A fractional value is the exception to passing the parameter's own type. Npgsql's generator, which
-renders a column-only index, formats numbers with the current culture, so `0.25` comes out as
-`0,25` under de-DE and the migration fails at apply with a syntax error. Pass it as a string,
-`HasStorageParameter("x", "0.25")`, which renders `x='0.25'`, and PostgreSQL reads it as the number.
+Good to know:
 
-The index collation is independent of the column's own `UseCollation` on the property, which is never
-copied onto the index.
+- **Strings are quoted, booleans are written bare.** Pass each parameter as its own type.
+- **Pass a fractional value as a string.** Npgsql's generator writes an index on plain columns, and
+  formats numbers with the current culture. Under de-DE, `0.25` comes out as `0,25`, and the
+  migration fails with a syntax error when it runs. `HasStorageParameter("x", "0.25")` writes
+  `x='0.25'`, which PostgreSQL reads as the number.
+- **The index collation is separate from the column's.** A `UseCollation` on the property never
+  carries over to the index.
 
-## Expression (functional) indexes
+## Index a SQL expression
 
-> Requires [`UseNpgsqlComplexIndexes()`](../README.md#runtime-wiring--the-two-features-that-need-it).
-> Available as an extension on `EntityTypeBuilder<TEntity>`, so it works on any entity — complex or not.
+> Needs [`UseNpgsqlComplexIndexes()`](../README.md#runtime-wiring--the-two-features-that-need-it).
+> `HasExpressionIndex` extends `EntityTypeBuilder<TEntity>`, so you can use it on any entity, with
+> complex properties or without.
 
-**Each string is emitted verbatim** — there is no property-to-column resolution and no automatic quoting. Write the final SQL exactly as it should appear inside the index, referencing real column names.
+**The package writes each string exactly as you give it.** It doesn't map properties to columns and
+doesn't add quotes. Write the SQL as it should appear inside the index, with the real column names.
 
-**Single expression:**
+**One expression:**
 
 ```csharp
 // CREATE INDEX "IX_person_lowerlastname" ON person ((lower(last_name)));
 builder.HasExpressionIndex("lower(last_name)");
 ```
 
-**With unique / filter / explicit name:**
+**Unique, filtered, with a name:**
 
 ```csharp
 builder.HasExpressionIndex(
@@ -75,7 +87,7 @@ builder.HasExpressionIndex(
     indexName: "ix_person_email_ci");
 ```
 
-**Multiple ordered parts + provider options (builder callback):**
+**Several parts in order, with provider options (builder callback):**
 
 ```csharp
 builder.HasExpressionIndex(idx => idx
@@ -89,7 +101,7 @@ builder.HasExpressionIndex(idx => idx
 //   WHERE deleted_at IS NULL;
 ```
 
-**Descending parts:** call `.Descending()` after any part to sort it descending:
+**Descending parts:** call `.Descending()` after a part to sort it in descending order.
 
 ```csharp
 builder.HasExpressionIndex(idx => idx
@@ -98,7 +110,7 @@ builder.HasExpressionIndex(idx => idx
 // CREATE INDEX ... ON person ((created_at) DESC, (lower(email)));
 ```
 
-**Full-text / JSONB with a GIN index:**
+**Full-text search or JSONB, with a GIN index:**
 
 ```csharp
 builder.HasExpressionIndex(idx => idx
@@ -116,9 +128,10 @@ builder.HasExpressionIndex(idx => idx
     .IncludeProperties("display_name"));
 ```
 
-### Quoting tip
+### Quote column names yourself
 
-Strings are passed through untouched, so identifiers that need PostgreSQL quoting (e.g. PascalCase columns) must include the quotes yourself. C# raw string literals keep this readable:
+The package passes strings through as they are. If a column name needs quotes in PostgreSQL, such as
+a PascalCase one, write the quotes yourself. A C# raw string literal keeps that readable:
 
 ```csharp
 // CREATE INDEX ... ON "People" ((lower("Email")));
@@ -127,11 +140,12 @@ builder.HasExpressionIndex(""" lower("Email") """.Trim());
 
 ## Typed (LINQ) expression indexes
 
-> Requires [`UseNpgsqlComplexIndexes()`](../README.md#runtime-wiring--the-two-features-that-need-it), like all expression indexes.
+> Needs [`UseNpgsqlComplexIndexes()`](../README.md#runtime-wiring--the-two-features-that-need-it), like
+> every expression index.
 
-Instead of raw SQL, pass a lambda — property paths stay symbolic and are resolved against the
-finalized model at `migrations add` time, so `HasColumnName`, complex-property columns, and even
-`ToJson()` members are honored automatically:
+Instead of raw SQL, pass a lambda. `migrations add` maps its property paths to columns in your
+finalized model, so the index follows `HasColumnName`, complex-property columns and even `ToJson()`
+members:
 
 ```csharp
 builder.HasExpressionIndex(x => x.Email.Value.ToLower(), isUnique: true);
@@ -141,24 +155,37 @@ builder.HasExpressionIndex(x => (x.Nickname ?? x.FirstName) + " " + x.LastName);
 // CREATE INDEX ... ON people (((coalesce("nickname", "first_name") || ' ') || "last_name"));
 ```
 
-The supported subset is deliberately small and fails loudly: `ToLower`/`ToUpper`, `Trim`/`TrimStart`/`TrimEnd`, `Substring` (1-based conversion handled), `Replace`, `string.Length`, `.Value` and `.HasValue` on a nullable, string concatenation (`+`, an operand that can be null coalesced to `''` as C# and EF Core's queries treat it), null coalescing (`??`), and constants (captured variables are evaluated and inlined invariant-culture). Any other member of a scalar type, such as `CreatedAt.Year`, is not a mapped property and is refused with the rest. Anything else throws `NotSupportedException` **at declaration time** with a pointer to the raw-SQL overload.
+The lambda can use a small set of operations on purpose:
 
-Paths see through a value converter as well: when `Email` is a value object mapped as one column,
-`x => x.Email.Value.ToLower()` resolves `Email.Value` to that column — provided `Value` has the
-converter's provider type, which is what makes the column hold exactly that member.
+- **String methods:** `ToLower`/`ToUpper`, `Trim`/`TrimStart`/`TrimEnd` without arguments,
+  `Substring` (the package converts its 0-based start to SQL's 1-based one) and `Replace`.
+- **Members:** `string.Length`, and `.Value` and `.HasValue` on a nullable.
+- **Operators:** string concatenation (`+`) and null coalescing (`??`). An operand of `+` that can be
+  null is wrapped in `coalesce(…, '')`, so null counts as an empty string, as in C# and EF Core's
+  queries.
+- **Constants.** A captured variable is evaluated and written into the SQL, formatted with the
+  invariant culture.
 
-Filters take the same placeholders: `filter: "{DeletedAt} IS NULL"` or
-`"{Payload.Kind} = 'invoice'"` resolve to the column — or the JSON extraction — at `migrations add`,
-and the resolved text is what the migration carries. Only a brace pair holding a dotted identifier
-path outside a single-quoted literal is a placeholder, so array and JSON literals such as
-`'{urgent}'` and `'{"a": 1}'` are left alone.
+Anything else throws `NotSupportedException` **where you declare the index**, and the message points
+you to the raw-SQL overload. That includes any other member of a scalar type, such as
+`CreatedAt.Year`, which is not a mapped property.
+
+Paths also reach through a value converter. When `Email` is a value object stored in one column,
+`x => x.Email.Value.ToLower()` maps `Email.Value` to that column. This works when `Value` has the
+converter's provider type, since then the column holds exactly that member.
+
+Filters take the same placeholders. `filter: "{DeletedAt} IS NULL"` or `"{Payload.Kind} = 'invoice'"`
+becomes the column, or the JSON read, when you run `migrations add`, and the migration contains the
+result. Only a pair of braces around a dotted property path, outside a single-quoted string, is a
+placeholder. Array and JSON literals such as `'{urgent}'` and `'{"a": 1}'` stay as you wrote them.
 
 ## Typed filters
 
-> No runtime wiring required — the predicate is translated at declaration into a filter template
-> and resolved into the migration like any placeholder filter.
+> Needs no `UseNpgsqlComplexIndexes()`. The package turns the predicate into a filter with
+> placeholders where you declare it. `migrations add` then writes it into the migration like any other
+> placeholder filter.
 
-Every entry point that takes a `filter:` string also takes a predicate, and the builders take
+Every method that takes a `filter:` string also takes a predicate, and the builders have
 `HasFilter(x => …)`:
 
 ```csharp
@@ -175,33 +202,49 @@ builder.ComplexProperty(x => x.Address, c => c.Property(a => a.City)
     .HasComplexIndex(ix => ix.HasFilter<Person>(p => p.DeletedAt == null)));
 ```
 
-The builders are not generic, so `HasFilter<TEntity>` takes the entity type explicitly. The subset
-is small and fails at the declaration: `==`/`!=` (against `null`: `IS NULL`/`IS NOT NULL`), `<`,
-`<=`, `>`, `>=`, `&&`, `||`, `!`, boolean properties, captured booleans, `.HasValue` (`IS NOT NULL`),
-and on the operands the string operations and constants a typed expression index accepts. A `char`
-compares with a char literal, `x.Grade == 'A'` as `"Grade" = 'A'`, although C# compares it as its
-code. Comparisons keep C#'s answer for null,
-written as EF Core writes the same lambda in a query, so the index covers exactly the rows that
-query selects: on a `string?`, `x.Kind != "federated"` becomes
-`("Kind" <> 'federated' OR "Kind" IS NULL)`, a negated comparison is pushed down to it (a negated
-`<`, `<=`, `>` or `>=` over a nullable operand becomes EF Core's `CASE WHEN … THEN FALSE ELSE TRUE END`),
-a computed operand is null-checked through its columns (`lower("Name") <> 'a' OR "Name" IS NULL`),
-and a captured variable holding null compares with `IS NULL`. Whether an operand can be null is read from
-its C# declaration (a `Nullable<T>`, or a reference type not annotated non-nullable); a `string`
-declared non-nullable but mapped to a nullable column is compared as non-nullable. Two things are refused on
-purpose. An enum comparison: how an enum is stored depends on the property's value conversion,
-which a filter cannot see, so `Status == Status.Active` would compare a text column against `0`
-and fail when the migration is applied — write the stored value in the string overload. And a
-value with no portable SQL spelling, a `DateTime` or `Guid`, which used to come out as bare text.
+The index builders are not generic, so `HasFilter<TEntity>` takes the entity type explicitly.
+
+A predicate can use a small set of operations, and anything else throws where you declare it:
+
+- **Comparisons:** `==` and `!=` (against `null` they become `IS NULL` and `IS NOT NULL`), `<`, `<=`,
+  `>` and `>=`.
+- **Logic:** `&&`, `||` and `!`, boolean properties and captured booleans.
+- **Null checks:** `.HasValue`, which becomes `IS NOT NULL`.
+- **Operands:** the string operations and constants that a
+  [typed expression index](#typed-linq-expression-indexes) accepts.
+
+A comparison gives the same answer as C# where an operand is null. The package writes it the way EF
+Core writes the same lambda in a query, so the index covers exactly the rows that query selects:
+
+- **On a `string?`**, `x.Kind != "federated"` becomes `("Kind" <> 'federated' OR "Kind" IS NULL)`.
+- **A negation** is pushed down to the comparison. A negated `<`, `<=`, `>` or `>=` over an operand
+  that can be null becomes EF Core's `CASE WHEN … THEN FALSE ELSE TRUE END`.
+- **A computed operand** is null-checked through its columns: `lower("Name") <> 'a' OR "Name" IS NULL`.
+- **A captured variable holding null** compares with `IS NULL`.
+
+Good to know:
+
+- **Whether an operand can be null** comes from its C# declaration: a `Nullable<T>`, or a reference
+  type not annotated as non-nullable. A `string` declared non-nullable but mapped to a nullable
+  column is compared as non-nullable.
+- **A `char` compares with a char literal.** `x.Grade == 'A'` becomes `"Grade" = 'A'`, although C#
+  compares the char's code.
+- **Enum comparisons throw, on purpose.** How an enum is stored depends on the property's value
+  conversion, which a filter can't see. `Status == Status.Active` would compare a text column with
+  `0`, and the migration would fail when it runs. Write the stored value in the string overload
+  instead.
+- **Values with no portable SQL spelling throw,** such as a `DateTime` or a `Guid`. They used to come
+  out as bare text.
 
 ## JSON member indexes
 
-> Requires [`UseNpgsqlComplexIndexes()`](../README.md#runtime-wiring--the-two-features-that-need-it) — JSON member indexes are expression indexes under the hood.
+> Needs [`UseNpgsqlComplexIndexes()`](../README.md#runtime-wiring--the-two-features-that-need-it):
+> a JSON member index is an expression index.
 
-When a complex property is mapped to JSON with `ToJson()`, its members have no table columns — yet
-the **same index declarations keep working**: the differ resolves them to `->>`
-extraction expressions instead. Moving a value object between scalar columns and a JSON document
-does not force you to rewrite its indexes:
+The members of a complex property mapped to JSON with `ToJson()` have no table columns. You still
+declare their indexes **the same way**, and the index is on an expression that reads the member. If
+you move a value object between table columns and a JSON document, you don't rewrite its index
+declarations:
 
 ```csharp
 builder.ComplexProperty(x => x.Name, c => c.ToJson("name"));
@@ -214,11 +257,11 @@ builder.HasComplexIndex(x => x.Name.ShortName, isUnique: true, indexName: "ux_em
 // ALTER: CREATE UNIQUE INDEX "ux_employer_short_name" ON employers (("name" ->> 'ShortName'));
 ```
 
-Each member is rendered **exactly the way Npgsql's queries read it**, because PostgreSQL uses an
-expression index only for a query whose expression matches it. That decides the path operator and
-the cast:
+The package reads each member **exactly the way Npgsql's queries read it**, because PostgreSQL uses
+an expression index only for a query with the same expression. That decides the operator and the
+cast:
 
-| Member | Index expression | Serves |
+| Member | Index expression | Used by |
 |---|---|---|
 | `string`, enum stored as string | `"name" ->> 'ShortName'` | `x.Name.ShortName == …` |
 | nested member | `"profile" #>> '{Address,City}'` | `x.Profile.Address.City == …` |
@@ -227,30 +270,35 @@ the cast:
 | primitive collection, `JsonDocument` or other `jsonb` member | `"profile" -> 'Tags'` (`jsonb`) | a GIN over it |
 | `DateTime`, `DateTimeOffset`, `DateOnly`, `TimeOnly` | `"profile" ->> 'At'` (text) | uniqueness only |
 
-`HasJsonPropertyName` is honored throughout. Date and time members are the exception: Npgsql's
-queries cast them to `timestamp with time zone`, `date` or `time`, and PostgreSQL cannot index those
-casts (the conversion from text is not `IMMUTABLE`), so no index can match the query. The member
-stays text, a **unique** index over it still enforces uniqueness, and a **non-unique** index that
-starts with it is rejected at `migrations add`, since no query would ever use it. Put another part
-first, or map the member to a regular column. In a filter, of an index or an exclusion constraint,
-the member can be tested with `IS NULL` or compared with a string literal; compared with a column it
-is rejected at `migrations add`, because text against a timestamp fails when the migration applies.
+`HasJsonPropertyName` is followed throughout.
 
-> **Upgrading from 5.3 or earlier:** before 5.4.0 every member was extracted as text with `->`
-> segments, which only matched the query for a top-level string. Such indexes enforced uniqueness
-> but no query used them. The first `migrations add` after upgrading drops and re-creates each
-> affected index under its existing name; indexes on top-level string members are untouched.
-> Until that migration exists, `has-pending-model-changes` reports changes and `Migrate()` raises
-> EF Core's pending-model-changes error. The re-create is a plain `CREATE INDEX` that blocks writes
-> while it builds; on a large table, declare the index with `IsCreatedConcurrently()` first.
+Date and time members are the exception. Npgsql's queries cast them to `timestamp with time zone`,
+`date` or `time`. PostgreSQL can't index those casts, because the conversion from text is not
+`IMMUTABLE`, so no index can match the query. The package keeps these members as text:
+
+- **A unique index** over one still keeps the values unique.
+- **A non-unique index that starts with one** makes `migrations add` fail, since no query would ever
+  use it. Put another part first, or map the member to a regular column.
+- **In the filter of an index or exclusion constraint**, you can test the member with `IS NULL` or
+  compare it with a string literal. Comparing it with a column makes `migrations add` fail,
+  because text against a timestamp fails when the migration runs.
+
+> **Upgrading from 5.3 or earlier:** before 5.4.0 every member was read as text with `->` segments.
+> That matched the query only for a top-level string, so such indexes kept values unique but no
+> query used them. The first `migrations add` after the upgrade drops and re-creates each affected
+> index under its existing name. Indexes on top-level string members stay as they are. Until that
+> migration exists, `has-pending-model-changes` reports changes and `Migrate()` raises EF Core's
+> pending-model-changes error. The re-create is a plain `CREATE INDEX`, which blocks writes while it
+> builds. On a large table, declare the index with `IsCreatedConcurrently()` first.
 
 ### Indexing the whole document
 
-> No runtime wiring: the container is a real column, so the index renders through the stock generator.
+> Needs no `UseNpgsqlComplexIndexes()`: the document is a real column, so Npgsql's own SQL generator
+> writes the index.
 
-Point the selector at the JSON-mapped complex property itself — or at a complex collection, which is
-always JSON — and the index lands on the `jsonb` container column. The PostgreSQL idiom is a GIN
-index, usually with `jsonb_path_ops`:
+Point the selector at the JSON-mapped complex property itself, or at a complex collection, which is
+always JSON. The index then goes on the `jsonb` column that holds the document. In PostgreSQL that is
+usually a GIN index, often with `jsonb_path_ops`:
 
 ```csharp
 builder.ComplexProperty(x => x.Payload, c => c.ToJson("payload"));
@@ -263,6 +311,6 @@ builder.HasComplexIndex(x => x.Tags, ix => ix.UseGin());
 // CREATE INDEX "IX_orders_tags" ON orders USING gin (tags);
 ```
 
-A complex property *nested inside* the document has no column of its own and resolves to a `->`
-extraction instead (`("payload" -> 'Address')`, yielding `jsonb`), so it is an expression index and
-needs the runtime wiring like the member indexes above.
+A complex property *nested inside* the document has no column of its own. It becomes a `->` read
+(`("payload" -> 'Address')`, which yields `jsonb`). That makes it an expression index, which needs
+`UseNpgsqlComplexIndexes()` like the member indexes above.

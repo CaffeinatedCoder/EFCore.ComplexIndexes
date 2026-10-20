@@ -8,36 +8,60 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![.NET 10](https://img.shields.io/badge/.NET-10-512BD4)](https://dotnet.microsoft.com)
 
-> **On EF Core 11 or later?** This package serves EF Core 10 only, and from 5.5.0 it refuses to
-> register on another major. Its successor for EF Core 11 is a new package,
+> **On EF Core 11 or later?** This package supports EF Core 10 only. From 5.5.0 it throws when you
+> register it on any other major version. Its successor for EF Core 11 is a new package,
 > `CodoMetis.EFCore.SchemaKit`, tracked in
 > [#37](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/issues/37).
 
-## Index support for complex type properties in EF Core migrations — the missing piece for value object-driven architectures.
-EF Core 8.0 introduced complex properties, but migration tooling doesn't automatically generate indexes for these nested value objects. This NuGet package bridges that gap with a clean, fluent API for defining single-column, composite, unique, and filtered indexes directly on complex type properties — and, on PostgreSQL, **expression (functional) indexes**.
+# EFCore.ComplexIndexes
 
-### Why it matters:
-- **Value Object Indexing**: Seamlessly add database indexes to properties buried inside complex types (e.g., `Person.EmailAddress.Value`)
-- **DDD-Friendly**: Supports the Domain-Driven Design pattern of encapsulating logic in value objects without sacrificing database performance
-- **Migration-Aware**: Automatically generates proper `CREATE INDEX` and `DROP INDEX` operations during EF Core migrations
-- **Flexible Filtering**: Supports SQL `WHERE` clauses for filtered indexes (e.g., soft deletes)
-- **Composite Indexes**: Define multi-column indexes spanning both scalar and nested properties with a single, intuitive expression — with per-column `ASC`/`DESC` ordering via `DbOrder.Asc`/`DbOrder.Desc`
-- **Expression Indexes** *(PostgreSQL)*: Index arbitrary SQL expressions such as `lower(email)` or `to_tsvector('english', body)` — including on plain, non-complex entities
-- **Typed Expression Indexes** *(PostgreSQL)*: Write `HasExpressionIndex(x => x.Email.ToLower())` and let the package translate it — property paths resolve to real columns at migration time
-- **JSON Member Indexes** *(PostgreSQL)*: Index members of complex properties mapped with `ToJson()` — the same `HasComplexIndex` declaration becomes an expression index written the way Npgsql's queries read the member (`col ->> 'Member'`, `col #>> '{A,B}'`, cast to its type), so the queries use it
-- **Temporal Constraints** *(PostgreSQL 18)*: Declare `UNIQUE … WITHOUT OVERLAPS` constraints to guarantee no two rows occupy overlapping time periods — the database enforces scheduling integrity for you
-- **Exclusion Constraints** *(PostgreSQL)*: Declare `EXCLUDE USING gist (… WITH =, … WITH &&) WHERE (…)` constraints — filtered overlap protection (e.g. ignore soft-deleted rows), on any supported PostgreSQL version
-- **SQL Server Options** *(SQL Server)*: Clustered, covering (`INCLUDE`), online-built, fill-factor, and data-compression index options on complex-property indexes — rendered by the stock SQL Server generator, no runtime wiring
+EF Core lets you map value objects as complex properties, but `dotnet ef migrations add` writes no
+index on their columns. With this package you declare those indexes in `OnModelCreating`, and
+`migrations add` writes the `CREATE INDEX` and `DROP INDEX` for you.
+
+## What you can do
+
+- **Index the columns of a value object.** Single-column, composite, unique and filtered indexes on
+  properties inside complex types, such as `Person.EmailAddress.Value`. You keep your logic in value
+  objects and still get the indexes your queries need.
+- **Filter an index.** Add a SQL `WHERE` clause, for example to leave out soft-deleted rows.
+- **Mix scalar and nested properties** in one composite index, and sort each column `ASC` or `DESC`
+  with `DbOrder.Asc`/`DbOrder.Desc`.
+- **Index an expression** *(PostgreSQL)*, such as `lower(email)` or `to_tsvector('english', body)`.
+  This works on any entity, with complex properties or without.
+- **Write the expression as a lambda** *(PostgreSQL)*: `HasExpressionIndex(x => x.Email.ToLower())`.
+  The package translates it, and the property paths become the real columns when you run
+  `migrations add`.
+- **Index members of a JSON document** *(PostgreSQL)*. For a complex property mapped with
+  `ToJson()`, the same `HasComplexIndex` call creates an expression index. It reads the member the way
+  Npgsql's queries do (`col ->> 'Member'`, `col #>> '{A,B}'`, cast to its type), so those queries use
+  the index.
+- **Keep periods from overlapping** *(PostgreSQL 18)*. A `UNIQUE … WITHOUT OVERLAPS` constraint makes
+  the database reject two rows for the same key whose time periods overlap.
+- **Declare exclusion constraints** *(PostgreSQL)*. An
+  `EXCLUDE USING gist (… WITH =, … WITH &&) WHERE (…)` constraint is a more general form of
+  uniqueness. Unlike `WITHOUT OVERLAPS` it takes a filter, so it can keep periods from overlapping
+  while ignoring some rows, such as soft-deleted ones. It works on every supported PostgreSQL
+  version.
+- **Set SQL Server index options** *(SQL Server)*: clustered, covering (`INCLUDE`), online builds,
+  fill factor and data compression, on indexes over complex properties. EF Core's own SQL Server
+  generator writes them, so they need no call in your context's configuration.
 
 | Package | NuGet | Description |
 |---|---|---|
-| **EFCore.ComplexIndexes** | [![nuget](https://img.shields.io/nuget/v/EFCore.ComplexIndexes.svg)](https://www.nuget.org/packages/EFCore.ComplexIndexes/) | Core library — single-column, composite, unique, and filtered indexes on complex type properties. Works with any EF Core relational provider. |
-| **EFCore.ComplexIndexes.PostgreSQL** | [![nuget](https://img.shields.io/nuget/v/EFCore.ComplexIndexes.PostgreSQL.svg)](https://www.nuget.org/packages/EFCore.ComplexIndexes.PostgreSQL/) | PostgreSQL extensions via [Npgsql](https://www.npgsql.org/efcore/) — adds GIN, GiST, BRIN, SP-GiST, and Hash index methods, operator classes, covering indexes (`INCLUDE`), concurrent creation, nulls-distinct control, per-column collation, storage parameters, `NULLS FIRST/LAST`, **expression (functional) indexes** (raw SQL and **typed LINQ**), **JSON member indexes**, **temporal `UNIQUE` constraints (`WITHOUT OVERLAPS`)**, and **exclusion constraints (`EXCLUDE`)**. |
-| **EFCore.ComplexIndexes.SqlServer** | [![nuget](https://img.shields.io/nuget/v/EFCore.ComplexIndexes.SqlServer.svg)](https://www.nuget.org/packages/EFCore.ComplexIndexes.SqlServer/) | SQL Server extensions — clustered/nonclustered control, covering indexes (`INCLUDE`), online index builds, fill factor, sort-in-tempdb, and data compression on complex-property indexes. Rendered by the stock SQL Server generator; no runtime wiring. |
+| **EFCore.ComplexIndexes** | [![nuget](https://img.shields.io/nuget/v/EFCore.ComplexIndexes.svg)](https://www.nuget.org/packages/EFCore.ComplexIndexes/) | The core package: single-column, composite, unique and filtered indexes on complex type properties. Works with any EF Core relational provider. |
+| **EFCore.ComplexIndexes.PostgreSQL** | [![nuget](https://img.shields.io/nuget/v/EFCore.ComplexIndexes.PostgreSQL.svg)](https://www.nuget.org/packages/EFCore.ComplexIndexes.PostgreSQL/) | PostgreSQL features, through [Npgsql](https://www.npgsql.org/efcore/): the GIN, GiST, BRIN, SP-GiST and Hash index methods, operator classes, covering indexes (`INCLUDE`), concurrent creation, nulls-distinct control, per-column collation, storage parameters, `NULLS FIRST/LAST`, **expression indexes** (raw SQL and **typed LINQ**), **JSON member indexes**, **temporal `UNIQUE` constraints (`WITHOUT OVERLAPS`)** and **exclusion constraints (`EXCLUDE`)**. |
+| **EFCore.ComplexIndexes.SqlServer** | [![nuget](https://img.shields.io/nuget/v/EFCore.ComplexIndexes.SqlServer.svg)](https://www.nuget.org/packages/EFCore.ComplexIndexes.SqlServer/) | SQL Server index options on indexes over complex properties: clustered or nonclustered, covering indexes (`INCLUDE`), online builds, fill factor, sort in tempdb and data compression. EF Core's own SQL Server generator writes them, so they need no call in your context's configuration. |
 
-> **Which package do I need?**
-> Install only the **core** package if you use SQLite or any provider where the default B-tree index type is sufficient.
-> Add the **PostgreSQL** package for PostgreSQL-specific index types, expression/JSON indexes, or temporal/exclusion constraints; add the **SQL Server** package for clustered/covering/online/fill-factor/compression options. Both include the core automatically.
+### Which package do I need?
+
+- **SQLite, or any provider where a plain B-tree index is enough:** the core package only.
+- **PostgreSQL index methods, expression or JSON indexes, temporal or exclusion constraints:** add
+  the PostgreSQL package.
+- **SQL Server clustered, covering, online, fill-factor or compression options:** add the SQL Server
+  package.
+
+The PostgreSQL and SQL Server packages each bring the core package with them.
 
 ---
 
@@ -45,14 +69,18 @@ EF Core 8.0 introduced complex properties, but migration tooling doesn't automat
 
 ### Install and go
 
-Everything is wired up automatically through EF Core's design-time tooling. Install the package, configure your indexes in `OnModelCreating`, and run `dotnet ef migrations add` — **zero additional ceremony**.
+Install the package, declare your indexes in `OnModelCreating`, and run `dotnet ef migrations add`.
+The package registers itself with EF Core's design-time tools, so `migrations add` picks it up with
+no setup.
 
 ### Runtime wiring — the two features that need it
 
-Almost everything is rendered into the migration at design time and applies through your provider's
-stock SQL generator. Two PostgreSQL features cannot be: they have no slot on EF Core's native index
-operation, so they are rendered when migrations are *applied*, by a SQL generator you opt into
-**once**.
+Two PostgreSQL features need one call in your context's configuration: expression indexes and
+`NULLS FIRST`/`NULLS LAST`. EF Core's index operation has no place for them, so the package's own SQL
+generator writes their SQL when the migration runs. You add that generator once, with
+`UseNpgsqlComplexIndexes()`. Almost everything else goes into the migration as written by
+`migrations add`, and your provider's own SQL generator runs it. The other exception is a table
+rebuild on SQLite, [described below](#table-rebuilds-on-sqlite).
 
 | Feature | Needs `UseNpgsqlComplexIndexes()` |
 |---|---|
@@ -72,12 +100,15 @@ services.AddDbContext<AppDbContext>(options =>
         .UseNpgsqlComplexIndexes());   // ← expression indexes and NULLS ordering
 ```
 
-> **Forgot the wiring?** You will not get a silently wrong index. Indexes that need the custom
-> generator carry a sentinel entry `__requires_UseNpgsqlComplexIndexes__` in the scaffolded column
-> list: the custom generator ignores it, and the stock generator fails **loudly** with that name in
-> the error message.
+> **Forgot the call?** The migration fails, rather than creating an index that is quietly wrong.
+> `migrations add` puts a placeholder column named `__requires_UseNpgsqlComplexIndexes__` into the
+> column list of these indexes. The package's generator skips it. Npgsql's own generator writes it
+> into the `CREATE INDEX`, and the migration fails when it runs, with that name in the error
+> message.
 
-> Using a custom Internal Service Provider? If your application builds its own `IServiceProvider` and passes it to `.UseInternalServiceProvider(...)`, EF Core prevents `.UseNpgsqlComplexIndexes()` from modifying services. Instead, register the generator directly on your `IServiceCollection`:
+> **Building your own internal service provider?** If you pass your own `IServiceProvider` to
+> `.UseInternalServiceProvider(...)`, EF Core doesn't let `.UseNpgsqlComplexIndexes()` change its
+> services. Register the generator on your `IServiceCollection` instead:
 
 ```csharp
 var provider = new ServiceCollection()
@@ -88,24 +119,27 @@ var provider = new ServiceCollection()
 
 ### `EnsureCreated`, `GenerateCreateScript`, and the pending-changes check
 
-Migrations go through the design-time differ, which the packages wire up automatically. Three things
-use the **runtime** differ instead and never see that wiring: `Database.EnsureCreated()`,
-`Database.GenerateCreateScript()`, and the pending-model-changes check `Migrate()` performs. Without a
-runtime registration they run EF's stock differ, which cannot see this package's declarations —
-`EnsureCreated()` creates the tables and silently none of the indexes, and `Migrate()` does not warn
-about a complex index that was never scaffolded. Register the differ once, next to the provider:
+If you use `Database.EnsureCreated()`, `Database.GenerateCreateScript()` or the pending-model-changes
+check that `Migrate()` runs, register the package once next to your provider:
 
 | Provider | Call |
 |---|---|
-| PostgreSQL | `UseNpgsqlComplexIndexes()` — the same call as above; since 5.1.0 it registers the differ too |
+| PostgreSQL | `UseNpgsqlComplexIndexes()`, the same call as above. Since 5.1.0 it covers this too. |
 | SQL Server | `UseSqlServerComplexIndexes()` |
-| SQLite | `UseComplexIndexes()` from the core package, after `UseSqlite()`; it also wraps SQLite's migrations SQL generator, so a table rebuild re-creates the complex indexes on the table |
+| SQLite | `UseComplexIndexes()` from the core package, after `UseSqlite()`. It also wraps SQLite's migrations SQL generator, so a table rebuild creates the table's complex indexes again. |
 | Any other provider | `UseComplexIndexes()` from the core package |
 
-With a satellite installed, call only the satellite's method: the core differ would give
-`EnsureCreated()` a schema without the satellite's features, such as exclusion constraints. Each call
-has a counterpart for a custom internal service provider: `AddComplexIndexes()`,
-`AddNpgsqlComplexIndexes()` and `AddSqlServerComplexIndexes()`.
+`migrations add` finds the package on its own. These three don't: they use your context's own
+services, and the automatic registration never reaches them. Without the call they use EF Core's
+own migration code, which knows nothing about your complex indexes. `EnsureCreated()` then creates
+the tables and none of the indexes, with no error. `Migrate()` doesn't warn about a complex index that
+no migration has created yet.
+
+With the PostgreSQL or SQL Server package installed, call only that package's method. The core
+package's `UseComplexIndexes()` would give `EnsureCreated()` a schema without that package's
+features, such as exclusion constraints. If you build your own internal service provider, each call
+has a counterpart: `AddComplexIndexes()`, `AddNpgsqlComplexIndexes()` and
+`AddSqlServerComplexIndexes()`.
 
 ---
 
@@ -120,25 +154,30 @@ builder.ComplexProperty(x => x.EmailAddress, c =>
 );
 ```
 
-The same overloads exist on the non-generic builder, so a property configured by name works too:
-`c.Property("Value").HasComplexIndex()`.
+This creates a unique index on the column that `EmailAddress.Value` maps to, over the rows where
+`deleted_at` is null. The non-generic builder has the same overloads, so you can configure a property
+by name: `c.Property("Value").HasComplexIndex()`.
 
-A filter may name properties instead of columns: `{Property.Path}` placeholders resolve to the
-mapped column at `migrations add` — `HasColumnName`, complex members and (on PostgreSQL) `ToJson()`
-members included — so the filter and the column mapping cannot drift apart:
+#### Name properties in a filter
+
+Write `{Property.Path}` in a filter to name a property instead of a column. `migrations add` replaces
+it with the mapped column. That follows `HasColumnName`, complex members and, on PostgreSQL,
+`ToJson()` members, so the filter can't drift away from the column mapping:
 
 ```csharp
 c.Property(x => x.Value).HasComplexIndex(isUnique: true, filter: "{DeletedAt} IS NULL");
 // WHERE "deleted_at" IS NULL   (PostgreSQL)   WHERE [deleted_at] IS NULL   (SQL Server)
 ```
 
-The resolved text is baked into the migration, so no runtime wiring is involved. Only a brace pair
-holding a dotted identifier path, outside a single-quoted literal, is a placeholder — `'{urgent}'`
-and `'{"a": 1}'` stay what they are — and one that names no property fails loudly.
+The migration contains the resolved text, so this needs no call in your context's configuration.
 
-A property-level declaration holds **one** index per property. To give the same column several
-differently-filtered indexes (the classic soft-delete pattern), declare them at the **entity level**
-— the selector reaches into complex properties, and each index needs its own explicit name:
+Good to know:
+
+- **What counts as a placeholder.** Only a pair of braces around a dotted property path, outside a
+  single-quoted string. `'{urgent}'` and `'{"a": 1}'` stay as you wrote them.
+- **A placeholder that names no property** makes `migrations add` fail.
+
+#### Several indexes on one column
 
 ```csharp
 builder.HasComplexIndex(x => x.EmailAddress.Value,
@@ -147,34 +186,54 @@ builder.HasComplexIndex(x => x.EmailAddress.Value,
     indexName: "ix_person_email_all");
 ```
 
-Selectors also see through a value converter: for a value object mapped as one column
-(`HasConversion(e => e.Value, v => new(v))`), `x => x.Email.Value` resolves to that column,
-provided the member's type is the converter's provider type. `x => x.CreatedAt.Year` does not
-resolve, and says so.
+A declaration on a property holds **one** index for that property. To give a column several indexes
+with different filters, as in the usual soft-delete pattern, declare them on the **entity**. The
+lambda can reach into complex properties. Each of these indexes needs its own explicit name, or the
+declaration throws.
 
-Index names must be unique wherever the provider requires — across the whole database on SQLite,
-per schema on PostgreSQL, where tables, views and sequences share the namespace (the sequence
-PostgreSQL creates for an identity or serial column included), per table on SQL Server — and the package enforces it rather than letting
-the database reject the migration: reusing a name throws at the declaration, and two declarations
-that resolve to the same name — including a property-level and an entity-level index over one
-column, which share a default name, or a complex and a native index on two SQLite tables — throw
-during `dotnet ef migrations add`. So does a name longer than the provider's
-identifier limit: PostgreSQL would otherwise truncate it to 63 bytes with a NOTICE and apply the
-migration cleanly, leaving the index under a name that no declaration and no constraint-violation
-error ever reports. Default names are checked too, since this package never truncates them. Names
-are compared as the database compares them: without regard to case on SQLite and SQL Server, so
-`ix_code` and `IX_CODE` are one name there, and as written on PostgreSQL.
+#### Value objects stored through a converter
 
-On SQLite, a migration that alters or drops a column, or changes a key, foreign key, unique or check
-constraint, runs as a table rebuild, and EF Core re-creates only its own indexes afterwards. A table
-rename counts: EF renames its primary key along with it. The rebuild runs after every other operation
-of the migration, so only a step after EF's SQL generator can create a complex index again. With
-`UseComplexIndexes()` registered after `UseSqlite()` on the context `dotnet ef` uses, the migration
-drops each complex index on the table and creates it after the rebuild; that registration must also
-be there when the migration is applied, or the first create fails before the rebuild. Without it,
-`dotnet ef migrations add` refuses such a migration, names the indexes, and offers the other way out:
-remove the complex index declarations on the table, make the change, declare them again, a
-migration each. See
+The lambda can also reach through a value converter. Say a value object is stored in one column, with
+`HasConversion(e => e.Value, v => new(v))`. Then `x => x.Email.Value` is that column, as long as the
+type of `Value` is the converter's provider type. `x => x.CreatedAt.Year` doesn't resolve to a
+column, and `migrations add` fails on it.
+
+#### Index names
+
+The package checks index names before the database sees them, so the database doesn't reject the
+migration later.
+
+- **Where a name must be unique** depends on the database. On SQLite it is the whole database, on
+  PostgreSQL the schema, and on SQL Server the table. On PostgreSQL, tables, views and sequences
+  share that namespace, including the sequence PostgreSQL creates for an identity or serial column.
+- **An explicit name used twice on one entity** throws at the declaration.
+- **Two declarations that end up with one name** make `migrations add` fail. One example is a
+  property-level and an entity-level index on one column, which get the same default name. Another
+  is a complex index and an EF Core index on two SQLite tables.
+- **A name longer than the provider's limit** makes `migrations add` fail too. PostgreSQL would cut
+  it to 63 bytes with a NOTICE, and the migration would run without an error. The index would then
+  have a name that no declaration and no constraint-violation error ever shows. Default names are
+  checked as well. The package doesn't shorten them, except for the copies of a declaration on a
+  TPC type (see
+  [Upgrading](docs/upgrading.md#declarations-on-a-tpc-type-cover-every-table-of-the-hierarchy)).
+- **Upper and lower case** count as the database counts them. SQLite and SQL Server ignore case, so
+  `ix_code` and `IX_CODE` are one name there. PostgreSQL keeps names as written.
+
+#### Table rebuilds on SQLite
+
+On SQLite, some changes rebuild the table: altering or dropping a column, or changing a key, foreign
+key, unique or check constraint. Renaming a table counts too, because EF Core renames its primary key
+with it. After a rebuild, EF Core creates only its own indexes again. It runs the rebuild after every
+other step of the migration, so no step of the migration can create a complex index after it. Only a
+SQL generator wrapped around EF Core's can.
+
+Call `UseComplexIndexes()` after `UseSqlite()` on the context that `dotnet ef` uses. The migration
+then drops each complex index on the table and creates it again after the rebuild. The call must also
+be there when you apply the migration, or the first create fails before the rebuild.
+
+Without the call, `migrations add` fails and names the indexes. The error also offers another way.
+Remove the complex index declarations on the table, make the change, then declare them again, with a
+migration for each step. See
 [Upgrading](docs/upgrading.md#sqlite-re-creates-complex-indexes-after-a-table-rebuild).
 
 ### Composite index across scalar and nested properties
@@ -185,9 +244,11 @@ builder.HasComplexCompositeIndex(
     isUnique: true);
 ```
 
+This creates one unique index over `Name` and `EmailAddress.Value`.
+
 #### Per-column sort direction
 
-Wrap any member in `DbOrder.Desc(...)` (or `DbOrder.Asc(...)`, the default) to control its sort order. Because a wrapped member is a method call, C# requires you to **name it** in the anonymous type:
+Wrap a member in `DbOrder.Desc(...)` to sort that column in descending order:
 
 ```csharp
 builder.HasComplexCompositeIndex(
@@ -196,15 +257,25 @@ builder.HasComplexCompositeIndex(
 // CREATE INDEX "IX_Commits_DateTime_Counter_Id" ON ... ("DateTime", "Counter" DESC, "Id");
 ```
 
-Direction maps to EF Core's native `CreateIndexOperation.IsDescending`, so it is rendered by **every relational provider** (SQL Server, SQLite, PostgreSQL) — no extra wiring required. Re-declaring an index over the same columns updates its direction.
+`DbOrder.Asc(...)` is the default. A wrapped member is a method call, so C# needs you to **name it**
+in the anonymous type, as with `Counter =` above.
 
-Markers of different kinds compose in any order; markers of the same kind do not — `DbOrder.Asc(DbOrder.Desc(x.A))` is a contradiction and throws. To control where nulls sort, see [null ordering](docs/postgresql-indexes.md#per-column-null-ordering) (PostgreSQL only).
+Every relational provider writes the direction (SQL Server, SQLite, PostgreSQL), because it maps to
+EF Core's own `CreateIndexOperation.IsDescending`. It needs no call in your context's configuration. Declaring
+an index over the same columns again updates its direction.
+
+Good to know:
+
+- **Markers of the same kind don't nest.** `DbOrder.Asc(DbOrder.Desc(x.A))` contradicts itself and
+  throws. Markers of different kinds combine in any order.
+- **Where nulls sort** is a PostgreSQL feature: see
+  [null ordering](docs/postgresql-indexes.md#per-column-null-ordering).
 
 ### Reading declarations back
 
-Every index declared through this package can be read back from the model — the finalized
-`context.Model`, or the mutable one inside `OnModelCreating` — so an application can enforce its
-own conventions instead of trusting each configuration to remember them:
+You can read every index you declared back from the model. That lets you check your own conventions
+in code, instead of trusting each configuration to follow them. This works on the finalized `context.Model`,
+and on the mutable model inside `OnModelCreating`:
 
 ```csharp
 // "Every unique index on a withdrawable aggregate is filtered to live rows."
@@ -217,21 +288,27 @@ var unfiltered = modelBuilder.Model.GetEntityTypes()
 var byName = modelBuilder.Model.FindComplexIndex("ux_person_email_active");
 ```
 
-`GetComplexIndexes()` unifies property-level, entity-level, composite and expression indexes as
-`ComplexIndexDeclaration`s: parts as property paths, `IsUnique`, `Filter`, the explicit `Name`
-(null when the differ derives the default from resolved column names — those are not matched by
-`FindComplexIndex`), and for entity-level declarations the provider options. It reports what was
-*declared*; column names are resolved by the differ only. `GetDeclaredComplexIndexes()` leaves
-inherited declarations to the type that declares them. The differ reads the model through the
-same code, so the read model and the migration cannot disagree. PostgreSQL exclusion constraints
-have the same surface — see [reading constraints back](docs/postgresql-constraints.md#reading-constraints-back).
+`GetComplexIndexes()` returns every kind of declaration as a `ComplexIndexDeclaration`:
+property-level, entity-level, composite and expression indexes. Each one has:
+
+- **`Parts`**: property paths, or expressions for an expression index.
+- **`IsUnique` and `Filter`.**
+- **`Name`**, the name you gave it. It is null when the package builds a default name from the
+  resolved column names, and `FindComplexIndex` doesn't find those.
+- **The provider options**, for entity-level declarations.
+
+You get what you declared. The package works out column names only when it builds migration
+operations: for `migrations add`, and for `EnsureCreated()` and the other calls above.
+`GetDeclaredComplexIndexes()` leaves out inherited declarations, and lists each one on the type that
+declares it. `migrations add` reads the model through the same code, so what you check is what the
+migration creates. PostgreSQL exclusion constraints have the same methods: see
+[reading constraints back](docs/postgresql-constraints.md#reading-constraints-back).
 
 ### Amending declarations
 
-The same convention can be *installed* rather than checked. On the mutable model,
-`AddComplexIndexFilter` ANDs a predicate onto the filter of every selected declaration —
-property-level and entity-level alike — and `AddComplexIndex` adds an entity-level declaration
-with the fluent API's identity rules:
+You can also apply a convention instead of checking it. On the mutable model,
+`AddComplexIndexFilter` adds a predicate to the filter of every declaration you select, property-level
+and entity-level alike:
 
 ```csharp
 // At the end of OnModelCreating, after the configurations have been applied:
@@ -239,53 +316,58 @@ foreach (var entityType in modelBuilder.Model.GetEntityTypes().Where(IsWithdrawa
     entityType.AddComplexIndexFilter("{RevokedAt} IS NULL", ix => ix.IsUnique);
 ```
 
-An unfiltered index gets the predicate; a filtered one gets `(existing) AND (predicate)`; one that
-already carries it is left alone, so the call is safe to repeat. It amends what is declared *at the
-time of the call*, which is why it belongs after the configurations — and why the read model is
-still worth a check for what a later declaration might add. Exclusion constraints have
-`AddExclusionConstraintFilter` — see [amending constraints](docs/postgresql-constraints.md#amending-constraints).
+- **An unfiltered index** gets the predicate as its filter.
+- **A filtered index** gets `(existing) AND (predicate)`.
+- **An index that already has it**, as its whole filter or as the `AND (predicate)` this call added,
+  stays as it is. So you can repeat the call safely.
+
+The call changes only what is declared when it runs. That's why it goes after the configurations,
+and why the read-back check above is still useful for anything declared later.
+
+`AddComplexIndex` adds an entity-level declaration, and follows the fluent API's rules for duplicates
+and names. Exclusion constraints have `AddExclusionConstraintFilter`: see
+[amending constraints](docs/postgresql-constraints.md#amending-constraints).
 
 ---
 
 ## Documentation
 
-Provider-specific features live in their own pages:
+Each provider has its own pages:
 
 | Page | Covers |
 |---|---|
-| **[PostgreSQL — indexes](docs/postgresql-indexes.md)** | Index methods (GIN, GiST, BRIN, SP-GiST, Hash), operator classes, `INCLUDE`, expression (functional) indexes in raw SQL and typed LINQ, typed filter predicates, JSON member indexes, `NULLS FIRST/LAST` |
-| **[PostgreSQL — temporal and exclusion constraints](docs/postgresql-constraints.md)** | `UNIQUE … WITHOUT OVERLAPS`, temporal foreign keys (`PERIOD`), `EXCLUDE` constraints with `WHERE` predicates, reading and amending them, the `btree_gist` extension |
-| **[SQL Server](docs/sqlserver.md)** | Clustered/nonclustered, covering (`INCLUDE`), online builds, fill factor, sort-in-tempdb, data compression — and the declarations SQL Server rejects outright |
+| **[PostgreSQL — indexes](docs/postgresql-indexes.md)** | Index methods (GIN, GiST, BRIN, SP-GiST, Hash), operator classes, `INCLUDE`, expression indexes in raw SQL and typed LINQ, typed filters, JSON member indexes, `NULLS FIRST/LAST` |
+| **[PostgreSQL — temporal and exclusion constraints](docs/postgresql-constraints.md)** | `UNIQUE … WITHOUT OVERLAPS`, temporal foreign keys (`PERIOD`), `EXCLUDE` constraints with a `WHERE` filter, reading and amending them, the `btree_gist` extension |
+| **[SQL Server](docs/sqlserver.md)** | Clustered or nonclustered, covering (`INCLUDE`), online builds, fill factor, sort in tempdb, data compression, and the declarations SQL Server can't express |
+| **[Upgrading](docs/upgrading.md)** | What the first `migrations add` after an upgrade does, and which models fail now where they passed before |
 
-Working on the package itself: [CONTRIBUTING.md](CONTRIBUTING.md) covers the setup and the quality
-bar, and [CLAUDE.md](CLAUDE.md) is the architectural record — which seam a feature must use, why the
-annotation flow is a whitelist, why operation ordering is load-bearing.
+To work on the package itself, start with [CONTRIBUTING.md](CONTRIBUTING.md) for the setup and the
+quality bar. [CLAUDE.md](CLAUDE.md) records the architecture: which hook point a feature must use,
+why annotations on a property reach a migration only from an allow-list, and why the order of the
+migration's steps matters.
 
 ---
 
 ## Changelog
 
-[CHANGELOG.md](CHANGELOG.md) covers all three packages. Each package also carries its own, so NuGet
-shows package-specific history:
+[CHANGELOG.md](CHANGELOG.md) covers all three packages. Each package also has its own, so NuGet shows
+the history of that package:
 [core](src/EFCore.ComplexIndexes/CHANGELOG.md),
 [PostgreSQL](src/EFCore.ComplexIndexes.PostgreSQL/CHANGELOG.md),
 [SQL Server](src/EFCore.ComplexIndexes.SqlServer/CHANGELOG.md).
 
-Before you upgrade, [docs/upgrading.md](docs/upgrading.md) says what the first
-`dotnet ef migrations add` after it scaffolds, and which models now fail where they passed.
+Before you upgrade, read [docs/upgrading.md](docs/upgrading.md). It says what the first
+`dotnet ef migrations add` after the upgrade writes, and which models fail now where they passed
+before.
 
 ---
 
 ## Contributing and project practices
 
-Bug reports and pull requests are welcome — [CONTRIBUTING.md](CONTRIBUTING.md) covers the setup and
-the quality bar this package holds itself to. Security reports go privately through
-[SECURITY.md](SECURITY.md).
+Bug reports and pull requests are welcome. [CONTRIBUTING.md](CONTRIBUTING.md) covers the setup and
+the quality bar this package holds itself to. Please report security issues privately, as
+[SECURITY.md](SECURITY.md) describes.
 
-A substantial portion of this codebase was written with AI assistance, under maintainer direction and
-review. [CONTRIBUTING.md](CONTRIBUTING.md#ai-assisted-development) explains what that means in
-practice, and how every change is verified before it ships.
-
----
-
-The package integrates seamlessly with EF Core's design-time tooling. Apart from the one-time `UseNpgsqlComplexIndexes()` call required by expression indexes and `NULLS FIRST/LAST`, there is no additional ceremony — just configure and migrate.
+A large part of this codebase was written with AI assistance, directed and reviewed by the
+maintainer. [CONTRIBUTING.md](CONTRIBUTING.md#ai-assisted-development) explains what that means in
+practice, and how each change is checked before it ships.
