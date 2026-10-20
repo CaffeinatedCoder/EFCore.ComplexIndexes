@@ -27,6 +27,33 @@ public class BuilderApiParityTests
                "SupportedSqlServerAnnotations",
                typeof(SqlServerComplexIndexBuilderExtensions));
 
+    /// <summary>
+    /// The other direction: an option the builder sets but the differ does not forward is dropped
+    /// from every property-level declaration without a word, and every entity-level test still
+    /// passes, since entity-level options skip the whitelist. Removing <c>SqlServer:FillFactor</c>
+    /// from the whitelist went unnoticed by the whole suite (#96).
+    /// </summary>
+    [TestMethod(DisplayName = "Every option a satellite's builder sets is forwarded by its differ")]
+    [DataRow(typeof(SqlServerComplexIndexMigrationsModelDiffer), typeof(SqlServerComplexIndexBuilderExtensions))]
+    [DataRow(typeof(NpgsqlComplexIndexMigrationsModelDiffer),    typeof(NpgsqlComplexIndexBuilderExtensions))]
+    public void Every_builder_option_is_forwarded(Type differType, Type builderExtensions)
+    {
+        using var context = new MigrationHarness.EmptyContext(MigrationHarness.NpgsqlOptions());
+        var differ = (CustomMigrationsModelDiffer)typeof(MigrationHarness).GetMethod(nameof(MigrationHarness.CreateDiffer))!
+                                                                          .MakeGenericMethod(differType)
+                                                                          .Invoke(null, [context])!;
+
+        var isForwarded = typeof(CustomMigrationsModelDiffer).GetMethod("IsForwardedIndexAnnotation", BindingFlags.NonPublic | BindingFlags.Instance)!;
+
+        var dropped = KeysSetBy(builderExtensions)
+                     .SelectMany(m => m.Keys.Where(k => !(bool)isForwarded.Invoke(differ, [k])!).Select(k => $"{m.Method} ({k})"))
+                     .ToList();
+
+        Assert.IsEmpty(dropped,
+            $"{differType.Name} does not forward options its builder sets, so a property-level declaration loses them "
+          + $"without a word: {string.Join(", ", dropped)}.");
+    }
+
     private static void AssertWhitelistIsReachable(Type differ, string whitelistField, Type builderExtensions)
     {
         var whitelist = (HashSet<string>)differ
