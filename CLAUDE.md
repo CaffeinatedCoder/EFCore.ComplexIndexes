@@ -41,7 +41,12 @@ the build reports green.
 unit suite, the integration suites (Docker; `Integration (PostgreSQL 18)` and
 `Integration (SQL Server 2022)`, one job each), then a pack job whose value is partly that packing
 *is* a check — a package declaring `PackageReadmeFile` without packing the file fails with
-NU5019. Everything runs on
+NU5019. A last job, `CI`, needs every other job, runs `if: always()`, and passes only when each of
+them reports `success`. It is the one required build check (#110): GitHub reports a skipped job as
+Success even on a required check, whether its own condition or a failed dependency skipped it, so
+per-lane required checks cannot tell a skip from a pass, and every new lane cost an edit to every
+protected branch. `WorkflowGateConventionTests` holds that every job is in the gate's `needs`, that
+it runs `always()`, and that it still reports as `CI`. Everything runs on
 ubuntu-latest. Actions in both workflows are pinned to commit SHAs with the tag in a trailing
 comment; `.github/dependabot.yml` keeps those pins current (weekly, grouped, minors and patches
 only — majors on the publish path are deliberate, see the artifact-action comments in
@@ -64,9 +69,11 @@ Note what the matrix was *not* buying, in case it looks tempting to restore: whe
 `.targets` works under Windows MSBuild is still untested either way, since the smoke test is
 Linux-only and `PackagingConventionTests` reads the `.targets` rather than executing it.
 
-The job deliberately keeps a single-entry `matrix.os` rather than a plain `runs-on`, so it still
-reports as `Test (ubuntu-latest)` — a required check in branch protection, where a renamed job stays
-required, never reports, and hangs PRs instead of failing them.
+The job keeps a single-entry `matrix.os` rather than a plain `runs-on`, so re-adding an OS stays a
+one-line change and it still reports as `Test (ubuntu-latest)`, which branch protection required
+until the `CI` gate replaced the per-lane checks. The gate's own name is now the one that must not
+change: a renamed required check stays required, never reports, and hangs PRs instead of failing
+them.
 
 Both workflows generate a **CycloneDX SBOM per package** (`*.cdx.json`) alongside the nupkgs, via
 the `cyclonedx` tool pinned in `.config/dotnet-tools.json`. `--exclude-filter` drops
@@ -146,6 +153,7 @@ below exist because ordinary review does not catch it.
 | `ClaudeMdConsistencyTests` | This file. Prose cannot be asserted, so it checks the falsifiable parts: cited paths and file names exist, annotation keys under a prefix this repo owns are declared somewhere, `Type.Member` references resolve, and the stated size of the Npgsql whitelist matches it. Those are what a rename rots silently — and the count claim had already gone stale by two. |
 | `BuilderApiParityTests` | Every key in a satellite's annotation whitelist is reachable from a builder method. `SqlServer:DataCompression` sat whitelisted with no API for a full release; this catches that class of drift by invoking every builder extension and diffing the keys it sets. |
 | `SecurityPolicyConsistencyTests` | SECURITY.md's supported-versions table has one `✅` row per supported line, newest first: this branch's line from `PackageValidationBaselineVersion` (the release on NuGet, never the version being prepared), the other line's from `CompanionLineRelease`; never a preview, at most two, adjacent majors, and the `< x.y` row meets the oldest. Each supported line has a "**N.x** targets **EF Core M**" sentence, and for the line this branch prepares M is the core project's dependency floor. All prose a version bump forgets — the sibling repository shipped 6.2.0 with the table still saying 6.1.x. |
+| `WorkflowGateConventionTests` | The `CI` gate in `dotnet.yml`, the one required build check: every other job is in its `needs`, it runs `if: always()`, it reads `toJSON(needs)` whole and fails any result but `success`, and it reports as `CI` and no other job does. A lane the gate does not need can fail while the PR merges, and a gate without `always()` is skipped when a lane fails, which branch protection reads as Success. |
 | `ReleaseWiringConventionTests` | The release path's silent failures: `release.yml` exists under the file name the nuget.org policy names, the publish job is gated on the `nuget` environment, only that job holds `id-token: write`, no job holds both `id-token: write` and `contents: write`, the tag is checked against `Directory.Build.props`, the GitHub release step passes `--prerelease --latest=false` for a preview and `--latest=false` for a stable tag older than the current Latest by `sort -V` (script lines only — the comment above it explains both rules, and would pass with the code gone), the SBOM tool is pinned in the manifest, and no second publishing path exists under `scripts/`. Rename the environment and nothing else in the build notices — the next tag fails to publish with an authentication error that never mentions the rename. |
 
 **`test/consumer-smoke-test.sh`** is the only check that exercises *delivery* rather than code. Every
