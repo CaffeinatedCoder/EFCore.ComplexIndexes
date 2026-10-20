@@ -426,6 +426,49 @@ public class SqlServerIntegrationTests
         Assert.IsNull(ReadIndex("cars", "ux_vin"), "The refusal came after the index was created.");
     }
 
+    private class NullsOrderedContext(DbContextOptions<NullsOrderedContext> options) : DbContext(options)
+    {
+        protected override void OnModelCreating(ModelBuilder modelBuilder)
+            => modelBuilder.Entity<Car>(b =>
+            {
+                b.ToTable("cars");
+                b.ComplexProperty(x => x.Registration, c => c.Property(r => r.Vin).HasMaxLength(17));
+                b.HasComplexCompositeIndex(x => new { x.Id, Vin = DbOrder.NullsLast(x.Registration!.Vin) }, indexName: "ix_cars_vin");
+            });
+    }
+
+    /// <summary>
+    /// With <c>UseComplexIndexes()</c> in place of <c>UseSqlServerComplexIndexes()</c>, the core
+    /// differ scaffolded a NULLS-ordered index with the runtime-wiring sentinel: <c>EnsureCreated()</c>
+    /// created the table and then failed on an invalid column named after
+    /// <c>UseNpgsqlComplexIndexes()</c>, while the core README said <c>migrations add</c> fails (#172).
+    /// It now refuses before anything is created.
+    /// </summary>
+    [TestMethod(DisplayName = "UseComplexIndexes() refuses a NULLS-ordered index at EnsureCreated, before creating the table")]
+    public void Core_registration_refuses_a_nulls_ordered_index()
+    {
+        var options = new DbContextOptionsBuilder<NullsOrderedContext>()
+                     .UseSqlServer(ConnectionString)
+                     .UseComplexIndexes()
+                     .Options;
+
+        Exception? failure = null;
+        using (var context = new NullsOrderedContext(options))
+        {
+            try { context.Database.EnsureCreated(); }
+            catch (Exception e) { failure = e; }
+        }
+
+        Assert.IsInstanceOfType<InvalidOperationException>(
+            failure, $"EnsureCreated() reached the server: {failure?.GetType().Name}: {failure?.Message}");
+        StringAssert.Contains(failure.Message, "the EFCore.ComplexIndexes.SqlServer satellite refuses it as well");
+
+        using var connection = new SqlConnection(ConnectionString);
+        connection.Open();
+        using var table = new SqlCommand("SELECT OBJECT_ID(N'cars')", connection);
+        Assert.IsInstanceOfType<DBNull>(table.ExecuteScalar(), "The refusal came after the table was created.");
+    }
+
     // ── TPC: a declaration on a concrete base holds on every table of the hierarchy (#93) ──
 
     private class Voucher
@@ -486,6 +529,49 @@ public class SqlServerIntegrationTests
         CollectionAssert.AreEqual(new[] { "Code" }, index.Keys);
 
         AssertDuplicateRefused("INSERT INTO gift_vouchers (Id, Code, Recipient) VALUES (5, N'B', N'z')");
+    }
+
+    // #167: two partial indexes over the same column on a TPC base, which must both be named. SQL
+    // Server keeps index names per table, so each table takes both names, as EF names its own.
+    private class Pass
+    {
+        public int    Id     { get; set; }
+        public int    ZoneId { get; set; }
+        public string Code   { get; set; } = "";
+    }
+
+    private class SeasonPass : Pass;
+
+    private class PassContext(DbContextOptions<PassContext> options) : DbContext(options)
+    {
+        protected override void OnModelCreating(ModelBuilder modelBuilder)
+        {
+            modelBuilder.Entity<Pass>(b =>
+            {
+                b.UseTpcMappingStrategy();
+                b.ToTable("passes");
+                b.Property(x => x.Code).HasMaxLength(32);
+                b.HasComplexIndex(x => x.Code, isUnique: true, filter: "{ZoneId} > 0", indexName: "ux_pass_active");
+                b.HasComplexIndex(x => x.Code, isUnique: true, filter: "{ZoneId} <= 0", indexName: "ux_pass_archived");
+            });
+            modelBuilder.Entity<SeasonPass>().ToTable("season_passes");
+        }
+    }
+
+    [TestMethod(DisplayName = "Two named partial indexes on a TPC base apply under their names on every table and enforce there (#167)")]
+    public void Tpc_named_partial_siblings_apply_on_every_table()
+    {
+        Migrate(null, Model<PassContext>());
+
+        foreach (var table in new[] { "passes", "season_passes" })
+        {
+            Assert.AreEqual("([ZoneId]>(0))", AssertIndex(table, "ux_pass_active").Filter, table);
+            Assert.AreEqual("([ZoneId]<=(0))", AssertIndex(table, "ux_pass_archived").Filter, table);
+        }
+
+        Sql("INSERT INTO season_passes (Id, ZoneId, Code) VALUES (1, 5, N'A'), (2, -1, N'B'), (3, -2, N'A')");
+        AssertDuplicateRefused("INSERT INTO season_passes (Id, ZoneId, Code) VALUES (4, 6, N'A')");
+        AssertDuplicateRefused("INSERT INTO season_passes (Id, ZoneId, Code) VALUES (5, -3, N'B')");
     }
 
     // ── Changes under an existing index ──

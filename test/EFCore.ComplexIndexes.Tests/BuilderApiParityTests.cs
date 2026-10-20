@@ -39,9 +39,7 @@ public class BuilderApiParityTests
     public void Every_builder_option_is_forwarded(Type differType, Type builderExtensions)
     {
         using var context = new MigrationHarness.EmptyContext(MigrationHarness.NpgsqlOptions());
-        var differ = (CustomMigrationsModelDiffer)typeof(MigrationHarness).GetMethod(nameof(MigrationHarness.CreateDiffer))!
-                                                                          .MakeGenericMethod(differType)
-                                                                          .Invoke(null, [context])!;
+        var differ = MigrationHarness.CreateDiffer(differType, context);
 
         var isForwarded = typeof(CustomMigrationsModelDiffer).GetMethod("IsForwardedIndexAnnotation", BindingFlags.NonPublic | BindingFlags.Instance)!;
 

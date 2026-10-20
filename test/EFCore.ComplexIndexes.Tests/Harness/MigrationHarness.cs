@@ -102,8 +102,12 @@ internal static class MigrationHarness
     }
 
     public static TDiffer CreateDiffer<TDiffer>(DbContext context) where TDiffer : CustomMigrationsModelDiffer
-        => (TDiffer)Activator.CreateInstance(
-               typeof(TDiffer),
+        => (TDiffer)CreateDiffer(typeof(TDiffer), context);
+
+    /// <summary>For a differ type known only at run time, such as one compiled by a test.</summary>
+    public static CustomMigrationsModelDiffer CreateDiffer(Type differ, DbContext context)
+        => (CustomMigrationsModelDiffer)Activator.CreateInstance(
+               differ,
                context.GetService<IRelationalTypeMappingSource>(),
                context.GetService<IMigrationsAnnotationProvider>(),
                context.GetService<IRelationalAnnotationProvider>(),

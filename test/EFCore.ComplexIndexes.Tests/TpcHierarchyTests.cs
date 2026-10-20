@@ -1,5 +1,9 @@
 using EFCore.ComplexIndexes.PostgreSQL;
+using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
+using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.EntityFrameworkCore.Metadata;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
 using Microsoft.EntityFrameworkCore.Migrations.Operations;
@@ -114,7 +118,7 @@ public class TpcHierarchyTests
     }
 
     // The dependent side on the TPC base: every table of the hierarchy references the principal.
-    private class DependentForeignKeyContext(DbContextOptions<DependentForeignKeyContext> options) : TpcContext(options)
+    private class DependentForeignKeyContext(DbContextOptions options) : TpcContext(options)
     {
         protected override void Configure(EntityTypeBuilder<Booking> b)
             => b.HasTemporalForeignKey<Booking, Room>(x => x.RoomId, x => x.During, r => r.RoomId, r => r.Available);
@@ -166,6 +170,72 @@ public class TpcHierarchyTests
     private class NamedTemporalContext(DbContextOptions<NamedTemporalContext> options) : TpcContext(options)
     {
         protected override void Configure(EntityTypeBuilder<Booking> b) => b.HasTemporalConstraint(x => x.RoomId, x => x.During, name: "ak_room_during");
+    }
+
+    // #167: two partial indexes and two exclusion constraints over the same parts. They must both be
+    // named, since their default names would be one name, so each table's copy needs a name of its own.
+    private class PartialSiblingsContext(DbContextOptions options) : TpcContext(options)
+    {
+        protected override void Configure(EntityTypeBuilder<Booking> b)
+        {
+            b.HasComplexIndex(x => x.Code, isUnique: true, filter: "{RoomId} > 0", indexName: "ix_code_active");
+            b.HasComplexIndex(x => x.Code, isUnique: true, filter: "{RoomId} <= 0", indexName: "ix_code_archived");
+            if (Database.IsNpgsql())
+            {
+                b.HasExclusionConstraint(x => x.RoomId, x => x.During, filter: "{Code} <> 'revoked'", name: "ex_active");
+                b.HasExclusionConstraint(x => x.RoomId, x => x.During, filter: "{Code} = 'revoked'", name: "ex_revoked");
+            }
+        }
+    }
+
+    // The same model as a 5.4.1 snapshot holds it: rendering version 2, so the base's table only.
+    private class Pre55PartialSiblingsContext(DbContextOptions<Pre55PartialSiblingsContext> options) : PartialSiblingsContext(options)
+    {
+        protected override void ConfigureModel(ModelBuilder modelBuilder)
+            => modelBuilder.HasAnnotation(ComplexIndexAnnotations.RenderingVersion, 2);
+    }
+
+    // An explicit name that fits on the base's table but not followed by a long derived table's name.
+    private class LongTableExplicitNameContext(DbContextOptions<LongTableExplicitNameContext> options) : LongTableContext(options, LongConstraintTable)
+    {
+        protected override void Configure(EntityTypeBuilder<Booking> b)
+        {
+            b.HasComplexIndex(x => x.Code, indexName: "ix_booking_code");
+            b.HasExclusionConstraint(x => x.RoomId, x => x.During, name: "ex_room_overlap");
+            b.HasTemporalConstraint(x => x.RoomId, x => x.During, name: "ak_room_during");
+        }
+    }
+
+    // A temporal foreign key from the TPC base with an explicit name: foreign keys own no index, and
+    // PostgreSQL keeps their names per table, so the name repeats as EF Core repeats its own.
+    private class NamedForeignKeyContext(DbContextOptions<NamedForeignKeyContext> options) : DependentForeignKeyContext(options)
+    {
+        protected override void Configure(EntityTypeBuilder<Booking> b)
+            => b.HasTemporalForeignKey<Booking, Room>(x => x.RoomId, x => x.During, r => r.RoomId, r => r.Available, name: "fk_booking_room");
+    }
+
+    // #168: the derived table's name puts the temporal foreign key's default name at 74 bytes.
+    private const string LongForeignKeyTable = "corporate_bookings_for_customer_accounts_region_xyz";
+
+    private class LongForeignKeyTableContext(DbContextOptions<LongForeignKeyTableContext> options) : DependentForeignKeyContext(options)
+    {
+        protected override void ConfigureModel(ModelBuilder modelBuilder)
+        {
+            base.ConfigureModel(modelBuilder);
+            modelBuilder.Entity<SpecialBooking>().ToTable(LongForeignKeyTable);
+        }
+    }
+
+    // The same model as a 5.4.1 snapshot holds it: a model declaring only constraints carried no
+    // rendering version, so the foreign key was on the base's table only.
+    private class Pre55LongForeignKeyTableContext(DbContextOptions<Pre55LongForeignKeyTableContext> options) : DependentForeignKeyContext(options)
+    {
+        protected override void ConfigureModel(ModelBuilder modelBuilder)
+        {
+            base.ConfigureModel(modelBuilder);
+            modelBuilder.Entity<SpecialBooking>().ToTable(LongForeignKeyTable);
+            modelBuilder.Model.RemoveAnnotation(ComplexIndexAnnotations.RenderingVersion);
+        }
     }
 
     // Each table in a schema of its own: one explicit name repeats, but never within a schema.
@@ -282,8 +352,8 @@ public class TpcHierarchyTests
             => modelBuilder.Entity<SpecialBooking>().HasIndex(x => new { x.Code, x.RoomId });
     }
 
-    // An explicit name over the limit on a TPC type, all of whose tables share a schema: a shorter
-    // explicit name would repeat on every table, which the name checks refuse.
+    // An explicit name over the limit on a TPC type: it stays on the base's table, so a shorter one
+    // fixes it, as it does off a TPC hierarchy.
     private class LongExplicitExclusionNameContext(DbContextOptions<LongExplicitExclusionNameContext> options) : TpcContext(options)
     {
         protected override void Configure(EntityTypeBuilder<Booking> b)
@@ -472,16 +542,17 @@ public class TpcHierarchyTests
 
     // ── Names ──
 
-    [TestMethod(DisplayName = "An explicit index name repeated on every table of a TPC hierarchy fails where names are per schema")]
+    [TestMethod(DisplayName = "An explicit index name stays on the TPC base's table and is followed by the table elsewhere, where names are per schema")]
     [DataRow("Sqlite")]
     [DataRow("Npgsql")]
-    public void Explicit_index_name_on_tpc_base_throws(string provider)
+    public void Explicit_index_name_on_tpc_base_takes_the_table_on_derived_tables(string provider)
     {
-        var exception = Assert.ThrowsExactly<InvalidOperationException>(() => Diff(provider, null, Model<NamedIndexContext>(provider)));
+        var creates = Creates(Diff(provider, null, Model<NamedIndexContext>(provider)));
 
-        StringAssert.Contains(exception.Message, "The complex index 'ix_booking_code' is declared on 'Booking', a TPC type");
-        StringAssert.Contains(exception.Message, "'bookings', 'special_bookings', 'vip_bookings'");
-        StringAssert.Contains(exception.Message, "Leave the name out");
+        CollectionAssert.AreEqual(Tables, creates.Select(c => c.Table).ToArray());
+        CollectionAssert.AreEqual(
+            new[] { "ix_booking_code", "ix_booking_code_special_bookings", "ix_booking_code_vip_bookings" },
+            creates.Select(c => c.Name).ToArray());
     }
 
     [TestMethod(DisplayName = "On SQL Server, where index names are per table, an explicit name repeats on every table as EF's does")]
@@ -493,30 +564,148 @@ public class TpcHierarchyTests
         Assert.IsTrue(creates.All(c => c.Name == "ix_booking_code"));
     }
 
-    [TestMethod(DisplayName = "An explicit index name on a TPC base is accepted when every table is in a schema of its own")]
-    public void Explicit_index_name_across_schemas_is_accepted()
+    [TestMethod(DisplayName = "An explicit index name on a TPC base takes each derived table's name in other schemas too")]
+    public void Explicit_index_name_across_schemas_takes_the_table()
     {
         var creates = Creates(Diff("Npgsql", null, Model<NamedAcrossSchemasContext>("Npgsql")));
 
-        Assert.HasCount(3, creates);
+        CollectionAssert.AreEquivalent(
+            new[] { "ix_booking_code", "ix_booking_code_special_bookings", "ix_booking_code_vip_bookings" },
+            creates.Select(c => c.Name).ToArray());
         CollectionAssert.AreEquivalent(new string?[] { null, "special", "vip" }, creates.Select(c => c.Schema).ToArray());
     }
 
-    [TestMethod(DisplayName = "An explicit exclusion constraint name repeated on every table of a TPC hierarchy fails")]
-    public void Explicit_exclusion_name_on_tpc_base_throws()
+    [TestMethod(DisplayName = "An explicit exclusion constraint name stays on the TPC base's table and is followed by the table elsewhere")]
+    public void Explicit_exclusion_name_on_tpc_base_takes_the_table_on_derived_tables()
     {
-        var exception = Assert.ThrowsExactly<InvalidOperationException>(() => Diff("Npgsql", null, Model<NamedExclusionContext>("Npgsql")));
+        var adds = Sql(Diff("Npgsql", null, Model<NamedExclusionContext>("Npgsql")), "EXCLUDE USING gist");
 
-        StringAssert.Contains(exception.Message, "The exclusion constraint 'ex_room_overlap' is declared on 'Booking', a TPC type");
-        StringAssert.Contains(exception.Message, "42P07");
+        Assert.HasCount(3, adds);
+        Assert.IsTrue(adds.Any(s => s.Contains("ALTER TABLE \"bookings\" ADD CONSTRAINT \"ex_room_overlap\" EXCLUDE")), string.Join("\n", adds));
+        Assert.IsTrue(adds.Any(s => s.Contains("ALTER TABLE \"special_bookings\" ADD CONSTRAINT \"ex_room_overlap_special_bookings\" EXCLUDE")), string.Join("\n", adds));
+        Assert.IsTrue(adds.Any(s => s.Contains("ALTER TABLE \"vip_bookings\" ADD CONSTRAINT \"ex_room_overlap_vip_bookings\" EXCLUDE")), string.Join("\n", adds));
     }
 
-    [TestMethod(DisplayName = "An explicit temporal constraint name repeated on every table of a TPC hierarchy fails")]
-    public void Explicit_temporal_name_on_tpc_base_throws()
+    [TestMethod(DisplayName = "An explicit temporal constraint name stays on the TPC base's table and is followed by the table elsewhere")]
+    public void Explicit_temporal_name_on_tpc_base_takes_the_table_on_derived_tables()
     {
-        var exception = Assert.ThrowsExactly<InvalidOperationException>(() => Diff("Npgsql", null, Model<NamedTemporalContext>("Npgsql")));
+        var adds = Sql(Diff("Npgsql", null, Model<NamedTemporalContext>("Npgsql")), "WITHOUT OVERLAPS");
 
-        StringAssert.Contains(exception.Message, "The temporal constraint 'ak_room_during' is declared on 'Booking', a TPC type");
+        Assert.HasCount(3, adds);
+        foreach (var (table, name) in new[] { ("bookings", "ak_room_during"), ("special_bookings", "ak_room_during_special_bookings"), ("vip_bookings", "ak_room_during_vip_bookings") })
+            Assert.IsTrue(adds.Any(s => s.Contains($"\"{table}\"") && s.Contains($"\"{name}\"")), $"{table}: {string.Join("\n", adds)}");
+    }
+
+    [TestMethod(DisplayName = "An explicit temporal foreign key name repeats on every dependent table, as EF Core's does")]
+    public void Explicit_foreign_key_name_on_tpc_base_repeats_on_every_table()
+    {
+        var adds = Sql(Diff("Npgsql", null, Model<NamedForeignKeyContext>("Npgsql")), "FOREIGN KEY");
+
+        Assert.HasCount(3, adds);
+        foreach (var table in Tables)
+            Assert.IsTrue(adds.Any(s => s.Contains($"ALTER TABLE \"{table}\" ADD CONSTRAINT \"fk_booking_room\" FOREIGN KEY")), $"{table}: {string.Join("\n", adds)}");
+    }
+
+    // ── #167: partial siblings over the same parts ──
+
+    [TestMethod(DisplayName = "Two named partial indexes over the same parts on a TPC base scaffold, a name per table (#167)")]
+    [DataRow("Sqlite")]
+    [DataRow("Npgsql")]
+    public void Partial_index_siblings_on_tpc_base_take_a_name_per_table(string provider)
+    {
+        var creates = Creates(Diff(provider, null, Model<PartialSiblingsContext>(provider)));
+
+        CollectionAssert.AreEquivalent(
+            new[]
+            {
+                "bookings/ix_code_active", "bookings/ix_code_archived",
+                "special_bookings/ix_code_active_special_bookings", "special_bookings/ix_code_archived_special_bookings",
+                "vip_bookings/ix_code_active_vip_bookings", "vip_bookings/ix_code_archived_vip_bookings"
+            },
+            creates.Select(c => $"{c.Table}/{c.Name}").ToArray());
+        Assert.HasCount(3, creates.Where(c => c.Filter == "\"RoomId\" > 0"));
+        Assert.HasCount(3, creates.Where(c => c.Filter == "\"RoomId\" <= 0"));
+    }
+
+    [TestMethod(DisplayName = "The named partial siblings apply on SQLite, and each derived table enforces both under its own names (#167)")]
+    public void Partial_index_siblings_apply_on_sqlite()
+    {
+        using var connection = new SqliteConnection(MigrationHarness.SqliteConnection);
+        connection.Open();
+
+        var target = MigrationHarness.SqliteModel<PartialSiblingsContext>(connection);
+        using (var context = new MigrationHarness.EmptyContext(MigrationHarness.SqliteOptions(connection)))
+        {
+            var commands = context.GetService<IMigrationsSqlGenerator>().Generate(MigrationHarness.CoreDiff(connection, null, target), target.Model);
+            context.GetService<IMigrationCommandExecutor>().ExecuteNonQuery(commands, context.GetService<IRelationalConnection>());
+        }
+
+        Execute("INSERT INTO vip_bookings (Id, RoomId, Code, Level) VALUES (1, 5, 'a', 1), (2, -1, 'b', 1)");
+
+        var active = Assert.ThrowsExactly<SqliteException>(() => Execute("INSERT INTO vip_bookings (Id, RoomId, Code, Level) VALUES (3, 6, 'a', 1)"));
+        StringAssert.Contains(active.Message, "UNIQUE constraint failed");
+        var archived = Assert.ThrowsExactly<SqliteException>(() => Execute("INSERT INTO vip_bookings (Id, RoomId, Code, Level) VALUES (4, -2, 'b', 1)"));
+        StringAssert.Contains(archived.Message, "UNIQUE constraint failed");
+
+        // Each filter covers its own rows: an active and an archived row may share a code.
+        Execute("INSERT INTO vip_bookings (Id, RoomId, Code, Level) VALUES (5, -3, 'a', 1)");
+
+        using var names = connection.CreateCommand();
+        names.CommandText = "SELECT group_concat(name, ',') FROM (SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'vip_bookings' AND sql IS NOT NULL ORDER BY name)";
+        Assert.AreEqual("ix_code_active_vip_bookings,ix_code_archived_vip_bookings", names.ExecuteScalar());
+
+        void Execute(string sql)
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText = sql;
+            command.ExecuteNonQuery();
+        }
+    }
+
+    [TestMethod(DisplayName = "On SQL Server the two named partial indexes repeat their names on every table, as EF's do (#167)")]
+    public void Partial_index_siblings_on_tpc_base_repeat_their_names_on_sql_server()
+    {
+        var creates = Creates(Diff("SqlServer", null, Model<PartialSiblingsContext>("SqlServer")));
+
+        Assert.HasCount(6, creates);
+        foreach (var table in Tables)
+            CollectionAssert.AreEquivalent(new[] { "ix_code_active", "ix_code_archived" }, creates.Where(c => c.Table == table).Select(c => c.Name).ToArray());
+    }
+
+    [TestMethod(DisplayName = "Two named exclusion constraints over the same parts on a TPC base scaffold, a name per table (#167)")]
+    public void Exclusion_siblings_on_tpc_base_take_a_name_per_table()
+    {
+        var adds = Sql(Diff("Npgsql", null, Model<PartialSiblingsContext>("Npgsql")), "EXCLUDE USING gist");
+
+        Assert.HasCount(6, adds);
+        foreach (var (table, suffix) in new[] { ("bookings", ""), ("special_bookings", "_special_bookings"), ("vip_bookings", "_vip_bookings") })
+        {
+            Assert.IsTrue(adds.Any(s => s.Contains($"ALTER TABLE \"{table}\" ADD CONSTRAINT \"ex_active{suffix}\" EXCLUDE") && s.Contains("<> 'revoked'")), $"{table}: {string.Join("\n", adds)}");
+            Assert.IsTrue(adds.Any(s => s.Contains($"ALTER TABLE \"{table}\" ADD CONSTRAINT \"ex_revoked{suffix}\" EXCLUDE") && s.Contains("= 'revoked'")), $"{table}: {string.Join("\n", adds)}");
+        }
+    }
+
+    [TestMethod(DisplayName = "Upgrading the named partial siblings from a 5.4.1 snapshot keeps the base's names and creates the copies (#167)")]
+    [DataRow("Sqlite")]
+    [DataRow("Npgsql")]
+    [DataRow("SqlServer")]
+    public void Partial_siblings_from_a_pre_55_snapshot_create_only_the_copies(string provider)
+    {
+        var operations = Diff(provider, Model<Pre55PartialSiblingsContext>(provider), Model<PartialSiblingsContext>(provider));
+
+        Assert.IsFalse(operations.Any(o => o is DropIndexOperation or RenameIndexOperation or DropTableOperation));
+        var creates = Creates(operations);
+        Assert.HasCount(4, creates);
+        Assert.IsTrue(creates.All(c => c.Table != "bookings"));
+
+        if (provider == "Npgsql")
+        {
+            var adds = Sql(operations, "EXCLUDE USING gist");
+            Assert.HasCount(4, adds);
+            Assert.IsTrue(adds.All(s => !s.Contains("ALTER TABLE \"bookings\"")), string.Join("\n", adds));
+        }
+
+        Assert.IsEmpty(Diff(provider, Model<PartialSiblingsContext>(provider), Model<PartialSiblingsContext>(provider)));
     }
 
     [TestMethod(DisplayName = "A declaration named like the copy of a base declaration on another table collides with it")]
@@ -628,14 +817,58 @@ public class TpcHierarchyTests
         Assert.IsEmpty(Diff("Npgsql", Model<LongTemporalTableContext>("Npgsql"), Model<LongTemporalTableContext>("Npgsql")));
     }
 
-    [TestMethod(DisplayName = "An explicit name over the limit on a TPC type is refused with advice to leave it out, not to shorten it")]
-    public void Long_explicit_name_on_tpc_type_advises_leaving_it_out()
+    [TestMethod(DisplayName = "An explicit name over the limit on a TPC type is refused with advice to shorten it, which now helps")]
+    public void Long_explicit_name_on_tpc_type_advises_a_shorter_one()
     {
         var exception = Assert.ThrowsExactly<InvalidOperationException>(() => Diff("Npgsql", null, Model<LongExplicitExclusionNameContext>("Npgsql")));
 
         StringAssert.Contains(exception.Message, "64 bytes long");
-        StringAssert.Contains(exception.Message, "Leave the name out");
-        Assert.DoesNotContain("explicit, shorter name", exception.Message);
+        StringAssert.Contains(exception.Message, "Give the declaration an explicit, shorter name (name)");
+    }
+
+    [TestMethod(DisplayName = "An explicit name followed by a long derived table's name is shortened there as EF Core shortens its own")]
+    public void Explicit_name_on_long_derived_table_is_shortened()
+    {
+        var operations = Diff("Npgsql", null, Model<LongTableExplicitNameContext>("Npgsql"));
+
+        var index = Creates(operations).Single(c => c.Table == LongConstraintTable).Name;
+        Assert.AreEqual(("ix_booking_code_" + LongConstraintTable)[..62] + "~", index);
+
+        var sql = Sql(operations, "ADD CONSTRAINT");
+        Assert.IsTrue(sql.Any(s => s.Contains($"\"{("ex_room_overlap_" + LongConstraintTable)[..62]}~\" EXCLUDE")), string.Join("\n", sql));
+        Assert.IsTrue(sql.Any(s => s.Contains($"\"{("ak_room_during_" + LongConstraintTable)[..62]}~\"")), string.Join("\n", sql));
+        Assert.IsTrue(sql.Any(s => s.Contains("\"ex_room_overlap\" EXCLUDE")), "The base's table keeps the name.");
+
+        Assert.IsEmpty(Diff("Npgsql", Model<LongTableExplicitNameContext>("Npgsql"), Model<LongTableExplicitNameContext>("Npgsql")));
+    }
+
+    // ── #168: a temporal foreign key's copy on a long derived table ──
+
+    [TestMethod(DisplayName = "A temporal foreign key's copy on a long derived table is shortened as EF Core shortens its own (#168)")]
+    public void Long_derived_table_foreign_key_copy_is_shortened()
+    {
+        const string full = $"FK_{LongForeignKeyTable}_rooms_RoomId_During";
+        Assert.AreEqual(74, full.Length, "The premise: the copy's default name runs 11 bytes past the limit.");
+
+        var adds = Sql(Diff("Npgsql", null, Model<LongForeignKeyTableContext>("Npgsql")), "FOREIGN KEY");
+
+        Assert.HasCount(3, adds);
+        Assert.IsTrue(adds.Any(s => s.Contains($"ALTER TABLE \"{LongForeignKeyTable}\" ADD CONSTRAINT \"{full[..62]}~\" FOREIGN KEY")), string.Join("\n", adds));
+        Assert.IsTrue(adds.Any(s => s.Contains("ADD CONSTRAINT \"FK_bookings_rooms_RoomId_During\"")), string.Join("\n", adds));
+
+        Assert.IsEmpty(Diff("Npgsql", Model<LongForeignKeyTableContext>("Npgsql"), Model<LongForeignKeyTableContext>("Npgsql")));
+    }
+
+    [TestMethod(DisplayName = "Upgrading the long-table temporal foreign key from a 5.4.1 snapshot adds the shortened copies (#168)")]
+    public void Long_derived_table_foreign_key_from_a_pre_55_snapshot_adds_the_copies()
+    {
+        var operations = Diff("Npgsql", Model<Pre55LongForeignKeyTableContext>("Npgsql"), Model<LongForeignKeyTableContext>("Npgsql"));
+
+        Assert.IsFalse(operations.Any(o => o is DropForeignKeyOperation or DropTableOperation or DropUniqueConstraintOperation));
+        var adds = Sql(operations, "FOREIGN KEY");
+        Assert.HasCount(2, adds);
+        Assert.IsTrue(adds.All(s => !s.Contains("ALTER TABLE \"bookings\"")), string.Join("\n", adds));
+        Assert.IsTrue(adds.Any(s => s.Contains($"\"{$"FK_{LongForeignKeyTable}_rooms_RoomId_During"[..62]}~\"")), string.Join("\n", adds));
     }
 
     [TestMethod(DisplayName = "A default name over the limit off a TPC hierarchy is still refused, since an explicit name fixes it")]

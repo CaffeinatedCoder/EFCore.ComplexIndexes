@@ -93,6 +93,23 @@ public class UnmappedDeclarationTests
         }
     }
 
+    // An explicit name on the abstract base, which has no table of its own to keep it on.
+    private class TpcNamedIndexContext(DbContextOptions<TpcNamedIndexContext> options) : DbContext(options)
+    {
+        protected override void OnModelCreating(ModelBuilder modelBuilder)
+        {
+            modelBuilder.Entity<Animal>(b =>
+            {
+                b.UseTpcMappingStrategy();
+                b.Ignore(x => x.Period);
+                b.Ignore(x => x.Contact);
+                b.HasComplexIndex(x => x.Id, isUnique: true, indexName: "ix_animal_id");
+            });
+            modelBuilder.Entity<Cat>().ToTable("cats");
+            modelBuilder.Entity<Dog>().ToTable("dogs");
+        }
+    }
+
     // The only concrete type maps to a view: no table holds the base's rows.
     private class TpcViewOnlyContext(DbContextOptions<TpcViewOnlyContext> options) : DbContext(options)
     {
@@ -185,6 +202,17 @@ public class UnmappedDeclarationTests
 
         CollectionAssert.AreEqual(new[] { "cats", "dogs" }, creates.Select(c => c.Table).ToArray());
         CollectionAssert.AreEqual(new[] { "IX_cats_Id", "IX_dogs_Id" }, creates.Select(c => c.Name).ToArray());
+    }
+
+    [TestMethod(DisplayName = "An explicit name on an abstract TPC base is followed by each concrete table's name (#167)")]
+    public void Tpc_named_index_takes_each_concrete_table()
+    {
+        var creates = MigrationHarness.CoreDiff(null, MigrationHarness.SqliteModel<TpcNamedIndexContext>())
+                                      .OfType<CreateIndexOperation>()
+                                      .OrderBy(c => c.Table, StringComparer.Ordinal)
+                                      .ToList();
+
+        CollectionAssert.AreEqual(new[] { "ix_animal_id_cats", "ix_animal_id_dogs" }, creates.Select(c => c.Name).ToArray());
     }
 
     [TestMethod(DisplayName = "An exclusion constraint on an abstract TPC base is added to every concrete table")]
