@@ -6,12 +6,25 @@ covers all three packages.
 
 ## 5.5.0
 
+### Changed answers
+
+- [#86](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/issues/86): on SQLite, `dotnet ef migrations add` refuses a migration that rebuilds a table carrying a complex index, instead of scaffolding one that silently drops it. SQLite runs an `ALTER COLUMN`, a `DROP COLUMN`, a key, foreign key, unique or check constraint change, and a table rename (EF renames the primary key with it) by rebuilding the table, and EF Core re-creates only its own indexes, so every complex index on the table vanished, unique ones included, while the migration applied cleanly and the snapshot still listed them. No operation in the same migration can re-create them, because EF's SQLite generator runs every rebuild last; the error names the indexes and the way out, three migrations: remove the declarations on the table, make the change, declare them again. **Upgrading:** a SQLite database that went through such a migration before is missing those indexes while its snapshot lists them. Check with `SELECT name FROM sqlite_master WHERE type = 'index'` and re-create any missing one with `migrationBuilder.Sql(…)` in a new migration.
+
+### Changed
+
 - **Changed:** `UseComplexIndexes()`, `AddComplexIndexes()` and the design-time
   registration throw `InvalidOperationException` when the EF Core
   they run on is not version 10, naming `CodoMetis.EFCore.SchemaKit` as the package for EF Core 11.
   The `[10.0.0, 11.0.0)` dependency ranges did not keep EF Core 11 out: a direct reference to it
   overrides them with NU1608, a warning. The check reads EF Core's version, not the runtime's, so
   EF Core 10 on .NET 11 keeps working.
+- **New:** the protected `CustomMigrationsModelDiffer.RequiresIndexRecreation`, through which a
+  provider's differ asks for an unchanged complex index to be dropped before a base operation that
+  cannot run while it exists, and created after it. Off by default.
+- **New:** the protected `CustomMigrationsModelDiffer.ImplicitFilter`, through which a provider's
+  differ gives an index declared without a filter the one its EF Core convention would give it; the
+  SQL Server satellite uses it for unique indexes over nullable columns. The model's rendering
+  version becomes 3, so the first `migrations add` after upgrading rewrites the snapshot.
 
 ## 5.4.1
 
