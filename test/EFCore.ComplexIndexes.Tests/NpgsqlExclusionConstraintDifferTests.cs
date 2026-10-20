@@ -98,6 +98,42 @@ public class NpgsqlExclusionConstraintDifferTests
             });
     }
 
+    // A scalar element under gist needs btree_gist whatever its operator: "data type integer has no
+    // default operator class for access method gist" otherwise.
+    private class NotEqualScalarExclusionContext(DbContextOptions<NotEqualScalarExclusionContext> options) : DbContext(options)
+    {
+        public DbSet<RoleGrant> Grants => Set<RoleGrant>();
+        protected override void OnModelCreating(ModelBuilder modelBuilder)
+            => modelBuilder.Entity<RoleGrant>(b =>
+            {
+                MapGrant(b);
+                b.HasExclusionConstraint(ex => ex.WithColumn(x => x.GranteeId, "<>").WithOverlaps(x => x.Period));
+            });
+    }
+
+    private class MixedCaseMethodExclusionContext(DbContextOptions<MixedCaseMethodExclusionContext> options) : DbContext(options)
+    {
+        public DbSet<RoleGrant> Grants => Set<RoleGrant>();
+        protected override void OnModelCreating(ModelBuilder modelBuilder)
+            => modelBuilder.Entity<RoleGrant>(b =>
+            {
+                MapGrant(b);
+                b.HasExclusionConstraint(ex => ex.WithEquality(x => x.GranteeId).WithOverlaps(x => x.Period).UseMethod("GiST"));
+            });
+    }
+
+    // Ranges have a default GiST operator class of their own, = included.
+    private class RangeOnlyExclusionContext(DbContextOptions<RangeOnlyExclusionContext> options) : DbContext(options)
+    {
+        public DbSet<RoleGrant> Grants => Set<RoleGrant>();
+        protected override void OnModelCreating(ModelBuilder modelBuilder)
+            => modelBuilder.Entity<RoleGrant>(b =>
+            {
+                MapGrant(b);
+                b.HasExclusionConstraint(ex => ex.WithEquality(x => x.Period).WithOverlaps(x => x.Period));
+            });
+    }
+
     private class SuppressedExclusionContext(DbContextOptions<SuppressedExclusionContext> options) : DbContext(options)
     {
         public DbSet<RoleGrant> Grants => Set<RoleGrant>();
@@ -301,6 +337,34 @@ public class NpgsqlExclusionConstraintDifferTests
         var first = operations[0] as SqlOperation;
         Assert.IsNotNull(first, "First operation should be the CREATE EXTENSION SqlOperation.");
         StringAssert.Contains(first!.Sql, CreateExtensionPrefix);
+    }
+
+    [TestMethod(DisplayName = "A scalar element under gist injects btree_gist whatever its operator")]
+    public void Scalar_element_with_any_operator_injects_extension()
+    {
+        var operations = GetDifferences(source: null, target: BuildRelationalModel<NotEqualScalarExclusionContext>());
+
+        var first = operations[0] as SqlOperation;
+        Assert.IsNotNull(first, "First operation should be the CREATE EXTENSION SqlOperation.");
+        StringAssert.Contains(first.Sql, CreateExtensionPrefix);
+        StringAssert.Contains(Assert.ContainsSingle(ExclusionSql(operations)), "\"grantee_id\" WITH <>");
+    }
+
+    [TestMethod(DisplayName = "UseMethod compares the access method case-insensitively for btree_gist")]
+    public void Mixed_case_gist_method_injects_extension()
+    {
+        var operations = GetDifferences(source: null, target: BuildRelationalModel<MixedCaseMethodExclusionContext>());
+
+        Assert.IsTrue(operations.OfType<SqlOperation>().Any(o => o.Sql.StartsWith(CreateExtensionPrefix, StringComparison.Ordinal)));
+    }
+
+    [TestMethod(DisplayName = "Range elements alone do not inject btree_gist")]
+    public void Range_elements_do_not_inject_extension()
+    {
+        var operations = GetDifferences(source: null, target: BuildRelationalModel<RangeOnlyExclusionContext>());
+
+        Assert.ContainsSingle(ExclusionSql(operations));
+        Assert.IsFalse(operations.OfType<SqlOperation>().Any(o => o.Sql.Contains("btree_gist")));
     }
 
     [TestMethod(DisplayName = "Auto-injection can be suppressed")]
