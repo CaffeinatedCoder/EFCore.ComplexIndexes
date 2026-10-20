@@ -335,8 +335,8 @@ internal static class NpgsqlLinqIndexTranslator
     // Whether an operand can be NULL in SQL. A captured value is known; a property path is
     // nullable when any member on it is (a Nullable<T>, or a reference type not annotated as
     // non-nullable — oblivious code counts as nullable); anything computed from paths is nullable
-    // when one of them is, since lower(NULL), NULL || 'x' and length(NULL) are all NULL. A
-    // coalesce is nullable only through its fallback.
+    // when one of them is, since lower(NULL) and length(NULL) are NULL. A coalesce is nullable
+    // only through its fallback, and a concatenation never is (its operands are coalesced).
     private static bool CanBeNull(Expression node, ParameterExpression root)
     {
         while (node is UnaryExpression { NodeType: ExpressionType.Convert } convert)
@@ -347,6 +347,10 @@ internal static class NpgsqlLinqIndexTranslator
 
         if (node is BinaryExpression { NodeType: ExpressionType.Coalesce } coalesce)
             return CanBeNull(coalesce.Right, root);
+
+        // A concatenation coalesces its nullable operands, so it is never null itself.
+        if (IsConcatenation(node))
+            return false;
 
         var finder = new NullableMemberFinder(root);
         finder.Visit(node);
@@ -396,6 +400,10 @@ internal static class NpgsqlLinqIndexTranslator
 
         protected override Expression VisitBinary(BinaryExpression node)
         {
+            // A concatenation is never null: its nullable operands are coalesced.
+            if (IsConcatenation(node))
+                return node;
+
             // `a ?? b` is null only when b is.
             if (node.NodeType != ExpressionType.Coalesce)
                 return base.VisitBinary(node);
@@ -424,7 +432,7 @@ internal static class NpgsqlLinqIndexTranslator
 
             case BinaryExpression { NodeType: ExpressionType.Add } concat
                 when concat.Type == typeof(string) && ValueOperators.Contains(concat.NodeType):
-                return $"({Visit(concat.Left, root)} || {Visit(concat.Right, root)})";
+                return $"({ConcatOperand(concat.Left, root)} || {ConcatOperand(concat.Right, root)})";
 
             case BinaryExpression { NodeType: ExpressionType.Coalesce } coalesce when ValueOperators.Contains(coalesce.NodeType):
                 return $"coalesce({Visit(coalesce.Left, root)}, {Visit(coalesce.Right, root)})";
@@ -439,6 +447,30 @@ internal static class NpgsqlLinqIndexTranslator
 
         throw NotSupported(node);
     }
+
+    // C# concatenates null as an empty string; PostgreSQL's || returns NULL. An index on
+    // "Code" || "Name" held NULL for every row without a Name, so it served no EF Core query (which
+    // writes COALESCE("Name", '')) and, unique, checked none of those rows. An operand that can be
+    // null is wrapped as EF Core wraps it; a non-string one is cast to text first, as COALESCE
+    // needs one type.
+    private static string ConcatOperand(Expression node, ParameterExpression root)
+    {
+        if (!CanBeNull(node, root))
+            return Visit(node, root);
+
+        if (!DependsOnParameter(node, root))
+            return "''";
+
+        var stripped = node;
+        while (stripped is UnaryExpression { NodeType: ExpressionType.Convert } convert)
+            stripped = convert.Operand;
+
+        var operand = Visit(stripped, root);
+        return stripped.Type == typeof(string) ? $"coalesce({operand}, '')" : $"coalesce({operand}::text, '')";
+    }
+
+    private static bool IsConcatenation(Expression node)
+        => node is BinaryExpression { NodeType: ExpressionType.Add } add && add.Type == typeof(string);
 
     private static string VisitCall(MethodCallExpression call, ParameterExpression root)
     {
