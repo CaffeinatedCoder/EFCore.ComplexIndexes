@@ -10,8 +10,8 @@ dotnet build EFCore.ComplexIndexes.slnx
 dotnet test test/EFCore.ComplexIndexes.Tests/EFCore.ComplexIndexes.Tests.csproj
 ```
 
-The integration suite spins up real PostgreSQL 18 and 16 containers via Testcontainers. Without Docker it
-goes inconclusive locally, so exclude it if you need to:
+The integration suite spins up real PostgreSQL 18 and 16 and SQL Server 2022 containers via
+Testcontainers. Without Docker it goes inconclusive locally, so exclude it if you need to:
 
 ```bash
 dotnet test test/EFCore.ComplexIndexes.Tests/EFCore.ComplexIndexes.Tests.csproj --filter "TestCategory!=Integration"
