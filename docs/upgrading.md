@@ -300,8 +300,13 @@ definition names `__requires_UseNpgsqlComplexIndexes__` came from such a migrati
 On SQL Server and PostgreSQL, the core differ refuses the same parts when it runs in place of the
 provider package's: under `UseComplexIndexes()`, or in a `dotnet ef` run without the provider
 package's `.targets`. The migration used to carry the same placeholder column and failed when
-applied, naming `UseNpgsqlComplexIndexes()` even on SQL Server, so no database holds such an index.
-On PostgreSQL, call `UseNpgsqlComplexIndexes()` instead of `UseComplexIndexes()`. SQL Server can't
+applied, naming `UseNpgsqlComplexIndexes()` even on SQL Server. Only one setup applied the index,
+and correctly: `UseComplexIndexes()` called after `UseNpgsqlComplexIndexes()`, which runs the core
+differ with the PostgreSQL package's generator. That setup now fails too, in
+`EnsureCreated()`, `GenerateCreateScript()` and `Migrate()`, whose pending-model-changes check runs
+the same differ. Nothing is re-created.
+
+On PostgreSQL, call `UseNpgsqlComplexIndexes()` and not `UseComplexIndexes()`. SQL Server can't
 express these parts, and its package refuses them too: remove the marker, or index a computed
 column that holds the expression.
 
