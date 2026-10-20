@@ -23,6 +23,104 @@ internal static class NpgsqlLinqIndexTranslator
     // The characters Npgsql's query translation passes for a parameterless Trim/TrimStart/TrimEnd.
     private const string TrimCharacters = "E' \\t\\n\\r'";
 
+    // ── The accepted constructs, as data ──
+    // The dispatch below reads these tables, and TranslatorParitySweepTests enumerates them to
+    // compare every construct with what Npgsql's query translation renders for the same lambda. A
+    // construct added here is swept with no edit there; one added to the dispatch without a table
+    // entry is not, so keep new constructs in the tables.
+
+    /// <summary>Renders a call from its rendered target, its arguments and the operand visitor.</summary>
+    internal delegate string CallRenderer(string target, IReadOnlyList<Expression> arguments, Func<Expression, string> visit);
+
+    /// <summary>The string methods a typed expression or filter operand may call, by exact overload.</summary>
+    internal static readonly IReadOnlyDictionary<MethodInfo, CallRenderer> StringMethods = new Dictionary<MethodInfo, CallRenderer>
+    {
+        [StringMethod(nameof(string.ToLower))] = (target, _, _) => $"lower({target})",
+        [StringMethod(nameof(string.ToUpper))] = (target, _, _) => $"upper({target})",
+
+        // Spelled as Npgsql's query translation spells them, character for character: an index
+        // serves only a query whose expression matches it, and btrim(x) alone trims spaces, so a
+        // unique index on it let 'Y\t' and 'Y' coexist where Trim() says equal.
+        [StringMethod(nameof(string.Trim))]      = (target, _, _) => $"btrim({target}, {TrimCharacters})",
+        [StringMethod(nameof(string.TrimStart))] = (target, _, _) => $"ltrim({target}, {TrimCharacters})",
+        [StringMethod(nameof(string.TrimEnd))]   = (target, _, _) => $"rtrim({target}, {TrimCharacters})",
+
+        [StringMethod(nameof(string.Replace), typeof(string), typeof(string))]
+            = (target, arguments, visit) => $"replace({target}, {visit(arguments[0])}, {visit(arguments[1])})",
+
+        // .NET substrings are 0-based, SQL's are 1-based. substring, not substr: they are different
+        // functions to the planner, and Npgsql's queries call substring.
+        [StringMethod(nameof(string.Substring), typeof(int))]
+            = (target, arguments, visit) => $"substring({target}, {SubstringStart(arguments[0], visit)})",
+        [StringMethod(nameof(string.Substring), typeof(int), typeof(int))]
+            = (target, arguments, visit) => $"substring({target}, {SubstringStart(arguments[0], visit)}, {visit(arguments[1])})",
+    };
+
+    /// <summary>
+    /// The members rendered from their target, keyed by declaring type (a generic one by its
+    /// definition) and name.
+    /// </summary>
+    internal static readonly IReadOnlyDictionary<(Type DeclaringType, string Name), Func<string, string>> ValueMembers
+        = new Dictionary<(Type, string), Func<string, string>>
+        {
+            [(typeof(string), nameof(string.Length))] = target => $"length({target})",
+
+            // Nullable<T>.Value is the column itself, as in EF Core's queries; HasValue is its null
+            // check (a filter writes it bare, and pushes a negation into IS NULL).
+            [(typeof(Nullable<>), nameof(Nullable<int>.Value))]    = target => target,
+            [(typeof(Nullable<>), nameof(Nullable<int>.HasValue))] = target => $"({target} IS NOT NULL)",
+        };
+
+    /// <summary>The operators an operand may use besides calls and members: concatenation of strings and <c>??</c>.</summary>
+    internal static readonly IReadOnlySet<ExpressionType> ValueOperators
+        = new HashSet<ExpressionType> { ExpressionType.Add, ExpressionType.Coalesce };
+
+    /// <summary>The comparisons a filter may make. Equality carries EF Core's null compensation.</summary>
+    internal static readonly IReadOnlyDictionary<ExpressionType, string> ComparisonOperators = new Dictionary<ExpressionType, string>
+    {
+        [ExpressionType.Equal]              = "=",
+        [ExpressionType.NotEqual]           = "<>",
+        [ExpressionType.LessThan]           = "<",
+        [ExpressionType.LessThanOrEqual]    = "<=",
+        [ExpressionType.GreaterThan]        = ">",
+        [ExpressionType.GreaterThanOrEqual] = ">=",
+    };
+
+    /// <summary>The boolean structure a filter may have.</summary>
+    internal static readonly IReadOnlySet<ExpressionType> LogicalOperators
+        = new HashSet<ExpressionType> { ExpressionType.AndAlso, ExpressionType.OrElse, ExpressionType.Not };
+
+    /// <summary>
+    /// The types a captured value or constant may have: the ones with a portable SQL spelling. A
+    /// DateTime, Guid or enum is IFormattable too, and came out as bare text that is not SQL.
+    /// </summary>
+    internal static readonly IReadOnlySet<Type> LiteralTypes = new HashSet<Type>
+    {
+        typeof(string), typeof(bool), typeof(char),
+        typeof(int), typeof(long), typeof(short), typeof(byte), typeof(sbyte),
+        typeof(uint), typeof(ulong), typeof(ushort), typeof(decimal), typeof(double), typeof(float),
+    };
+
+    private static MethodInfo StringMethod(string name, params Type[] parameters)
+        => typeof(string).GetMethod(name, parameters)
+        ?? throw new InvalidOperationException($"string.{name}({string.Join(", ", parameters.Select(p => p.Name))}) does not exist.");
+
+    // A start known at the declaration, a literal or a captured variable, is folded as EF Core
+    // folds it: substring("Code", 2), not substring("Code", (1 + 1)).
+    private static string SubstringStart(Expression start, Func<Expression, string> visit)
+        => !new ParameterFinder(parameter: null).Search(start) && Evaluate(start) is int startIndex
+               ? (startIndex + 1).ToString(CultureInfo.InvariantCulture)
+               : $"({visit(start)} + 1)";
+
+    private static bool TryGetValueMember(MemberExpression member, out Func<string, string> render)
+    {
+        var declaringType = member.Member.DeclaringType!;
+        if (declaringType.IsConstructedGenericType)
+            declaringType = declaringType.GetGenericTypeDefinition();
+
+        return ValueMembers.TryGetValue((declaringType, member.Member.Name), out render!);
+    }
+
     public static string Translate(LambdaExpression lambda)
         => Visit(lambda.Body, lambda.Parameters[0]);
 
@@ -76,57 +174,60 @@ internal static class NpgsqlLinqIndexTranslator
             case UnaryExpression { NodeType: ExpressionType.Convert } convert:
                 return VisitPredicate(convert.Operand, root, negated);
 
-            case UnaryExpression { NodeType: ExpressionType.Not } not:
-                return ComparesNullable(not.Operand, root)
+            case UnaryExpression { NodeType: ExpressionType.Not } not when LogicalOperators.Contains(not.NodeType):
+                return ComparesNullable(not.Operand, root) || IsHasValue(not.Operand, root)
                            ? VisitPredicate(not.Operand, root, !negated)
                            : Negate($"NOT ({VisitPredicate(not.Operand, root, negated: false)})", negated);
 
-            case BinaryExpression { NodeType: ExpressionType.AndAlso or ExpressionType.OrElse } logical:
+            case BinaryExpression logical when LogicalOperators.Contains(logical.NodeType):
             {
                 // De Morgan when a negation is being pushed through: NOT (a AND b) = NOT a OR NOT b.
                 var and = logical.NodeType == ExpressionType.AndAlso ^ negated;
                 return $"({VisitPredicate(logical.Left, root, negated)} {(and ? "AND" : "OR")} {VisitPredicate(logical.Right, root, negated)})";
             }
 
-            case BinaryExpression { NodeType: ExpressionType.Equal or ExpressionType.NotEqual } equality:
+            case BinaryExpression { NodeType: ExpressionType.Equal or ExpressionType.NotEqual } equality
+                when ComparisonOperators.ContainsKey(equality.NodeType):
             {
                 var notEqual = equality.NodeType == ExpressionType.NotEqual ^ negated;
 
                 // A captured variable that holds null is a null comparison too; inlined, it read `= NULL`.
                 if (IsNullValue(equality.Right, root))
-                    return $"{VisitOperand(equality.Left, root)} IS {(notEqual ? "NOT " : "")}NULL";
+                    return NullTest(equality.Left, root, isNull: !notEqual);
 
                 if (IsNullValue(equality.Left, root))
-                    return $"{VisitOperand(equality.Right, root)} IS {(notEqual ? "NOT " : "")}NULL";
+                    return NullTest(equality.Right, root, isNull: !notEqual);
 
-                var left          = VisitOperand(equality.Left, root);
-                var right         = VisitOperand(equality.Right, root);
-                var leftNullable  = CanBeNull(equality.Left, root);
-                var rightNullable = CanBeNull(equality.Right, root);
+                var (left, right) = VisitOperands(equality, root);
+                var leftNull      = NullCheck(equality.Left, root, isNull: true);
+                var rightNull     = NullCheck(equality.Right, root, isNull: true);
 
-                // EF Core's own null compensation for the same comparisons.
-                return (notEqual, leftNullable, rightNullable) switch
+                // EF Core's own null compensation for the same comparisons, testing the operands'
+                // nullable columns as EF Core does: lower("Name") is null exactly when "Name" is.
+                return (notEqual, leftNull, rightNull) switch
                 {
-                    (false, true, true)  => $"({left} = {right} OR ({left} IS NULL AND {right} IS NULL))",
-                    (false, _, _)        => $"{left} = {right}",
-                    (true, true, true)   => $"(({left} <> {right} OR {left} IS NULL OR {right} IS NULL) AND ({left} IS NOT NULL OR {right} IS NOT NULL))",
-                    (true, true, false)  => $"({left} <> {right} OR {left} IS NULL)",
-                    (true, false, true)  => $"({left} <> {right} OR {right} IS NULL)",
-                    (true, false, false) => $"{left} <> {right}",
+                    (false, { } l, { } r) => $"({left} = {right} OR ({l} AND {r}))",
+                    (false, _, _)         => $"{left} = {right}",
+                    (true, { } l, { } r)  => $"(({left} <> {right} OR {l} OR {r}) AND ({NullCheck(equality.Left, root, isNull: false)} OR {NullCheck(equality.Right, root, isNull: false)}))",
+                    (true, { } l, null)   => $"({left} <> {right} OR {l})",
+                    (true, null, { } r)   => $"({left} <> {right} OR {r})",
+                    (true, null, null)    => $"{left} <> {right}",
                 };
             }
 
-            case BinaryExpression { NodeType: ExpressionType.LessThan or ExpressionType.LessThanOrEqual
-                                            or ExpressionType.GreaterThan or ExpressionType.GreaterThanOrEqual } comparison:
+            case BinaryExpression comparison when ComparisonOperators.ContainsKey(comparison.NodeType):
             {
-                var left  = VisitOperand(comparison.Left, root);
-                var right = VisitOperand(comparison.Right, root);
+                var (left, right) = VisitOperands(comparison, root);
+                var op            = ComparisonOperators[comparison.NodeType];
 
                 if (!negated)
-                    return $"{left} {ComparisonOperator(comparison.NodeType)} {right}";
+                    return $"{left} {op} {right}";
 
                 // Negated: C#'s lifted comparison is false for a null, so its negation is true there,
-                // which the complement alone would make NULL.
+                // which the complement alone would make NULL. EF Core writes that as a CASE.
+                if (CanBeNull(comparison.Left, root) || CanBeNull(comparison.Right, root))
+                    return $"CASE WHEN {left} {op} {right} THEN FALSE ELSE TRUE END";
+
                 var complement = comparison.NodeType switch
                 {
                     ExpressionType.LessThan        => ExpressionType.GreaterThanOrEqual,
@@ -135,16 +236,15 @@ internal static class NpgsqlLinqIndexTranslator
                     _                              => ExpressionType.LessThan,
                 };
 
-                var nulls = string.Concat(
-                    CanBeNull(comparison.Left, root) ? $" OR {left} IS NULL" : "",
-                    CanBeNull(comparison.Right, root) ? $" OR {right} IS NULL" : "");
-
-                return $"({left} {ComparisonOperator(complement)} {right}{nulls})";
+                return $"{left} {ComparisonOperators[complement]} {right}";
             }
 
-            // A boolean column stands on its own.
-            case MemberExpression member when member.Type == typeof(bool) && TryGetPath(member, root, out var path):
-                return Negate("{" + path + "}", negated);
+            case MemberExpression hasValue when IsHasValue(hasValue, root):
+                return $"{Visit(hasValue.Expression!, root)} IS {(negated ? "" : "NOT ")}NULL";
+
+            // A boolean column, or a bool? column's Value, stands on its own.
+            case MemberExpression member when member.Type == typeof(bool) && DependsOnParameter(member, root):
+                return Negate(Visit(member, root), negated);
         }
 
         // A captured flag: bake it in.
@@ -176,16 +276,36 @@ internal static class NpgsqlLinqIndexTranslator
         return Visit(node, root);
     }
 
+    // C# compares chars as ints: x.Grade == 'A' arrives as Convert(x.Grade) == 65, and the constant
+    // rendered as 65 met a character column, which PostgreSQL refuses at apply. The constant goes
+    // back to the char it was written as, as EF Core renders it.
+    private static (string Left, string Right) VisitOperands(BinaryExpression comparison, ParameterExpression root)
+    {
+        var left  = VisitOperand(comparison.Left, root);
+        var right = VisitOperand(comparison.Right, root);
+
+        if (IsConvertedChar(comparison.Left) && CharCode(comparison.Right, root) is { } rightChar)
+            right = Literal(rightChar);
+        else if (IsConvertedChar(comparison.Right) && CharCode(comparison.Left, root) is { } leftChar)
+            left = Literal(leftChar);
+
+        return (left, right);
+    }
+
+    private static bool IsConvertedChar(Expression node)
+        => node is UnaryExpression { NodeType: ExpressionType.Convert } convert
+        && (Nullable.GetUnderlyingType(convert.Operand.Type) ?? convert.Operand.Type) == typeof(char);
+
+    private static char? CharCode(Expression node, ParameterExpression root)
+        => !DependsOnParameter(node, root) && !IsConvertedChar(node) && Evaluate(node) is int code ? (char)code : null;
+
+    private static bool IsHasValue(Expression node, ParameterExpression root)
+        => node is MemberExpression { Member.Name: nameof(Nullable<int>.HasValue), Expression: { } target }
+        && Nullable.GetUnderlyingType(target.Type) is not null
+        && DependsOnParameter(target, root);
+
     private static string Negate(string predicate, bool negated)
         => negated ? $"NOT ({predicate})" : predicate;
-
-    private static string ComparisonOperator(ExpressionType type) => type switch
-    {
-        ExpressionType.LessThan        => "<",
-        ExpressionType.LessThanOrEqual => "<=",
-        ExpressionType.GreaterThan     => ">",
-        _                              => ">=",
-    };
 
     // A literal null or a captured value that evaluates to null.
     private static bool IsNullValue(Expression node, ParameterExpression root)
@@ -215,11 +335,62 @@ internal static class NpgsqlLinqIndexTranslator
         _ => false,
     };
 
+    // `operand IS [NOT] NULL` as EF Core writes it: over the operand's nullable columns rather than
+    // the operand itself where the two are null together, else over the operand.
+    private static string NullTest(Expression operand, ParameterExpression root, bool isNull)
+        => NullCheck(operand, root, isNull) ?? $"{VisitOperand(operand, root)} IS {(isNull ? "" : "NOT ")}NULL";
+
+    // The test for an operand being null (or not), written over the columns it is null through, or
+    // null when it cannot be null. A function the translator accepts is strict: lower(x) is null
+    // exactly when x is, so its test is its nullable inputs' tests ORed (ANDed for IS NOT NULL). A
+    // coalesce is null when all its inputs are, a concatenation never (its operands are coalesced),
+    // HasValue never.
+    private static string? NullCheck(Expression node, ParameterExpression root, bool isNull)
+    {
+        while (node is UnaryExpression { NodeType: ExpressionType.Convert } convert)
+            node = convert.Operand;
+
+        if (!CanBeNull(node, root))
+            return null;
+
+        switch (node)
+        {
+            case BinaryExpression { NodeType: ExpressionType.Coalesce } coalesce:
+            {
+                // Null only when every input is; an input that cannot be null makes it never null.
+                var left  = NullCheck(coalesce.Left, root, isNull);
+                var right = NullCheck(coalesce.Right, root, isNull);
+                return left is null || right is null ? null : Combine([left, right], all: isNull);
+            }
+
+            case MemberExpression { Expression: { } target } member
+                when DependsOnParameter(target, root) && TryGetValueMember(member, out _):
+                return NullCheck(target, root, isNull);
+
+            case MethodCallExpression { Object: { } target } call when StringMethods.ContainsKey(call.Method):
+                return Combine([NullCheck(target, root, isNull), .. call.Arguments.Select(a => NullCheck(a, root, isNull))], all: !isNull);
+        }
+
+        return $"{Visit(node, root)} IS {(isNull ? "" : "NOT ")}NULL";
+    }
+
+    // ANDs (all) or ORs the tests of the inputs that can be null; with one, it stands alone.
+    private static string? Combine(IReadOnlyList<string?> checks, bool all)
+    {
+        var present = checks.OfType<string>().ToList();
+        return present.Count switch
+        {
+            0 => null,
+            1 => present[0],
+            _ => "(" + string.Join(all ? " AND " : " OR ", present) + ")",
+        };
+    }
+
     // Whether an operand can be NULL in SQL. A captured value is known; a property path is
     // nullable when any member on it is (a Nullable<T>, or a reference type not annotated as
     // non-nullable — oblivious code counts as nullable); anything computed from paths is nullable
-    // when one of them is, since lower(NULL), NULL || 'x' and length(NULL) are all NULL. A
-    // coalesce is nullable only through its fallback.
+    // when one of them is, since lower(NULL) and length(NULL) are NULL. A coalesce is nullable
+    // only through its fallback, and a concatenation never is (its operands are coalesced).
     private static bool CanBeNull(Expression node, ParameterExpression root)
     {
         while (node is UnaryExpression { NodeType: ExpressionType.Convert } convert)
@@ -230,6 +401,10 @@ internal static class NpgsqlLinqIndexTranslator
 
         if (node is BinaryExpression { NodeType: ExpressionType.Coalesce } coalesce)
             return CanBeNull(coalesce.Right, root);
+
+        // A concatenation coalesces its nullable operands, so it is never null itself.
+        if (IsConcatenation(node))
+            return false;
 
         var finder = new NullableMemberFinder(root);
         finder.Visit(node);
@@ -257,6 +432,10 @@ internal static class NpgsqlLinqIndexTranslator
 
         protected override Expression VisitMember(MemberExpression node)
         {
+            // HasValue is never null, whatever its target is.
+            if (node.Member.Name == nameof(Nullable<int>.HasValue) && Nullable.GetUnderlyingType(node.Member.DeclaringType!) is not null)
+                return node;
+
             // string.Length and Nullable<T>.Value are members too, but not of the entity: their
             // nullability is their target's, which the base visit reaches.
             var ofEntity = node.Member.DeclaringType != typeof(string)
@@ -275,6 +454,10 @@ internal static class NpgsqlLinqIndexTranslator
 
         protected override Expression VisitBinary(BinaryExpression node)
         {
+            // A concatenation is never null: its nullable operands are coalesced.
+            if (IsConcatenation(node))
+                return node;
+
             // `a ?? b` is null only when b is.
             if (node.NodeType != ExpressionType.Coalesce)
                 return base.VisitBinary(node);
@@ -291,9 +474,9 @@ internal static class NpgsqlLinqIndexTranslator
             case UnaryExpression { NodeType: ExpressionType.Convert } convert:
                 return Visit(convert.Operand, root);
 
-            case MemberExpression { Member.Name: nameof(string.Length), Expression: { } target } member
-                when member.Member.DeclaringType == typeof(string) && DependsOnParameter(target, root):
-                return $"length({Visit(target, root)})";
+            case MemberExpression { Expression: { } target } member
+                when DependsOnParameter(target, root) && TryGetValueMember(member, out var render):
+                return render(Visit(target, root));
 
             case MemberExpression member when TryGetPath(member, root, out var path):
                 return "{" + path + "}";
@@ -301,10 +484,11 @@ internal static class NpgsqlLinqIndexTranslator
             case MethodCallExpression call when DependsOnParameter(call, root):
                 return VisitCall(call, root);
 
-            case BinaryExpression { NodeType: ExpressionType.Add } concat when concat.Type == typeof(string):
-                return $"({Visit(concat.Left, root)} || {Visit(concat.Right, root)})";
+            case BinaryExpression { NodeType: ExpressionType.Add } concat
+                when concat.Type == typeof(string) && ValueOperators.Contains(concat.NodeType):
+                return $"({ConcatOperand(concat.Left, root)} || {ConcatOperand(concat.Right, root)})";
 
-            case BinaryExpression { NodeType: ExpressionType.Coalesce } coalesce:
+            case BinaryExpression { NodeType: ExpressionType.Coalesce } coalesce when ValueOperators.Contains(coalesce.NodeType):
                 return $"coalesce({Visit(coalesce.Left, root)}, {Visit(coalesce.Right, root)})";
 
             case ConstantExpression constant:
@@ -318,49 +502,34 @@ internal static class NpgsqlLinqIndexTranslator
         throw NotSupported(node);
     }
 
+    // C# concatenates null as an empty string; PostgreSQL's || returns NULL. An index on
+    // "Code" || "Name" held NULL for every row without a Name, so it served no EF Core query (which
+    // writes COALESCE("Name", '')) and, unique, checked none of those rows. An operand that can be
+    // null is wrapped as EF Core wraps it; a non-string one is cast to text first, as COALESCE
+    // needs one type.
+    private static string ConcatOperand(Expression node, ParameterExpression root)
+    {
+        if (!CanBeNull(node, root))
+            return Visit(node, root);
+
+        if (!DependsOnParameter(node, root))
+            return "''";
+
+        var stripped = node;
+        while (stripped is UnaryExpression { NodeType: ExpressionType.Convert } convert)
+            stripped = convert.Operand;
+
+        var operand = Visit(stripped, root);
+        return stripped.Type == typeof(string) ? $"coalesce({operand}, '')" : $"coalesce({operand}::text, '')";
+    }
+
+    private static bool IsConcatenation(Expression node)
+        => node is BinaryExpression { NodeType: ExpressionType.Add } add && add.Type == typeof(string);
+
     private static string VisitCall(MethodCallExpression call, ParameterExpression root)
     {
-        if (call.Object is not null && call.Method.DeclaringType == typeof(string))
-        {
-            var target = Visit(call.Object, root);
-
-            switch (call.Method.Name)
-            {
-                case nameof(string.ToLower) when call.Arguments.Count == 0:
-                    return $"lower({target})";
-
-                case nameof(string.ToUpper) when call.Arguments.Count == 0:
-                    return $"upper({target})";
-
-                // Spelled as Npgsql's query translation spells them, character for character: an
-                // index serves only a query whose expression matches it, and btrim(x) alone trims
-                // spaces, so a unique index on it let 'Y\t' and 'Y' coexist where Trim() says equal.
-                case nameof(string.Trim) when call.Arguments.Count == 0:
-                    return $"btrim({target}, {TrimCharacters})";
-
-                case nameof(string.TrimStart) when call.Arguments.Count == 0:
-                    return $"ltrim({target}, {TrimCharacters})";
-
-                case nameof(string.TrimEnd) when call.Arguments.Count == 0:
-                    return $"rtrim({target}, {TrimCharacters})";
-
-                case nameof(string.Replace) when call.Arguments.Count == 2 && call.Method.GetParameters()[0].ParameterType == typeof(string):
-                    return $"replace({target}, {Visit(call.Arguments[0], root)}, {Visit(call.Arguments[1], root)})";
-
-                case nameof(string.Substring) when call.Arguments.Count is 1 or 2:
-                {
-                    // .NET substrings are 0-based, SQL's are 1-based. substring, not substr: they are
-                    // different functions to the planner, and Npgsql's queries call substring.
-                    var start = call.Arguments[0] is ConstantExpression { Value: int startIndex }
-                                    ? (startIndex + 1).ToString(CultureInfo.InvariantCulture)
-                                    : $"({Visit(call.Arguments[0], root)} + 1)";
-
-                    return call.Arguments.Count == 1
-                               ? $"substring({target}, {start})"
-                               : $"substring({target}, {start}, {Visit(call.Arguments[1], root)})";
-                }
-            }
-        }
+        if (call.Object is not null && StringMethods.TryGetValue(call.Method, out var render))
+            return render(Visit(call.Object, root), call.Arguments, argument => Visit(argument, root));
 
         throw NotSupported(call);
     }
@@ -377,7 +546,27 @@ internal static class NpgsqlLinqIndexTranslator
         }
 
         path = string.Join(".", segments);
-        return ReferenceEquals(current, root);
+        if (!ReferenceEquals(current, root))
+            return false;
+
+        // A member of a scalar type (CreatedAt.Year, RevokedAt.Value outside the table above) is no
+        // property the model maps: it passed as the path {CreatedAt.Year} and failed at `migrations
+        // add` with "Could not resolve property path". Refuse it here, at the declaration.
+        for (Expression? node = member; node is MemberExpression m; node = m.Expression)
+            if (m.Expression is { } owner && IsScalar(owner.Type))
+                throw new NotSupportedException(
+                    $"The expression '{member}' reads {m.Member.Name} of a {owner.Type.Name}, which is not a property the model " +
+                    "maps and has no translation in a typed index expression or filter. Use the raw-SQL overload for it.");
+
+        return true;
+    }
+
+    private static bool IsScalar(Type type)
+    {
+        type = Nullable.GetUnderlyingType(type) ?? type;
+        return type.IsPrimitive || type.IsEnum || type.IsArray || type == typeof(string) || type == typeof(decimal)
+            || type == typeof(DateTime) || type == typeof(DateTimeOffset) || type == typeof(DateOnly) || type == typeof(TimeOnly)
+            || type == typeof(TimeSpan) || type == typeof(Guid);
     }
 
     private static string Literal(object? value) => value switch
@@ -386,10 +575,9 @@ internal static class NpgsqlLinqIndexTranslator
         string s   => "'" + s.Replace("'", "''").Replace("{", "{{").Replace("}", "}}") + "'",
         bool b     => b ? "TRUE" : "FALSE",
         char c     => Literal(c.ToString()),
-        // Invariant culture — a de-DE thread culture must never turn 1.5 into '1,5'. Only numbers:
-        // a DateTime, Guid or enum is IFormattable too, and came out as bare text that is not SQL.
-        int or long or short or byte or sbyte or uint or ulong or ushort or decimal or double or float
-            => ((IFormattable)value).ToString(null, CultureInfo.InvariantCulture),
+        // Invariant culture — a de-DE thread culture must never turn 1.5 into '1,5'.
+        IFormattable number when LiteralTypes.Contains(value.GetType())
+            => number.ToString(null, CultureInfo.InvariantCulture),
         _ => throw new NotSupportedException(
                  $"Cannot inline a value of type '{value.GetType().Name}' as a SQL literal in an index expression or filter. " +
                  "Only strings, booleans and numbers have a portable SQL spelling; write anything else in the raw-SQL overload.")
@@ -412,13 +600,20 @@ internal static class NpgsqlLinqIndexTranslator
             "string.Length, string concatenation (+), null coalescing (??), and constants. " +
             "Use the HasExpressionIndex(string) overload with raw SQL for anything else.");
 
-    private sealed class ParameterFinder(ParameterExpression parameter) : ExpressionVisitor
+    // Finds the given parameter, or with none given, any parameter.
+    private sealed class ParameterFinder(ParameterExpression? parameter) : ExpressionVisitor
     {
         public bool Found { get; private set; }
 
+        public bool Search(Expression node)
+        {
+            Visit(node);
+            return Found;
+        }
+
         protected override Expression VisitParameter(ParameterExpression node)
         {
-            if (ReferenceEquals(node, parameter))
+            if (parameter is null || ReferenceEquals(node, parameter))
                 Found = true;
             return base.VisitParameter(node);
         }

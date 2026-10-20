@@ -141,7 +141,7 @@ builder.HasExpressionIndex(x => (x.Nickname ?? x.FirstName) + " " + x.LastName);
 // CREATE INDEX ... ON people (((coalesce("nickname", "first_name") || ' ') || "last_name"));
 ```
 
-The supported subset is deliberately small and fails loudly: `ToLower`/`ToUpper`, `Trim`/`TrimStart`/`TrimEnd`, `Substring` (1-based conversion handled), `Replace`, `string.Length`, string concatenation (`+`), null coalescing (`??`), and constants (captured variables are evaluated and inlined invariant-culture). Anything else throws `NotSupportedException` **at declaration time** with a pointer to the raw-SQL overload.
+The supported subset is deliberately small and fails loudly: `ToLower`/`ToUpper`, `Trim`/`TrimStart`/`TrimEnd`, `Substring` (1-based conversion handled), `Replace`, `string.Length`, `.Value` and `.HasValue` on a nullable, string concatenation (`+`, an operand that can be null coalesced to `''` as C# and EF Core's queries treat it), null coalescing (`??`), and constants (captured variables are evaluated and inlined invariant-culture). Any other member of a scalar type, such as `CreatedAt.Year`, is not a mapped property and is refused with the rest. Anything else throws `NotSupportedException` **at declaration time** with a pointer to the raw-SQL overload.
 
 Paths see through a value converter as well: when `Email` is a value object mapped as one column,
 `x => x.Email.Value.ToLower()` resolves `Email.Value` to that column — provided `Value` has the
@@ -177,12 +177,16 @@ builder.ComplexProperty(x => x.Address, c => c.Property(a => a.City)
 
 The builders are not generic, so `HasFilter<TEntity>` takes the entity type explicitly. The subset
 is small and fails at the declaration: `==`/`!=` (against `null`: `IS NULL`/`IS NOT NULL`), `<`,
-`<=`, `>`, `>=`, `&&`, `||`, `!`, boolean properties, captured booleans, and on the operands the
-string operations and constants a typed expression index accepts. Comparisons keep C#'s answer for null,
+`<=`, `>`, `>=`, `&&`, `||`, `!`, boolean properties, captured booleans, `.HasValue` (`IS NOT NULL`),
+and on the operands the string operations and constants a typed expression index accepts. A `char`
+compares with a char literal, `x.Grade == 'A'` as `"Grade" = 'A'`, although C# compares it as its
+code. Comparisons keep C#'s answer for null,
 written as EF Core writes the same lambda in a query, so the index covers exactly the rows that
 query selects: on a `string?`, `x.Kind != "federated"` becomes
-`("Kind" <> 'federated' OR "Kind" IS NULL)`, a negated comparison is pushed down to it, and a
-captured variable holding null compares with `IS NULL`. Whether an operand can be null is read from
+`("Kind" <> 'federated' OR "Kind" IS NULL)`, a negated comparison is pushed down to it (a negated
+`<`, `<=`, `>` or `>=` over a nullable operand becomes EF Core's `CASE WHEN … THEN FALSE ELSE TRUE END`),
+a computed operand is null-checked through its columns (`lower("Name") <> 'a' OR "Name" IS NULL`),
+and a captured variable holding null compares with `IS NULL`. Whether an operand can be null is read from
 its C# declaration (a `Nullable<T>`, or a reference type not annotated non-nullable); a `string`
 declared non-nullable but mapped to a nullable column is compared as non-nullable. Two things are refused on
 purpose. An enum comparison: how an enum is stored depends on the property's value conversion,
@@ -228,7 +232,9 @@ queries cast them to `timestamp with time zone`, `date` or `time`, and PostgreSQ
 casts (the conversion from text is not `IMMUTABLE`), so no index can match the query. The member
 stays text, a **unique** index over it still enforces uniqueness, and a **non-unique** index that
 starts with it is rejected at `migrations add`, since no query would ever use it. Put another part
-first, or map the member to a regular column.
+first, or map the member to a regular column. In a filter, of an index or an exclusion constraint,
+the member can be tested with `IS NULL` or compared with a string literal; compared with a column it
+is rejected at `migrations add`, because text against a timestamp fails when the migration applies.
 
 > **Upgrading from 5.3 or earlier:** before 5.4.0 every member was extracted as text with `->`
 > segments, which only matched the query for a top-level string. Such indexes enforced uniqueness

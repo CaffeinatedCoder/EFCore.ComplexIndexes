@@ -95,6 +95,12 @@ public class SqlServerComplexIndexMigrationsModelDiffer(
     /// </summary>
     protected override IndexNameScope IndexNameScope => IndexNameScope.Table;
 
+    /// <summary>
+    /// SQL Server compares index names without regard to case under its default collation, so
+    /// <c>ix_code</c> and <c>IX_CODE</c> on one table are one name.
+    /// </summary>
+    protected override StringComparer IndexNameComparer => StringComparer.OrdinalIgnoreCase;
+
     /// <summary>SQL Server delimits identifiers with brackets.</summary>
     protected override string QuoteIdentifier(string identifier)
         => "[" + identifier.Replace("]", "]]") + "]";
@@ -281,14 +287,14 @@ public class SqlServerComplexIndexMigrationsModelDiffer(
     /// <remarks>
     /// SQL Server builds an index under each of those names, so <c>CREATE INDEX [PK_things]</c> on
     /// <c>things</c> scaffolded and failed at apply. The core checks complex indexes against native
-    /// <c>HasIndex</c> declarations only, since keys own no index name on SQLite. Compared without
-    /// regard to case, as a database with the default case-insensitive collation compares them.
+    /// <c>HasIndex</c> declarations only, since keys own no index name on SQLite. Compared under
+    /// <see cref="IndexNameComparer"/>, as the core compares index names.
     /// </remarks>
-    private static void ValidateNoKeyNameCollision(ITable table, IEnumerable<IndexDescriptor> indexes)
+    private void ValidateNoKeyNameCollision(ITable table, IEnumerable<IndexDescriptor> indexes)
     {
         foreach (var index in indexes)
         {
-            var constraint = table.UniqueConstraints.FirstOrDefault(c => string.Equals(c.Name, index.IndexName, StringComparison.OrdinalIgnoreCase));
+            var constraint = table.UniqueConstraints.FirstOrDefault(c => IndexNameComparer.Equals(c.Name, index.IndexName));
             if (constraint is null)
                 continue;
 

@@ -171,7 +171,7 @@ public class NpgsqlTypedFilterTests
         Assert.AreEqual("(\"Count\" <> 1 AND (\"Maybe\" <> 2 OR \"Maybe\" IS NULL))", filters["ix_not_or"]);
         Assert.AreEqual("\"Name\" IS NULL", filters["ix_captured_null"]);
         Assert.AreEqual("\"Kind\" IS NOT NULL", filters["ix_captured_not_null"]);
-        Assert.AreEqual("(\"Maybe\" <= 5 OR \"Maybe\" IS NULL)", filters["ix_not_greater"]);
+        Assert.AreEqual("CASE WHEN \"Maybe\" > 5 THEN FALSE ELSE TRUE END", filters["ix_not_greater"]);
     }
 
     [TestMethod(DisplayName = "A filter over nullable operands is the one EF Core writes for the same lambda")]
@@ -194,6 +194,33 @@ public class NpgsqlTypedFilterTests
 
         static string Normalize(string sql) => string.Concat(sql.Where(c => c is not ('(' or ')' or ' ' or '\n')));
     }
+
+    [TestMethod(DisplayName = "A computed operand is null-checked through its columns, as EF Core checks it")]
+    public void Computed_operands_are_checked_through_their_columns()
+    {
+        // lower("Name") IS NULL selects the same rows as "Name" IS NULL, but EF Core writes the
+        // latter, and an index predicate is provably usable by a query only in the same shape.
+        Assert.AreEqual("(lower({Name}) <> 'a' OR {Name} IS NULL)", AccountPredicate(x => x.Name!.ToLower() != "a"));
+        Assert.AreEqual("(coalesce({Name}, {Kind}) <> 'a' OR ({Name} IS NULL AND {Kind} IS NULL))", AccountPredicate(x => (x.Name ?? x.Kind) != "a"));
+        Assert.AreEqual("{Name} IS NULL", AccountPredicate(x => x.Name!.Trim() == null));
+        Assert.AreEqual("((lower({Name}) <> {Kind} OR {Name} IS NULL OR {Kind} IS NULL) AND ({Name} IS NOT NULL OR {Kind} IS NOT NULL))",
+                        AccountPredicate(x => x.Name!.ToLower() != x.Kind));
+
+        // A coalesce with a fallback that cannot be null is never null.
+        Assert.AreEqual("coalesce({Name}, 'z') <> 'a'", AccountPredicate(x => (x.Name ?? "z") != "a"));
+    }
+
+    [TestMethod(DisplayName = "A negated comparison over a nullable operand is EF Core's CASE")]
+    public void Negated_nullable_comparison_is_a_case()
+    {
+        Assert.AreEqual("CASE WHEN {Maybe} < 5 THEN FALSE ELSE TRUE END", AccountPredicate(x => !(x.Maybe < 5)));
+        Assert.AreEqual("({Count} <> 1 OR CASE WHEN {Maybe} > 2 THEN FALSE ELSE TRUE END)", AccountPredicate(x => !(x.Count == 1 && x.Maybe > 2)));
+
+        // Over operands that cannot be null the complement stands, inside a pushed-down negation.
+        Assert.AreEqual("({Count} >= 1 OR CASE WHEN {Maybe} > 2 THEN FALSE ELSE TRUE END)", AccountPredicate(x => !(x.Count < 1 && x.Maybe > 2)));
+    }
+
+    private static string AccountPredicate(Expression<Func<Account, bool>> predicate) => NpgsqlLinqIndexTranslator.TranslatePredicate(predicate);
 
     [TestMethod(DisplayName = "Operands that cannot be null translate as before")]
     public void Non_nullable_operands_are_unchanged()
@@ -222,6 +249,57 @@ public class NpgsqlTypedFilterTests
         Assert.AreEqual("{RevokedAt} IS NULL", model.Model.FindComplexIndex("ux_email_active")!.Filter);
         Assert.IsEmpty(MigrationHarness.NpgsqlDiff(model, MigrationHarness.NpgsqlModel<TypedFilterContext>()));
     }
+
+    // ── Char, HasValue, Value and other members of scalar types (#80) ──
+
+    private class Ticket
+    {
+        public Guid      Id        { get; set; }
+        public char      Grade     { get; set; }
+        public char?     Backup    { get; set; }
+        public DateTime? RevokedAt { get; set; }
+        public int?      Count     { get; set; }
+        public bool?     Flag      { get; set; }
+        public DateTime  CreatedAt { get; set; }
+    }
+
+    private static string Predicate(Expression<Func<Ticket, bool>> predicate) => NpgsqlLinqIndexTranslator.TranslatePredicate(predicate);
+
+    [TestMethod(DisplayName = "A char comparison renders a char literal, not the char's code")]
+    public void Char_comparison_renders_a_char()
+    {
+        // C# compares Convert(x.Grade, int) with 65; "Grade" = 65 failed at apply.
+        Assert.AreEqual("{Grade} = 'A'", Predicate(x => x.Grade == 'A'));
+        Assert.AreEqual("'A' < {Grade}", Predicate(x => 'A' < x.Grade));
+        Assert.AreEqual("coalesce({Backup}, 'B') = 'A'", Predicate(x => (x.Backup ?? 'B') == 'A'));
+        Assert.AreEqual("{Grade} = {Backup}", Predicate(x => x.Grade == x.Backup));
+    }
+
+    // .Value on a nullable is what the lambdas under test are written with.
+#pragma warning disable CS8629
+    [TestMethod(DisplayName = "HasValue is the null check and Value is the column")]
+    public void HasValue_and_Value_translate()
+    {
+        // Both passed the declaration as the paths {RevokedAt.HasValue} and {Count.Value} and failed
+        // at migrations add.
+        Assert.AreEqual("{RevokedAt} IS NOT NULL", Predicate(x => x.RevokedAt.HasValue));
+        Assert.AreEqual("{RevokedAt} IS NULL", Predicate(x => !x.RevokedAt.HasValue));
+        Assert.AreEqual("({Count} > 5 AND {RevokedAt} IS NULL)", Predicate(x => x.Count.Value > 5 && !x.RevokedAt.HasValue));
+        Assert.AreEqual("{Flag}", Predicate(x => x.Flag.Value));
+        Assert.AreEqual("({Count} IS NOT NULL)", NpgsqlLinqIndexTranslator.Translate((Expression<Func<Ticket, bool>>)(x => x.Count.HasValue)));
+    }
+
+    [TestMethod(DisplayName = "Any other member of a scalar type is refused at the declaration")]
+    public void Scalar_member_is_refused()
+    {
+        var exception = Assert.ThrowsExactly<NotSupportedException>(() => Predicate(x => x.CreatedAt.Year > 2020));
+        StringAssert.Contains(exception.Message, "Year");
+
+        Assert.ThrowsExactly<NotSupportedException>(() => Predicate(x => x.RevokedAt.Value.Month == 1));
+        Assert.ThrowsExactly<NotSupportedException>(
+            () => NpgsqlLinqIndexTranslator.Translate((Expression<Func<Ticket, int>>)(x => x.CreatedAt.Day)));
+    }
+#pragma warning restore CS8629
 
     [TestMethod(DisplayName = "An enum comparison is refused at the declaration")]
     public void Enum_comparison_is_refused()

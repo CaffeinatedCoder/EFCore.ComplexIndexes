@@ -1,0 +1,246 @@
+# Waivers of the translator parity sweep (TranslatorParitySweepTests). Every row the sweep finds
+# rendering unlike EF Core is fixed or listed here under a block with its reason; a listed row the
+# sweep no longer finds fails it, so this file shrinks as fixes land. See ParityWaivers for the form:
+# "rule:" switches on one of PostgreSQL's own rewrites for every row, "same:" rows render differently
+# and answer alike (the live sweep checks them on PostgreSQL 18), "unchecked:" rows cannot be compared
+# or differ knowingly, and say why.
+
+rule: negator
+    PostgreSQL rewrites NOT over a comparison into the comparison's negator, pushes NOT through
+    AND and OR, and cancels a double NOT (negate_clause, in eval_const_expressions) before it compares
+    an index predicate with a query, so NOT ("Int" = 5) and "Int" <> 5 are one predicate to the
+    planner and select the same rows. The translator keeps NOT (…) over operands that cannot be null
+    so that filters scaffolded before 5.5.0 do not change (#68).
+
+rule: boolean-equality
+    PostgreSQL rewrites x = TRUE to x, x = FALSE to NOT x, and their <> forms to the opposite
+    (simplify_boolean_equality) before planning, so "Bool" = TRUE is "Bool" to it. The translator
+    keeps the comparison it was given so that existing filters do not change.
+
+rule: integer-length
+    length() returns integer, so EF Core's length(x)::int is a cast to the type the call already has,
+    which PostgreSQL's parser does not put in the tree. The index on length(x) serves the query.
+
+same: Concatenation with a value that is not a string
+    EF Core casts a non-string operand of + to text; the translator leaves it to PostgreSQL. PostgreSQL
+    resolves text || integer to textanycat, a SQL function it inlines as $1 || $2::text before it
+    compares an index with a query, and text || character(1) through the implicit cast to text, so
+    both build EF Core's tree. The live sweep builds an index on each and checks EF Core's query uses it.
+    - expression: x => x.Str + x.Int
+    - expression: x => x.Str + x.Chr
+    - expression: x => x.Doc.Str + x.Int
+    - expression: x => x.Doc.Str + x.Chr
+    - expression: x => x.Str + c  with System.Boolean c = true;
+    - expression: x => x.Str + c  with System.Int32 c = 5;
+    - expression: x => x.Str + c  with System.Int64 c = 5L;
+    - expression: x => x.Str + c  with System.Int16 c = (short)5;
+    - expression: x => x.Str + c  with System.Byte c = (byte)5;
+    - expression: x => x.Str + c  with System.SByte c = (sbyte)5;
+    - expression: x => x.Str + c  with System.UInt32 c = 5u;
+    - expression: x => x.Str + c  with System.UInt16 c = (ushort)5;
+    - expression: x => x.Str + c  with System.Decimal c = 5.5m;
+    - expression: x => x.Str + c  with System.Double c = 5.5;
+    - expression: x => x.Str + c  with System.Single c = 5.5f;
+    - filter: x => x.Str + x.Int == "{it's}"
+    - filter: x => x.Str + x.Int != "{it's}"
+    - filter: x => x.Str + x.Chr == "{it's}"
+    - filter: x => x.Str + x.Chr != "{it's}"
+    - filter: x => x.Doc.Str + x.Int == "{it's}"
+    - filter: x => x.Doc.Str + x.Int != "{it's}"
+    - filter: x => x.Doc.Str + x.Chr == "{it's}"
+    - filter: x => x.Doc.Str + x.Chr != "{it's}"
+    - filter: x => !(x.Str + x.Int == "{it's}")
+    - filter: x => !(x.Str + x.Int != "{it's}")
+    - filter: x => !(x.Str + x.Chr == "{it's}")
+    - filter: x => !(x.Str + x.Chr != "{it's}")
+    - filter: x => !(x.Doc.Str + x.Int == "{it's}")
+    - filter: x => !(x.Doc.Str + x.Int != "{it's}")
+    - filter: x => !(x.Doc.Str + x.Chr == "{it's}")
+    - filter: x => !(x.Doc.Str + x.Chr != "{it's}")
+    - expression: x => x.NStr + x.Int
+    - expression: x => x.NStr + x.Chr
+    - expression: x => x.Doc.NStr + x.Int
+    - expression: x => x.Doc.NStr + x.Chr
+    - filter: x => x.NStr + x.Int == "{it's}"
+    - filter: x => x.NStr + x.Int != "{it's}"
+    - filter: x => x.NStr + x.Chr == "{it's}"
+    - filter: x => x.NStr + x.Chr != "{it's}"
+    - filter: x => x.Doc.NStr + x.Int == "{it's}"
+    - filter: x => x.Doc.NStr + x.Int != "{it's}"
+    - filter: x => x.Doc.NStr + x.Chr == "{it's}"
+    - filter: x => x.Doc.NStr + x.Chr != "{it's}"
+    - filter: x => !(x.NStr + x.Int == "{it's}")
+    - filter: x => !(x.NStr + x.Int != "{it's}")
+    - filter: x => !(x.NStr + x.Chr == "{it's}")
+    - filter: x => !(x.NStr + x.Chr != "{it's}")
+    - filter: x => !(x.Doc.NStr + x.Int == "{it's}")
+    - filter: x => !(x.Doc.NStr + x.Int != "{it's}")
+    - filter: x => !(x.Doc.NStr + x.Chr == "{it's}")
+    - filter: x => !(x.Doc.NStr + x.Chr != "{it's}")
+
+unchecked: Concatenation with a ulong
+    EF Core maps ulong to numeric(20,0) and writes the value as 5.0, so its query concatenates '5.0'
+    where C# and the package write '5'. The package keeps C#'s answer.
+    - expression: x => x.Str + c  with System.UInt64 c = 5ul;
+
+unchecked: Members of a value object mapped through a converter
+    EF Core cannot translate a member of a converted value object (x.Email.Value): it would need the
+    converter's inverse in SQL. The package resolves the member to the column the converter writes,
+    which is the index the declaration asks for, so there is no EF Core query to compare it with.
+    - expression: x => x.Email.Value
+    - expression: x => x.Email.Value.ToLower()
+    - expression: x => x.Email.Value.ToUpper()
+    - expression: x => x.Email.Value.Trim()
+    - expression: x => x.Email.Value.TrimStart()
+    - expression: x => x.Email.Value.TrimEnd()
+    - expression: x => x.Email.Value.Replace("-", "")
+    - expression: x => x.Email.Value.Substring(1)
+    - expression: x => x.Email.Value.Substring(c)  with int c = 1;
+    - expression: x => x.Email.Value.Substring(1, 3)
+    - expression: x => x.Email.Value.Substring(c, 3)  with int c = 1;
+    - expression: x => x.Email.Value.Length
+    - expression: x => x.Email.Value + "x"
+    - expression: x => "x" + x.Email.Value
+    - expression: x => x.Email.Value + x.Str2
+    - expression: x => x.Email.Value + x.NStr2
+    - expression: x => x.Email.Value + x.Int
+    - expression: x => x.Email.Value + x.NInt
+    - expression: x => x.Email.Value + x.Chr
+    - filter: x => x.Email.Value == "{it's}"
+    - filter: x => "{it's}" == x.Email.Value
+    - filter: x => x.Email.Value == c  with System.String c = "{it's}";
+    - filter: x => x.Email.Value == x.Str
+    - filter: x => x.Email.Value == x.Str2
+    - filter: x => x.Email.Value == x.NStr
+    - filter: x => x.Email.Value == x.NStr2
+    - filter: x => x.Email.Value != "{it's}"
+    - filter: x => "{it's}" != x.Email.Value
+    - filter: x => x.Email.Value != c  with System.String c = "{it's}";
+    - filter: x => x.Email.Value != x.Str
+    - filter: x => x.Email.Value != x.Str2
+    - filter: x => x.Email.Value != x.NStr
+    - filter: x => x.Email.Value != x.NStr2
+    - filter: x => x.Email.Value.ToLower() == "{it's}"
+    - filter: x => x.Email.Value.ToLower() != "{it's}"
+    - filter: x => x.Email.Value.ToUpper() == "{it's}"
+    - filter: x => x.Email.Value.ToUpper() != "{it's}"
+    - filter: x => x.Email.Value.Trim() == "{it's}"
+    - filter: x => x.Email.Value.Trim() != "{it's}"
+    - filter: x => x.Email.Value.TrimStart() == "{it's}"
+    - filter: x => x.Email.Value.TrimStart() != "{it's}"
+    - filter: x => x.Email.Value.TrimEnd() == "{it's}"
+    - filter: x => x.Email.Value.TrimEnd() != "{it's}"
+    - filter: x => x.Email.Value.Replace("-", "") == "{it's}"
+    - filter: x => x.Email.Value.Replace("-", "") != "{it's}"
+    - filter: x => x.Email.Value.Substring(1) == "{it's}"
+    - filter: x => x.Email.Value.Substring(1) != "{it's}"
+    - filter: x => x.Email.Value.Substring(c) == "{it's}"  with int c = 1;
+    - filter: x => x.Email.Value.Substring(c) != "{it's}"  with int c = 1;
+    - filter: x => x.Email.Value.Substring(1, 3) == "{it's}"
+    - filter: x => x.Email.Value.Substring(1, 3) != "{it's}"
+    - filter: x => x.Email.Value.Substring(c, 3) == "{it's}"  with int c = 1;
+    - filter: x => x.Email.Value.Substring(c, 3) != "{it's}"  with int c = 1;
+    - filter: x => x.Email.Value.Length == 5
+    - filter: x => x.Email.Value.Length != 5
+    - filter: x => x.Email.Value.Length < 5
+    - filter: x => x.Email.Value.Length <= 5
+    - filter: x => x.Email.Value.Length > 5
+    - filter: x => x.Email.Value.Length >= 5
+    - filter: x => x.Email.Value + "x" == "{it's}"
+    - filter: x => x.Email.Value + "x" != "{it's}"
+    - filter: x => "x" + x.Email.Value == "{it's}"
+    - filter: x => "x" + x.Email.Value != "{it's}"
+    - filter: x => x.Email.Value + x.Str2 == "{it's}"
+    - filter: x => x.Email.Value + x.Str2 != "{it's}"
+    - filter: x => x.Email.Value + x.NStr2 == "{it's}"
+    - filter: x => x.Email.Value + x.NStr2 != "{it's}"
+    - filter: x => x.Email.Value + x.Int == "{it's}"
+    - filter: x => x.Email.Value + x.Int != "{it's}"
+    - filter: x => x.Email.Value + x.NInt == "{it's}"
+    - filter: x => x.Email.Value + x.NInt != "{it's}"
+    - filter: x => x.Email.Value + x.Chr == "{it's}"
+    - filter: x => x.Email.Value + x.Chr != "{it's}"
+    - filter: x => !(x.Email.Value == "{it's}")
+    - filter: x => !("{it's}" == x.Email.Value)
+    - filter: x => !(x.Email.Value == x.Str)
+    - filter: x => !(x.Email.Value == x.Str2)
+    - filter: x => !(x.Email.Value == x.NStr)
+    - filter: x => !(x.Email.Value == x.NStr2)
+    - filter: x => !(x.Email.Value != "{it's}")
+    - filter: x => !("{it's}" != x.Email.Value)
+    - filter: x => !(x.Email.Value != x.Str)
+    - filter: x => !(x.Email.Value != x.Str2)
+    - filter: x => !(x.Email.Value != x.NStr)
+    - filter: x => !(x.Email.Value != x.NStr2)
+    - filter: x => !(x.Email.Value.ToLower() == "{it's}")
+    - filter: x => !(x.Email.Value.ToLower() != "{it's}")
+    - filter: x => !(x.Email.Value.ToUpper() == "{it's}")
+    - filter: x => !(x.Email.Value.ToUpper() != "{it's}")
+    - filter: x => !(x.Email.Value.Trim() == "{it's}")
+    - filter: x => !(x.Email.Value.Trim() != "{it's}")
+    - filter: x => !(x.Email.Value.TrimStart() == "{it's}")
+    - filter: x => !(x.Email.Value.TrimStart() != "{it's}")
+    - filter: x => !(x.Email.Value.TrimEnd() == "{it's}")
+    - filter: x => !(x.Email.Value.TrimEnd() != "{it's}")
+    - filter: x => !(x.Email.Value.Replace("-", "") == "{it's}")
+    - filter: x => !(x.Email.Value.Replace("-", "") != "{it's}")
+    - filter: x => !(x.Email.Value.Substring(1) == "{it's}")
+    - filter: x => !(x.Email.Value.Substring(1) != "{it's}")
+    - filter: x => !(x.Email.Value.Substring(1, 3) == "{it's}")
+    - filter: x => !(x.Email.Value.Substring(1, 3) != "{it's}")
+    - filter: x => !(x.Email.Value.Length == 5)
+    - filter: x => !(x.Email.Value.Length != 5)
+    - filter: x => !(x.Email.Value.Length < 5)
+    - filter: x => !(x.Email.Value.Length <= 5)
+    - filter: x => !(x.Email.Value.Length > 5)
+    - filter: x => !(x.Email.Value.Length >= 5)
+    - filter: x => !(x.Email.Value + "x" == "{it's}")
+    - filter: x => !(x.Email.Value + "x" != "{it's}")
+    - filter: x => !("x" + x.Email.Value == "{it's}")
+    - filter: x => !("x" + x.Email.Value != "{it's}")
+    - filter: x => !(x.Email.Value + x.Str2 == "{it's}")
+    - filter: x => !(x.Email.Value + x.Str2 != "{it's}")
+    - filter: x => !(x.Email.Value + x.NStr2 == "{it's}")
+    - filter: x => !(x.Email.Value + x.NStr2 != "{it's}")
+    - filter: x => !(x.Email.Value + x.Int == "{it's}")
+    - filter: x => !(x.Email.Value + x.Int != "{it's}")
+    - filter: x => !(x.Email.Value + x.NInt == "{it's}")
+    - filter: x => !(x.Email.Value + x.NInt != "{it's}")
+    - filter: x => !(x.Email.Value + x.Chr == "{it's}")
+    - filter: x => !(x.Email.Value + x.Chr != "{it's}")
+
+unchecked: Date and time JSON members in an expression
+    A date or time member of a ToJson() document renders as text, not as EF Core's
+    CAST(… AS timestamp with time zone), because that cast is not IMMUTABLE and PostgreSQL refuses it in
+    an index (5.4.0). A non-unique index that starts with one is refused at migrations add.
+    - expression: x => x.Doc.Date
+
+unchecked: Date and time JSON members compared with a column in a filter
+    A date or time JSON member is text in an index or constraint (see the block above), and text
+    compared with a typed column fails at apply. The translator cannot see that a path is a JSON
+    member, so the differ refuses the comparison at migrations add (#119); a null test and a
+    comparison with a string literal still apply.
+    - filter: x => x.Doc.Date == x.Date
+    - filter: x => x.Doc.Date == x.NDate
+    - filter: x => x.Doc.Date != x.Date
+    - filter: x => x.Doc.Date != x.NDate
+    - filter: x => x.Doc.Date < x.Date
+    - filter: x => x.Doc.Date < x.NDate
+    - filter: x => x.Doc.Date <= x.Date
+    - filter: x => x.Doc.Date <= x.NDate
+    - filter: x => x.Doc.Date > x.Date
+    - filter: x => x.Doc.Date > x.NDate
+    - filter: x => x.Doc.Date >= x.Date
+    - filter: x => x.Doc.Date >= x.NDate
+    - filter: x => !(x.Doc.Date == x.Date)
+    - filter: x => !(x.Doc.Date == x.NDate)
+    - filter: x => !(x.Doc.Date != x.Date)
+    - filter: x => !(x.Doc.Date != x.NDate)
+    - filter: x => !(x.Doc.Date < x.Date)
+    - filter: x => !(x.Doc.Date < x.NDate)
+    - filter: x => !(x.Doc.Date <= x.Date)
+    - filter: x => !(x.Doc.Date <= x.NDate)
+    - filter: x => !(x.Doc.Date > x.Date)
+    - filter: x => !(x.Doc.Date > x.NDate)
+    - filter: x => !(x.Doc.Date >= x.Date)
+    - filter: x => !(x.Doc.Date >= x.NDate)

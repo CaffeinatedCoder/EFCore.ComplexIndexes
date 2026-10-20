@@ -278,6 +278,69 @@ public class NpgsqlLinqExpressionIndexTests
             });
     }
 
+    [TestMethod(DisplayName = "A Substring start known at the declaration is folded, as EF Core folds it")]
+    public void Substring_start_is_folded()
+    {
+        // A captured start rendered substring("Code", (1 + 1)); EF Core writes substring("Code", 2).
+        var start = 1;
+        Assert.AreEqual("substring({Code}, 2)", Translate(x => x.Code.Substring(start)));
+        Assert.AreEqual("substring({Code}, 2, 3)", Translate(x => x.Code.Substring(start, 3)));
+
+        // A start computed from the row stays an expression.
+        Assert.AreEqual("substring({Code}, (length({Last}) + 1))", Translate(x => x.Code.Substring(x.Last.Length)));
+    }
+
+    [TestMethod(DisplayName = "A nullable operand of a concatenation is coalesced to an empty string")]
+    public void Concatenation_coalesces_nullable_operands()
+    {
+        // C# concatenates null as "", PostgreSQL's || returns NULL: EF Core writes COALESCE(…, '').
+        Assert.AreEqual("({Code} || coalesce({Nickname}, ''))", Translate(x => x.Code + x.Nickname));
+        Assert.AreEqual("((coalesce({Nickname}, '') || ' ') || {Last})", Translate(x => x.Nickname + " " + x.Last));
+
+        string? none = null;
+        Assert.AreEqual("({Code} || '')", Translate(x => x.Code + none));
+
+        // Non-nullable operands and a coalesce with a non-null fallback stay as they were.
+        Assert.AreEqual("({Code} || {Last})", Translate(x => x.Code + x.Last));
+        Assert.AreEqual("(coalesce({Nickname}, {First}) || {Last})", Translate(x => (x.Nickname ?? x.First) + x.Last));
+    }
+
+    // The template is stored at the declaration, so a model declared before 5.5.0 keeps the old one
+    // in its snapshot and the next migrations add re-creates the index once; no rendering version.
+    private class ConcatBeforeContext(DbContextOptions<ConcatBeforeContext> options) : Context<ConcatBeforeContext>(options)
+    {
+        protected override void OnModelCreating(ModelBuilder modelBuilder) =>
+            modelBuilder.Entity<Person>(b =>
+            {
+                MapPerson(b);
+                ComplexIndexStorage.AddOrReplace(b, new CompositeIndexDefinition
+                {
+                    Parts     = [new IndexPartDefinition { Template = "({Code} || {Nickname})" }],
+                    IndexName = "ix_people_label",
+                });
+            });
+    }
+
+    private class ConcatAfterContext(DbContextOptions<ConcatAfterContext> options) : Context<ConcatAfterContext>(options)
+    {
+        protected override void OnModelCreating(ModelBuilder modelBuilder) =>
+            modelBuilder.Entity<Person>(b =>
+            {
+                MapPerson(b);
+                b.HasExpressionIndex(x => x.Code + x.Nickname, indexName: "ix_people_label");
+            });
+    }
+
+    [TestMethod(DisplayName = "An index over a nullable concatenation declared before 5.5.0 is re-created once")]
+    public void Nullable_concatenation_recreates_once()
+    {
+        var operations = GetDifferences(BuildRelationalModel<ConcatBeforeContext>(), BuildRelationalModel<ConcatAfterContext>());
+
+        Assert.AreEqual("ix_people_label", Assert.ContainsSingle(operations.OfType<DropIndexOperation>()).Name);
+        Assert.AreEqual("(\"code\" || coalesce(\"nickname\", ''))", SingleExpression(operations));
+        Assert.IsEmpty(GetDifferences(BuildRelationalModel<ConcatAfterContext>(), BuildRelationalModel<ConcatAfterContext>()));
+    }
+
     [TestMethod(DisplayName = "Unsupported constructs throw NotSupportedException at declaration time")]
     public void Unsupported_constructs_throw()
     {

@@ -22,7 +22,8 @@ namespace EFCore.ComplexIndexes.Tests;
 /// the server refuses or accepts. Three 5.5.0 defects lived exactly there: an <c>ALTER COLUMN</c>
 /// under a complex index failed with Msg 5074 (#84), a unique index over nullable columns admitted
 /// one row without a value and refused the second (#88), and a second clustered index or an index
-/// named like the table's key failed only at apply (#90). Each test runs in a database of its own.
+/// named like the table's key failed only at apply (#90). So did two index names that differ only
+/// in case (#116). Each test runs in a database of its own.
 /// Marked Integration and SqlServer: CI runs this class in its own job, and without Docker it goes
 /// inconclusive locally and fails on CI.
 /// </remarks>
@@ -507,6 +508,26 @@ public class SqlServerIntegrationTests
     {
         var exception = Assert.ThrowsExactly<InvalidOperationException>(() => Migrate(null, Model<NamedLikeKeyContext>()));
         StringAssert.Contains(exception.Message, "same name as the table's primary key 'PK_customers'");
+    }
+
+    // ── Index names that differ only in case (#116) ──
+
+    private class NamesDifferingInCaseContext(DbContextOptions<NamesDifferingInCaseContext> options) : CustomerContext(options)
+    {
+        protected override void Declare(EntityTypeBuilder<Customer> b)
+        {
+            b.HasComplexIndex(x => x.Contact.Phone, indexName: "ix_case");
+            b.HasComplexIndex(x => x.Contact.Email, indexName: "IX_CASE");
+        }
+    }
+
+    [TestMethod(DisplayName = "Two index names that differ only in case are refused at migrations add, not at apply")]
+    public void Index_names_differing_in_case_are_refused_before_apply()
+    {
+        // Compared ordinally, the pair scaffolded and the default collation refused the second
+        // CREATE INDEX, which this assertion reports as the SqlException it got instead.
+        var exception = Assert.ThrowsExactly<InvalidOperationException>(() => Migrate(null, Model<NamesDifferingInCaseContext>()));
+        StringAssert.Contains(exception.Message, "which differ only in case");
     }
 
     // ── The runtime seam: EnsureCreated with the satellite's registration ──

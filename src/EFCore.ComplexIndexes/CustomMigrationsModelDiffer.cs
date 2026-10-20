@@ -463,6 +463,21 @@ public class CustomMigrationsModelDiffer(
     protected virtual IndexNameScope IndexNameScope => IndexNameScope.Database;
 
     /// <summary>
+    /// How the provider compares index names, which decides whether two names that differ only in
+    /// case collide. The core default is <see cref="StringComparer.OrdinalIgnoreCase"/>: SQLite
+    /// compares identifiers without regard to case even when they are quoted, and SQL Server does
+    /// under its default collation. The PostgreSQL satellite compares ordinally, because EF Core
+    /// quotes every identifier and PostgreSQL keeps the case of a quoted one.
+    /// </summary>
+    /// <remarks>
+    /// Ignoring case is the default for the reason the widest <see cref="IndexNameScope"/> is: where
+    /// the database tells the two names apart — a case-sensitive SQL Server collation, a letter
+    /// outside ASCII on SQLite, which folds ASCII only — it costs a rename, where comparing
+    /// ordinally approves a migration that fails when applied.
+    /// </remarks>
+    protected virtual StringComparer IndexNameComparer => StringComparer.OrdinalIgnoreCase;
+
+    /// <summary>
     /// Decides whether a property-level annotation is carried onto the emitted
     /// <see cref="CreateIndexOperation"/> as a provider index option. The core package forwards
     /// nothing; provider satellites override this to whitelist exactly the index-option keys their
@@ -586,7 +601,7 @@ public class CustomMigrationsModelDiffer(
                 if (end < 0)
                     throw new InvalidOperationException($"Malformed index expression template '{template}' on entity '{entityType.Name}'.");
 
-                var (placeholderSql, placeholderToken) =
+                var (placeholderSql, placeholderToken, _) =
                     ResolvePlaceholder(entityType, template[(i + 1)..end], storeObject, "an index expression", renderingVersion: null);
                 sql.Append(placeholderSql);
                 token.Append(placeholderToken);
@@ -649,8 +664,10 @@ public class CustomMigrationsModelDiffer(
         if (filter is null || !filter.Contains('{'))
             return filter;
 
-        var sql       = new StringBuilder(filter.Length);
-        var inLiteral = false;
+        var sql        = new StringBuilder(filter.Length);
+        var inLiteral  = false;
+        var fallbacks  = new List<(int Start, int End, string Path, string StoreType)>();
+        var typedSpans = new List<(int Start, int End)>();
 
         for (var i = 0; i < filter.Length; i++)
         {
@@ -665,7 +682,15 @@ public class CustomMigrationsModelDiffer(
                 var end = filter.IndexOf('}', i + 1);
                 if (end > i + 1 && IsPropertyPath(filter.AsSpan(i + 1, end - i - 1)))
                 {
-                    sql.Append(ResolvePlaceholder(entityType, filter[(i + 1)..end], storeObject, "a filter", renderingVersion).Sql);
+                    var (placeholderSql, _, fallback) = ResolvePlaceholder(entityType, filter[(i + 1)..end], storeObject, "a filter", renderingVersion);
+                    var start = sql.Length;
+                    sql.Append(placeholderSql);
+
+                    if (fallback is { } member)
+                        fallbacks.Add((start, sql.Length, member.Path, member.StoreType));
+                    else
+                        typedSpans.Add((start, sql.Length));
+
                     i = end;
                     continue;
                 }
@@ -674,8 +699,48 @@ public class CustomMigrationsModelDiffer(
             sql.Append(ch);
         }
 
-        return sql.ToString();
+        var resolved = sql.ToString();
+        ThrowIfFallbackComparedWithColumn(entityType, resolved, fallbacks, typedSpans);
+        return resolved;
     }
+
+    // A JSON member whose type has no IMMUTABLE cast from text (a date or time on PostgreSQL)
+    // resolves to its text. Compared with a column, which has its own type, the predicate is
+    // refused at apply ("operator does not exist: text < timestamp with time zone"), and the cast
+    // EF Core's queries use cannot appear in an index or constraint. The comparison is refused here,
+    // at migrations add. A null test and a comparison with a string literal still apply, as before.
+    private static void ThrowIfFallbackComparedWithColumn(
+        IEntityType                                                      entityType,
+        string                                                           sql,
+        IReadOnlyList<(int Start, int End, string Path, string StoreType)> fallbacks,
+        IReadOnlyList<(int Start, int End)>                              typedSpans)
+    {
+        foreach (var fallback in fallbacks)
+        {
+            var after  = FilterComparisonAfter.Match(sql, fallback.End);
+            var before = FilterComparisonBefore.Match(sql[..fallback.Start]);
+
+            var withColumn = after.Success && (sql[(fallback.End + after.Length)..].StartsWith('"') || StartsTypedSpan(fallback.End + after.Length))
+                          || before.Success && (sql[..before.Index].EndsWith('"') || EndsTypedSpan(before.Index));
+
+            if (withColumn)
+                throw new InvalidOperationException(
+                    $"A filter on entity '{entityType.DisplayName()}' compares the JSON member '{fallback.Path}' with a column. "
+                  + $"The member is {fallback.StoreType} stored as text in its document, and PostgreSQL can neither compare that text "
+                  + "with a typed column nor index the cast EF Core's queries use (it is not IMMUTABLE), so the migration would fail "
+                  + "at apply. Test the member with IS NULL or compare it with a string literal in the string filter overload, or "
+                  + "map it to a regular column.");
+        }
+
+        bool StartsTypedSpan(int index) => typedSpans.Any(span => span.Start == index);
+        bool EndsTypedSpan(int index) => typedSpans.Any(span => span.End == index);
+    }
+
+    private static readonly System.Text.RegularExpressions.Regex FilterComparisonAfter =
+        new(@"\G\)*\s*(?:=|<>|!=|<=|>=|<|>)\s*\(*", System.Text.RegularExpressions.RegexOptions.Compiled);
+
+    private static readonly System.Text.RegularExpressions.Regex FilterComparisonBefore =
+        new(@"\)*\s*(?:=|<>|!=|<=|>=|<|>)\s*\(*$", System.Text.RegularExpressions.RegexOptions.Compiled);
 
     // Dotted identifier segments: letters, digits and underscores, each starting with a letter or
     // an underscore. Anything else between braces is SQL text, not a placeholder.
@@ -702,7 +767,7 @@ public class CustomMigrationsModelDiffer(
     }
 
     // Returns the SQL for the placeholder and the token it contributes to a default index name.
-    private (string Sql, string Token) ResolvePlaceholder(
+    private (string Sql, string Token, (string Path, string StoreType)? TextFallback) ResolvePlaceholder(
         IEntityType           entityType,
         string                path,
         StoreObjectIdentifier storeObject,
@@ -712,13 +777,14 @@ public class CustomMigrationsModelDiffer(
     {
         var column = ResolveColumnName(entityType, path, storeObject);
         if (column is not null)
-            return (QuoteIdentifier(column), column);
+            return (QuoteIdentifier(column), column, null);
 
         var part     = new IndexPartDefinition { PropertyPath = path, RenderingVersion = renderingVersion };
         var unmapped = ResolveUnmappedPart(entityType, part, storeObject);
         if (unmapped is not null)
             return (unmapped.IsExpression ? $"({unmapped.Value})" : QuoteIdentifier(unmapped.Value),
-                    unmapped.NameToken ?? unmapped.Value);
+                    unmapped.NameToken ?? unmapped.Value,
+                    unmapped.TextFallback);
 
         throw new InvalidOperationException(
             $"Could not resolve property path '{path}' referenced by {usage} on entity '{entityType.Name}'.");
@@ -750,7 +816,7 @@ public class CustomMigrationsModelDiffer(
     private void ValidateUniqueIndexNames(HashSet<IndexDescriptor> descriptors)
     {
         var collision = descriptors
-                       .GroupBy(d => NameKey(d.TableName, d.Schema, d.IndexName))
+                       .GroupBy(d => NameKey(d.TableName, d.Schema, d.IndexName), NameKeys)
                        .FirstOrDefault(g => g.Count() > 1);
 
         if (collision is null)
@@ -758,14 +824,18 @@ public class CustomMigrationsModelDiffer(
 
         var members  = collision.ToList();
         var oneTable = members.All(d => d.TableName == members[0].TableName);
+        var names    = members.Select(d => d.IndexName).Distinct(StringComparer.Ordinal).ToList();
+        var named    = names.Count == 1
+                           ? $"the name '{names[0]}'"
+                           : $"the names {string.Join(" and ", names.Select(n => $"'{n}'"))}, which differ only in case";
 
         throw new InvalidOperationException(
             (oneTable
-                 ? $"Two complex indexes on table '{members[0].TableName}' both resolve to the name '{members[0].IndexName}': "
+                 ? $"Two complex indexes on table '{members[0].TableName}' both resolve to {named}: "
                  + string.Join(" and ", members.Select(Describe))
-                 : $"Two complex indexes both resolve to the name '{members[0].IndexName}': "
+                 : $"Two complex indexes both resolve to {named}: "
                  + string.Join(" and ", members.Select(d => $"{Describe(d)} on table '{d.TableName}'")))
-          + $". {UniquenessRule(oneTable)} — give each declaration an explicit, distinct name.");
+          + $". {UniquenessRule(oneTable, ignoringCase: names.Count > 1)} — give each declaration an explicit, distinct name.");
 
         static string Describe(IndexDescriptor descriptor)
         {
@@ -832,7 +902,7 @@ public class CustomMigrationsModelDiffer(
         if (target is null || descriptors.Count == 0)
             return;
 
-        var native = new Dictionary<(string? Schema, string? Table, string Name), (string Table, string Properties)>();
+        var native = new Dictionary<(string? Schema, string? Table, string Name), (string Table, string Name, string Properties)>(NameKeys);
 
         foreach (var entityType in target.Model.GetEntityTypes())
         {
@@ -849,7 +919,7 @@ public class CustomMigrationsModelDiffer(
                 var name = index.GetDatabaseName(storeObject);
                 if (name is null) continue;
 
-                native.TryAdd(NameKey(tableName, schema, name), (tableName, string.Join(", ", index.Properties.Select(p => p.Name))));
+                native.TryAdd(NameKey(tableName, schema, name), (tableName, name, string.Join(", ", index.Properties.Select(p => p.Name))));
             }
         }
 
@@ -858,18 +928,20 @@ public class CustomMigrationsModelDiffer(
             if (!native.TryGetValue(NameKey(descriptor.TableName, descriptor.Schema, descriptor.IndexName), out var other))
                 continue;
 
-            var where = other.Table == descriptor.TableName ? "" : $" on table '{other.Table}'";
+            var where     = other.Table == descriptor.TableName ? "" : $" on table '{other.Table}'";
+            var caseOnly  = !string.Equals(other.Name, descriptor.IndexName, StringComparison.Ordinal);
+            var otherName = caseOnly ? $" '{other.Name}'" : "";
 
             throw new InvalidOperationException(
                 $"The complex index '{descriptor.IndexName}' on table '{descriptor.TableName}' has the same name as "
-              + $"the native index on ({other.Properties}) declared with HasIndex{where}. {UniquenessRule(where == "")} — "
+              + $"the native index{otherName} on ({other.Properties}) declared with HasIndex{where}. {UniquenessRule(where == "", caseOnly)} — "
               + "the migration would scaffold two CREATE INDEX statements under one name and fail when applied. "
               + "Give one of them a different name.");
         }
     }
 
-    // Two index names clash exactly when their keys are equal: the parts outside the provider's
-    // scope are blanked out.
+    // Two index names clash exactly when their keys are equal under NameKeys: the parts outside the
+    // provider's scope are blanked out, and the name is compared as the provider compares it.
     private (string? Schema, string? Table, string Name) NameKey(string table, string? schema, string name)
         => IndexNameScope switch
            {
@@ -878,12 +950,25 @@ public class CustomMigrationsModelDiffer(
                _                     => (null, null, name)
            };
 
-    private string UniquenessRule(bool sameTable) => (sameTable, IndexNameScope) switch
+    private NameKeyComparer NameKeys => new(IndexNameComparer);
+
+    private string UniquenessRule(bool sameTable, bool ignoringCase)
+        => (sameTable, IndexNameScope) switch
+           {
+               (true, _)                  => "Index names must be unique per table",
+               (_, IndexNameScope.Schema) => "Index names must be unique per schema here, not just per table",
+               _                          => "Index names must be unique across the database here, not just per table or schema"
+           }
+         + (ignoringCase ? ", whatever their case" : "");
+
+    private sealed class NameKeyComparer(StringComparer names) : IEqualityComparer<(string? Schema, string? Table, string Name)>
     {
-        (true, _)                     => "Index names must be unique per table",
-        (_, IndexNameScope.Schema)    => "Index names must be unique per schema here, not just per table",
-        _                             => "Index names must be unique across the database here, not just per table or schema"
-    };
+        public bool Equals((string? Schema, string? Table, string Name) x, (string? Schema, string? Table, string Name) y)
+            => x.Schema == y.Schema && x.Table == y.Table && names.Equals(x.Name, y.Name);
+
+        public int GetHashCode((string? Schema, string? Table, string Name) key)
+            => HashCode.Combine(key.Schema, key.Table, names.GetHashCode(key.Name));
+    }
 
     /// <summary>
     /// Fails when a non-unique index leads with a JSON member that had to fall back to text.

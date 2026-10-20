@@ -97,6 +97,18 @@ version, not the runtime's. An application on EF Core 11 now fails at startup or
 prerelease sorts below 11.0.0 and falls inside the `[10.0.0, 11.0.0)` ranges, so this message may
 be the first sign it was running on a version this package never supported.
 
+### Rename complex index names that differ only in case
+
+Complex index names that differ only in case, such as `ix_code` and `IX_CODE`, are one name at
+`migrations add` on SQLite and SQL Server, from each other and from a native `HasIndex` name. Both
+databases compare index names without regard to case, so such a model used to fail when the
+migration was applied. PostgreSQL keeps the case of the quoted names EF Core writes, and nothing
+changes there.
+
+On a SQL Server database with a case-sensitive collation, and on a provider without a satellite
+whose index names keep their case, the check asks for a rename the database would not have needed.
+Rename one of the two indexes. A snapshot that holds such a pair stays diffable.
+
 ## Changed answers in 5.5.0
 
 Most of these make the first `migrations add` after the upgrade drop and re-create some indexes or
@@ -132,6 +144,20 @@ The first `migrations add` re-creates each typed expression index over these met
 trimmed index may then refuse rows that differ only in tabs or line breaks at the ends. Those are
 the duplicates it was declared to refuse: clean them up before you apply the migration.
 
+### Concatenation with a nullable operand
+
+On PostgreSQL, a typed expression index or typed filter that concatenates an operand that can be
+null wraps it in a `COALESCE` with an empty string, as EF Core's queries do. C# concatenates null as an empty
+string, while PostgreSQL's `||` returns NULL: `x => x.Code + x.Suffix` on a `string? Suffix`
+scaffolded `("Code" || "Suffix")`, which is NULL for every row without a suffix. The index served
+no query over the lambda, and a unique one checked none of those rows. It is now
+`("Code" || coalesce("Suffix", ''))`.
+
+The first `migrations add` re-creates each typed expression index, and each index and exclusion
+constraint with a typed filter, whose lambda concatenates an operand that can be null. A unique
+index may then refuse rows it let in, such as two rows with code `A` and no suffix. Those are the
+duplicates it was declared to refuse: clean them up before you apply the migration.
+
 ### Typed filters keep C#'s answer for null operands
 
 On PostgreSQL, a typed filter whose comparison has an operand that can be null keeps C#'s answer
@@ -141,7 +167,9 @@ null `Kind`, so those rows fell out of the partial index and a unique index did 
 them. It is now `("Kind" <> 'federated' OR "Kind" IS NULL)`.
 
 A negation over such a comparison is pushed down to it: `!(x.Maybe > 5)` is
-`("Maybe" <= 5 OR "Maybe" IS NULL)`. A captured variable holding null compares with `IS NULL` or
+`CASE WHEN "Maybe" > 5 THEN FALSE ELSE TRUE END`, true where `Maybe` is null, as in EF Core's query.
+A computed operand is checked through its columns: `x.Name.ToLower() != "a"` adds
+`OR "Name" IS NULL`. A captured variable holding null compares with `IS NULL` or
 `IS NOT NULL` instead of `= NULL`, which matched no row. Operands that can't be null, a
 non-nullable value type or a reference type annotated non-nullable, translate as before.
 
