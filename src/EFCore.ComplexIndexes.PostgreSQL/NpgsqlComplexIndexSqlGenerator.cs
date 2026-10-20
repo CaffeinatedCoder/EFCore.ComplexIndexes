@@ -260,7 +260,10 @@ public class NpgsqlComplexIndexSqlGenerator(
         }
     }
 
-    // Mirrors Npgsql's own formatting: booleans bare, strings quoted, numbers invariant.
+    // Booleans bare and strings quoted, as Npgsql's own generator renders them. Numbers are
+    // formatted invariantly, which Npgsql's generator (10.0.x) does not: it formats with the current
+    // culture, so a fractional value on a column-only index, which it renders, comes out as 0,25
+    // under de-DE and fails at apply with a syntax error.
     private static string FormatStorageParameter(object? value) => value switch
     {
         bool b         => b ? "true" : "false",

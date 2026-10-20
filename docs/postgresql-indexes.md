@@ -43,6 +43,11 @@ builder.HasComplexCompositeIndex(x => new { x.Name, x.Email.Value }, idx => idx
 // CREATE INDEX ... ON people ("Name" COLLATE "C", email) WITH (fillfactor=70, deduplicate_items=false);
 ```
 
+A fractional value is the exception to passing the parameter's own type. Npgsql's generator, which
+renders a column-only index, formats numbers with the current culture, so `0.25` comes out as
+`0,25` under de-DE and the migration fails at apply with a syntax error. Pass it as a string,
+`HasStorageParameter("x", "0.25")`, which renders `x='0.25'`, and PostgreSQL reads it as the number.
+
 The index collation is independent of the column's own `UseCollation` on the property, which is never
 copied onto the index.
 
