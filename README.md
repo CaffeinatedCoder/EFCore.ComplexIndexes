@@ -135,9 +135,10 @@ own migration code, which knows nothing about your complex indexes. `EnsureCreat
 the tables and none of the indexes, with no error. `Migrate()` doesn't warn about a complex index that
 no migration has created yet.
 
-With the PostgreSQL or SQL Server package installed, call only that package's method. The core
-package's `UseComplexIndexes()` would give `EnsureCreated()` a schema without that package's
-features, such as exclusion constraints. If you build your own internal service provider, each call
+With the PostgreSQL or SQL Server package installed, call only that package's method. If you call
+the core package's `UseComplexIndexes()` instead, `EnsureCreated()`, `GenerateCreateScript()` and
+`Migrate()` fail on any of that package's features in your model, such as exclusion constraints or
+index options, and the error names the method to call. If you build your own internal service provider, each call
 has a counterpart: `AddComplexIndexes()`, `AddNpgsqlComplexIndexes()` and
 `AddSqlServerComplexIndexes()`.
 

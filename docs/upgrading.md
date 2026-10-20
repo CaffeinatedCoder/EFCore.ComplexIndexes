@@ -330,7 +330,7 @@ This affects an application that calls `UseComplexIndexes()` with `UseNpgsql(…
 declarations, so `EnsureCreated()` created the tables without the constraints and the unique index
 without its filter, and applied cleanly. Such an application now fails in `EnsureCreated()`,
 `GenerateCreateScript()` and `Migrate()`, whose pending-model-changes check runs the same differ.
-Replace `UseComplexIndexes()` with the satellite's method. Nothing is re-created, and migrations
+Replace `UseComplexIndexes()` with the provider package's method. Nothing is re-created, and migrations
 that `dotnet ef` scaffolded with the satellite's `.targets` already hold the right DDL.
 
 A database `EnsureCreated()` built under `UseComplexIndexes()` lacks what was dropped. On
