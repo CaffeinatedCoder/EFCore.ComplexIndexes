@@ -60,7 +60,7 @@ public class DocumentationApiTests
         // Dependency injection
         "ServiceCollection", "BuildServiceProvider", "AddDbContext",
         // BCL
-        "ToLower", "Trim", "Where", "SelectMany", "ToList",
+        "ToLower", "Trim", "Substring", "Where", "SelectMany", "ToList",
         // SQL, in examples of the DDL the differ renders
         "CAST"
     };

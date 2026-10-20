@@ -1,78 +1,77 @@
 # EFCore.ComplexIndexes.SqlServer — changelog
 
-Changes to the SQL Server satellite, newest first. The
+The changes that affect the SQL Server satellite, newest first. The
 [root changelog](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/CHANGELOG.md)
-covers all three packages.
+covers all three packages, which share one version number and release together.
 
-## 5.5.0
+## [5.5.0] — 2026-10-20
+
+The last 5.x minor with a change of its own: the line refuses EF Core 11, whose successor is `CodoMetis.EFCore.SchemaKit.SqlServer`.
 
 ### Changed answers
 
-- [#88](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/issues/88): on SQL Server, a unique complex index over nullable columns gets the `WHERE [c] IS NOT NULL` filter EF Core's convention gives its own unique indexes. SQL Server treats NULLs as equal in a unique index, so `HasComplexIndex(x => x.Registration!.Vin, isUnique: true)` on an optional complex property admitted one row without a registration and refused the second with a duplicate key. The filter covers the nullable key columns only, and is not added to a clustered index or one declared with a filter. **Upgrading:** the first `migrations add` drops and re-creates each such index with the filter. On every provider the model's `CustomIndex:RenderingVersion` becomes 3, so that migration also rewrites the snapshot; no other index changes.
+- Indexes: a unique complex index over nullable columns gets EF Core's `IS NOT NULL` filter, so rows without a value no longer collide. It admitted one such row and refused the second ([#88](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/issues/88), [Upgrading](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/docs/upgrading.md#unique-indexes-over-nullable-columns-on-sql-server)).
+
+### Breaking
+
+- Registration: `UseSqlServerComplexIndexes()`, `AddSqlServerComplexIndexes()` and the design-time registration `dotnet ef` runs throw `InvalidOperationException` on an EF Core major other than 10, naming `CodoMetis.EFCore.SchemaKit` for EF Core 11. EF Core 10 on .NET 11 keeps working ([Upgrading](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/docs/upgrading.md#ef-core-11-is-refused-at-registration)).
+
+### Fixed
+
+- Migrations: changing the type, length or nullability of a column a complex index reads applies, where it failed with Msg 5074. The index is dropped before the `ALTER COLUMN` and created after it ([SQL Server](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/docs/sqlserver.md)).
+
+## [5.4.1] — 2026-09-22
 
 ### Changed
 
-- **Changed:** `UseSqlServerComplexIndexes()`, `AddSqlServerComplexIndexes()` and
-  the design-time registration throw `InvalidOperationException` when the EF Core
-  they run on is not version 10, naming `CodoMetis.EFCore.SchemaKit` as the package for EF Core 11.
-  The `[10.0.0, 11.0.0)` dependency ranges did not keep EF Core 11 out: an EF Core 11 prerelease
-  sorts below 11.0.0 and falls inside them, and a direct reference to a release overrides them with
-  only warning NU1608. The check reads EF Core's version, not the runtime's, so
-  EF Core 10 on .NET 11 keeps working.
-- **Fixed:** changing the type, length or nullability of a column a complex index reads no longer
-  fails at apply with Msg 5074: the index is dropped before the `ALTER COLUMN` and created after it.
+- Indexes: the differ keeps SQL Server's index names per table, now that the core checks them across the whole database by default. Two tables may still carry indexes of the same name, complex or native.
 
-## 5.4.1
+## [5.2.0] — 2026-09-05
 
-- **Changed:** the differ declares SQL Server's index-name scope, per table, now that the core
-  checks names across the whole database by default. Two tables may still carry indexes of the same
-  name, complex or native; a name reused on one table is rejected as before.
+### Breaking
 
-## 5.2.0
+- Indexes: an index name longer than 128 characters is refused at `migrations add`, where the migration failed at apply. Give the declaration a name; a name-only change renames in place ([Upgrading](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/docs/upgrading.md#upgrading-to-520)).
 
-- **New:** filters resolve `{Property.Path}` placeholders to the mapped column, bracket-quoted, at
-  `migrations add` — `filter: "{DeletedAt} IS NULL"` becomes `[deleted_at] IS NULL` in the migration.
-- **Changed:** an index name longer than 128 characters is rejected at `migrations add` instead of
-  failing when the migration is applied.
+### Added
 
-## 5.1.0
+- **`{Property.Path}` placeholders in filters**, resolved to the mapped column in brackets at `migrations add`: `filter: "{DeletedAt} IS NULL"` becomes `[deleted_at] IS NULL` ([Filters](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/README.md#single-column-index-on-a-complex-property)).
 
-- **New:** `UseSqlServerComplexIndexes()` / `AddSqlServerComplexIndexes()` — optional runtime
-  registration of the differ, so `EnsureCreated()` and `GenerateCreateScript()` include the complex
-  indexes and `Migrate()`'s pending-model-changes check sees one that was never scaffolded. Migrations
-  still need no wiring.
-- **Fixed:** a PostgreSQL option (`UseGin`, `HasOperators`, …) on a *property-level* complex index is
-  rejected at `migrations add` like an entity-level one, instead of being dropped by the forwarding
-  whitelist — the index scaffolded as a plain B-tree without a word.
+## [5.1.0] — 2026-09-05
 
-## 5.0.3
+### Added
 
-- **Changed:** the `Microsoft.EntityFrameworkCore.SqlServer` dependency is now `[10.0.0, 11.0.0)`.
-  This differ extends EF internals that carry no cross-major compatibility promise. Nothing changes
-  if you are on EF Core 10: NuGet resolves the lowest version in a range.
-- **New:** the public API is fully documented.
+- **`UseSqlServerComplexIndexes()` and `AddSqlServerComplexIndexes()`**, which register the differ at runtime, so `EnsureCreated()` and `GenerateCreateScript()` include complex indexes. Migrations still need no wiring ([Runtime wiring](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/README.md#ensurecreated-generatecreatescript-and-the-pending-changes-check)).
 
-## 5.0.2
+### Fixed
 
-- **Fixed:** clustered-index combinations SQL Server rejects are caught at `migrations add`
-  instead of at apply time — clustered + `INCLUDE`, clustered + filter, and a second clustered
-  index on a table, which by default is any clustered complex index, since the primary key
-  holds the clustered slot unless declared otherwise.
-- **New:** `UseDataCompression(DataCompressionType)`. The annotation was already forwarded but had
-  no way to set it.
-- **Fixed:** the data-compression value survives the model-snapshot round trip. Stored as JSON the
-  enum flattened to a number, which SQL Server's generator reads back as null through
-  `DataCompressionType?`, dropping the option from the generated DDL.
-- **Fixed:** the design-time differ is scoped to the SQL Server provider. Previously, in a solution
-  that also referenced the PostgreSQL satellite, NuGet's restore order decided which differ ran — and
-  the wrong one silently dropped every `SqlServer:*` index option.
-- **Fixed:** validation no longer inspects index operations this package did not create, so a plain
-  native `HasIndex` carrying provider options is left alone.
-- **Fixed:** duplicate index names are rejected at the declaration or during `migrations add`
-  instead of producing a migration that fails when applied.
+- Indexes: a PostgreSQL option such as `UseGin()` on a property-level complex index is refused at `migrations add`, where it was dropped and the index scaffolded as a plain B-tree.
 
-## 5.0.0
+## [5.0.3] — 2026-08-15
 
-- **New:** the package — clustered, covering (`INCLUDE`), online-built, fill-factor, and
-  sort-in-tempdb options on complex-property indexes, plus clear errors for expression parts and
-  `NULLS FIRST`/`LAST`.
+### Added
+
+- **XML documentation for the whole public API.**
+
+### Changed
+
+- Packaging: the `Microsoft.EntityFrameworkCore.SqlServer` dependency has an upper bound, `[10.0.0, 11.0.0)`. Restore still picks 10.0.0.
+
+## [5.0.2] — 2026-08-15
+
+### Added
+
+- **`UseDataCompression(DataCompressionType)`**. The option was forwarded but nothing could set it ([Index options](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/docs/sqlserver.md#index-options)).
+
+### Fixed
+
+- Registration: the design-time differ is scoped to the SQL Server provider. Restore order decided which differ ran, and the wrong one dropped every `SqlServer:` index option.
+- Indexes: the clustered combinations SQL Server refuses fail at `migrations add`: with `INCLUDE`, with a filter, a second one on a table, and one where the primary key holds the slot ([Deliberate rejections](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/docs/sqlserver.md#deliberate-rejections)).
+- Indexes: the data compression option survives the model snapshot, which dropped it from the generated DDL.
+- Indexes: validation leaves index operations this package did not create alone, so a native `HasIndex` with provider options no longer fails `migrations add`.
+- Indexes: a reused index name is refused at the declaration or at `migrations add`, where the migration failed at apply.
+
+## [5.0.0] — 2026-08-10
+
+### Added
+
+- **The package**: clustered, covering (`INCLUDE`), online, fill-factor and sort-in-tempdb options on complex indexes, and clear errors for expression parts and `NULLS FIRST` or `NULLS LAST` ([SQL Server](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/docs/sqlserver.md)).

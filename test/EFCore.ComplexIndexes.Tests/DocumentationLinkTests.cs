@@ -18,7 +18,8 @@ namespace EFCore.ComplexIndexes.Tests;
 [TestClass]
 public class DocumentationLinkTests
 {
-    // [text](target) — inline links only. Reference-style definitions are not used in this repository.
+    // [text](target) — inline links only. The one reference-style use is the root changelog's
+    // version definitions, which ChangelogConsistencyTests checks.
     private static readonly Regex MarkdownLink = new(@"\[[^\]]*\]\(([^)\s]+)(?:\s+""[^""]*"")?\)", RegexOptions.Compiled);
 
     private static readonly Regex Heading = new(@"^(#{1,6})\s+(.*?)\s*#*$", RegexOptions.Multiline | RegexOptions.Compiled);
@@ -103,6 +104,38 @@ public class DocumentationLinkTests
     }
 
     /// <summary>
+    /// The changelogs and the packed READMEs link into this repository with absolute URLs, which the
+    /// two tests above skip. Those are the links a consumer follows from a release page or from
+    /// nuget.org, so a renamed page or heading breaks them where nothing in the repository shows it.
+    /// </summary>
+    [TestMethod(DisplayName = "Absolute links into this repository point at files and headings that exist")]
+    public void Absolute_links_into_this_repository_resolve()
+    {
+        var broken = new List<string>();
+
+        foreach (var file in AuthoredMarkdown())
+        {
+            foreach (var target in AllLinkTargets(file).Where(target => target.StartsWith(BlobPrefix, StringComparison.Ordinal)))
+            {
+                var parts = target[BlobPrefix.Length..].Split('#', 2);
+                var page  = Path.GetFullPath(Path.Combine(RepositoryLayout.Root, Uri.UnescapeDataString(parts[0])));
+
+                if (!File.Exists(page) && !Directory.Exists(page))
+                    broken.Add($"{Relative(file)} → {target} (no such file)");
+                else if (parts.Length == 2 && page.EndsWith(".md", StringComparison.OrdinalIgnoreCase) && !Anchors(page).Contains(parts[1]))
+                    broken.Add($"{Relative(file)} → {target} (no such heading)");
+            }
+        }
+
+        Assert.IsEmpty(
+            broken,
+            "Absolute links into this repository point nowhere:" + Environment.NewLine
+          + string.Join(Environment.NewLine, broken));
+    }
+
+    private const string BlobPrefix = "https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/";
+
+    /// <summary>
     /// The packed READMEs are rendered by nuget.org, which has no base to resolve a relative path
     /// against. Nothing about packing or restoring notices, so the link is dead only where it
     /// matters most.
@@ -138,7 +171,7 @@ public class DocumentationLinkTests
     /// which this repository has no need for and this deliberately does not model — a duplicate
     /// heading would show up here as an unresolvable anchor rather than silently passing.
     /// </summary>
-    private static HashSet<string> Anchors(string file)
+    internal static HashSet<string> Anchors(string file)
     {
         var anchors = new HashSet<string>(StringComparer.Ordinal);
 

@@ -14,8 +14,9 @@ the work, and close it from the PR (`Closes #n`).
   `constraints`, `migrations`, `release`); and `severity/*` on a bug. Add `silent` to a bug where
   the migration scaffolded and applied cleanly and the database differs from the model. From
   5.5.0 its fix ships as a minor on every line that has the code (never a patch), whose changelog
-  entry opens with `### Changed answers`, a row per changed answer linking the issue
-  (`pr-hygiene.sh` fails a `silent` PR into a minor without that row).
+  entry opens with `### Changed answers`, a row per changed answer linking the issue and its
+  `docs/upgrading.md` entry (`pr-hygiene.sh` fails a `silent` PR into a minor without that row).
+  Changelog lines follow CONTRIBUTING.md#changelog
   Add `breaking` to anything that changes an existing answer or signature, and `stacked` to a PR
   whose base is another open PR
 - **PRs** carry their issue's labels and milestone, open with `Closes #n`, and describe the

@@ -1,137 +1,209 @@
 # Changelog
 
-All releases of the three packages, newest first. Each package also carries its own changelog,
-covering only what changed for that package:
+All notable changes to EFCore.ComplexIndexes and its satellites.
+
+The three packages share one version number (the `Version` property in `Directory.Build.props`) and
+are released together, so a version appears here even when a package saw no change in it. Each
+package also has its own `CHANGELOG.md` with the entries that affect it:
 [core](src/EFCore.ComplexIndexes/CHANGELOG.md),
 [PostgreSQL](src/EFCore.ComplexIndexes.PostgreSQL/CHANGELOG.md),
-[SQL Server](src/EFCore.ComplexIndexes.SqlServer/CHANGELOG.md).
+[SQL Server](src/EFCore.ComplexIndexes.SqlServer/CHANGELOG.md). Versions follow
+[Semantic Versioning](https://semver.org/). Entries are newest first.
 
-## 5.5.0
+A version's section is the GitHub release's notes. Each line is one change: what happens now, what
+to do about it, and a link to the guide with the detail. What the first `migrations add` after an
+upgrade does is in [docs/upgrading.md](docs/upgrading.md), and
+[CONTRIBUTING.md](CONTRIBUTING.md#changelog) has the rules.
 
-The last minor of EFCore.ComplexIndexes with a change of its own. The package serves EF Core 10,
-and from EF Core 11 on its successor is a new package, `CodoMetis.EFCore.SchemaKit`. This release
-makes the line refuse EF Core 11 instead of running on it untested. After it the 5.x line takes
-fixes only, until EF Core 10 leaves support in November 2028.
+## [5.5.0] — 2026-10-20
+
+The last 5.x minor with a change of its own: the line refuses EF Core 11, whose successor is `CodoMetis.EFCore.SchemaKit`. Five fixes change what an existing model scaffolds: [Changed answers in 5.5.0](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/docs/upgrading.md#changed-answers-in-550).
 
 ### Changed answers
 
-- [#70](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/issues/70): a brace in a string literal of a typed filter is compared as written. `x => x.Code != "{draft}"` scaffolded `"Code" <> '{{draft}}'`, a different value, so rows whose code is `{draft}` were indexed (and constrained, if unique) although the filter excludes them; it is now `"Code" <> '{draft}'`. Typed expression indexes were not affected. **Upgrading:** the first `migrations add` re-creates each index and exclusion constraint whose typed filter has a brace in a string literal.
-- [#72](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/issues/72): typed expression indexes render `Substring`, `Trim`, `TrimStart` and `TrimEnd` as EF Core's queries render them, so a query over the same lambda can use the index. `x.Code.Substring(1, 3)` was `substr("Code", 2, 3)` and is now `substring("Code", 2, 3)`; `x.Code.Trim()` was `btrim("Code")`, which trims spaces only, and is now `btrim("Code", E' \t\n\r')`. PostgreSQL treats `substr` and `substring` as different functions, so those indexes applied and served no query, and a unique index on `Trim()` accepted values that differ only in a trailing tab or line break. **Upgrading:** the first `migrations add` re-creates each typed expression index over these methods. A unique trimmed index may then refuse rows that differ only in tabs or line breaks at the ends, which are the duplicates it was declared to refuse.
-- [#88](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/issues/88): on SQL Server, a unique complex index over nullable columns gets the `WHERE [c] IS NOT NULL` filter EF Core's convention gives its own unique indexes. SQL Server treats NULLs as equal in a unique index, so `HasComplexIndex(x => x.Registration!.Vin, isUnique: true)` on an optional complex property admitted one row without a registration and refused the second with a duplicate key. The filter covers the nullable key columns only, and is not added to a clustered index or one declared with a filter. **Upgrading:** the first `migrations add` drops and re-creates each such index with the filter. On every provider the model's `CustomIndex:RenderingVersion` becomes 3, so that migration also rewrites the snapshot; no other index changes.
-- [#86](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/issues/86): on SQLite, `dotnet ef migrations add` refuses a migration that rebuilds a table carrying a complex index, instead of scaffolding one that silently drops it. SQLite runs an `ALTER COLUMN`, a `DROP COLUMN`, a key, foreign key, unique or check constraint change, and a table rename (EF renames the primary key with it) by rebuilding the table, and EF Core re-creates only its own indexes, so every complex index on the table vanished, unique ones included, while the migration applied cleanly and the snapshot still listed them. No operation in the same migration can re-create them, because EF's SQLite generator runs every rebuild last; the error names the indexes and the way out, three migrations: remove the declarations on the table, make the change, declare them again. **Upgrading:** a SQLite database that went through such a migration before is missing those indexes while its snapshot lists them. Check with `SELECT name FROM sqlite_master WHERE type = 'index'` and re-create any missing one with `migrationBuilder.Sql(…)` in a new migration.
-- [#68](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/issues/68): a typed filter whose comparison has an operand that can be null now keeps C#'s answer for the rows where it is null, written the way EF Core writes the same lambda in a query. `x => x.Kind != "federated"` on a `string?` scaffolded `"Kind" <> 'federated'`, which is NULL for a null `Kind`, so those rows fell out of the partial index and a unique index did not enforce on them; it is now `("Kind" <> 'federated' OR "Kind" IS NULL)`. A negation over such a comparison is pushed down to it (`!(x.Maybe > 5)` is `("Maybe" <= 5 OR "Maybe" IS NULL)`), and a captured variable holding null compares with `IS [NOT] NULL` instead of `= NULL`, which matched no row. This covers every typed filter: `HasComplexIndex`, `HasComplexCompositeIndex` and `HasExpressionIndex` with a predicate, `HasFilter<T>`, `AddComplexIndexFilter<T>`, and exclusion-constraint filters. Operands that cannot be null (a non-nullable value type, or a reference type annotated non-nullable) translate as before. **Upgrading:** the first `migrations add` drops and re-creates each index and exclusion constraint whose typed filter changed. A unique index now covers rows it left out, so re-creating it fails if those rows hold duplicates; those are duplicates it should have refused.
+- Indexes: on SQL Server, a unique complex index over nullable columns gets EF Core's `IS NOT NULL` filter, so rows without a value no longer collide. It admitted one such row and refused the second ([#88](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/issues/88), [Upgrading](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/docs/upgrading.md#unique-indexes-over-nullable-columns-on-sql-server)).
+- Expression indexes: on PostgreSQL, typed expression indexes render `Substring`, `Trim`, `TrimStart` and `TrimEnd` as EF Core's queries do, so those queries can use them. `Trim()` also trims tabs and line breaks, where it trimmed spaces only ([#72](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/issues/72), [Upgrading](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/docs/upgrading.md#substring-and-trim-render-as-ef-cores-queries)).
+- Filters: on PostgreSQL, a typed filter keeps C#'s answer where an operand is null. `x => x.Kind != "federated"` on a `string?` covers the rows whose `Kind` is null, where it left them out, and a captured null compares with `IS NULL`, where it matched no row ([#68](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/issues/68), [Upgrading](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/docs/upgrading.md#typed-filters-keep-cs-answer-for-null-operands)).
+- Filters: on PostgreSQL, a brace in a string literal of a typed filter is compared as written. `x => x.Code != "{draft}"` renders `'{draft}'`, where it rendered `'{{draft}}'` and kept the rows the filter excludes ([#70](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/issues/70), [Upgrading](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/docs/upgrading.md#typed-filters-keep-braces-in-string-literals)).
+- Migrations: on SQLite, `migrations add` refuses a migration that rebuilds a table with a complex index, naming the indexes and the way out. It scaffolded a migration that applied cleanly and dropped every complex index on the table ([#86](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/issues/86), [Upgrading](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/docs/upgrading.md#sqlite-refuses-a-table-rebuild-that-would-drop-complex-indexes)).
+
+### Breaking
+
+- Registration: every registration entry point, the design-time one `dotnet ef` runs included, throws `InvalidOperationException` on an EF Core major other than 10, naming `CodoMetis.EFCore.SchemaKit` for EF Core 11. EF Core 10 on .NET 11 keeps working ([Upgrading](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/docs/upgrading.md#ef-core-11-is-refused-at-registration)).
+
+### Added
+
+- **`CustomMigrationsModelDiffer.RequiresIndexRecreation`**, a protected hook through which a provider's differ drops an unchanged complex index before a base operation that cannot run while it exists, and creates it after.
+- **`CustomMigrationsModelDiffer.ImplicitFilter`**, a protected hook through which a provider's differ gives an index declared without a filter the one its EF Core convention would give it.
+
+### Fixed
+
+- Migrations: on SQL Server, changing the type, length or nullability of a column a complex index reads applies, where it failed with Msg 5074. The index is dropped before the `ALTER COLUMN` and created after it ([SQL Server](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/docs/sqlserver.md)).
+- Docs: the temporal foreign key samples pass both type arguments to `HasTemporalForeignKey`, and compile ([Temporal foreign keys](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/docs/postgresql-constraints.md#temporal-foreign-keys-period--requires-postgresql-18)).
+
+## [5.4.1] — 2026-09-22
+
+### Breaking
+
+- Indexes: on a provider without a satellite that keeps index names per table, such as MySQL, a complex index name reused across tables fails at `migrations add`; rename one ([Upgrading](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/docs/upgrading.md#upgrading-to-541)).
+
+### Added
+
+- **`IndexNameScope`** and the protected `CustomMigrationsModelDiffer.IndexNameScope`, through which a provider's differ says where its index names must be unique: per table, per schema or, the default, per database.
+
+### Fixed
+
+- Indexes: on SQLite, a complex index name is checked across the whole database at `migrations add`, where a name reused on another table failed at apply. PostgreSQL checks per schema and SQL Server per table ([Index names](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/README.md#single-column-index-on-a-complex-property)).
+
+## [5.4.0] — 2026-09-22
+
+Indexes on `ToJson()` members are written the way Npgsql's queries read them, so the first `migrations add` re-creates the affected indexes: [Upgrading to 5.4.0](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/docs/upgrading.md#upgrading-to-540).
+
+### Breaking
+
+- Indexes: on PostgreSQL, a non-unique index that starts with a `DateTime`, `DateTimeOffset`, `DateOnly` or `TimeOnly` JSON member is refused at `migrations add`, because no query can use it. A unique one is still allowed ([JSON member indexes](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/docs/postgresql-indexes.md#json-member-indexes)).
+
+### Added
+
+- **`ComplexIndexAnnotations.RenderingVersion`**, which every declaration writes onto the model, so a change in how parts render reaches databases built by earlier versions ([Upgrading](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/docs/upgrading.md#upgrading-to-540)).
 
 ### Changed
 
-- **Changed:** every registration entry point throws `InvalidOperationException` when the EF Core it runs on is not version 10: `UseComplexIndexes()`, `UseNpgsqlComplexIndexes()`, `UseSqlServerComplexIndexes()`, their `Add…ComplexIndexes()` counterparts, and the design-time registration `dotnet ef` runs. The `[10.0.0, 11.0.0)` dependency ranges did not keep EF Core 11 out on their own: an EF Core 11 prerelease sorts below 11.0.0 and falls inside them without any warning, and a direct reference to Npgsql or EF Core 11 overrides them with only warning NU1608, and the differ then ran against an EF Core it was never tested on. The message names `CodoMetis.EFCore.SchemaKit` as the package for EF Core 11. The check reads EF Core's version, not the runtime's, so EF Core 10 on .NET 11 keeps working. **Upgrading:** nothing changes on EF Core 10. An application on EF Core 11 now fails at startup or at `migrations add` with that message; during the EF Core 11 release candidates its restore output shows no warning at all, so that message is the first sign it was running on a version this package never supported.
-- **Fixed:** on SQL Server, changing the type, length or nullability of a column a complex index reads (key, `INCLUDE` or filter) no longer fails at apply with Msg 5074 ("the index is dependent on column"). EF moves only its own indexes out of the way of an `ALTER COLUMN`; the complex index is now dropped before it and created after it. **New:** the protected `CustomMigrationsModelDiffer.RequiresIndexRecreation`, through which a provider's differ says which base operations need that ([#84](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/issues/84)).
+- Indexes: the default names of expression parts are built from the property path, not the rendered SQL, so a rendering change never renames an index. Every name 5.3.0 produced stays the same.
 
-## 5.4.1
+### Fixed
 
-One fix, to the index-name check: it compared names per table on every provider, so on SQLite a name
-reused on another table scaffolded cleanly and failed when the migration was applied.
+- Indexes: on PostgreSQL, indexes on `ToJson()` members render as Npgsql's queries read the member, `#>>` for a nested one and a cast for a typed one, so those queries use them. They applied and served no query. Exclusion constraint filters keep their rendering ([JSON member indexes](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/docs/postgresql-indexes.md#json-member-indexes)).
+- Filters: on PostgreSQL, a filter over a typed JSON member, such as `x => x.Profile.Rank > 5`, applies, where it compared text with an integer and failed at apply ([Typed filters](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/docs/postgresql-indexes.md#typed-filters)).
+- Constraints: on PostgreSQL, every name this package introduces is checked at `migrations add` against the objects it shares a namespace with: constraints per table, indexes per schema. A clash failed at apply with 42710 or 42P07, or silently dropped an exclusion constraint ([Exclusion constraints](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/docs/postgresql-constraints.md#exclusion-constraints-exclude)).
 
-- **Fixed:** on SQLite, a complex index name is checked across the whole database at `migrations add`, not per table. SQLite rejects a second `CREATE INDEX` under a name already used on any other table, and ignores the schemas a model configures, so two tables sharing an index name — two complex indexes, or a complex index and a native `HasIndex` — scaffolded cleanly and failed when applied ("index … already exists"). The scope is now the provider's: per database in the core, which also serves providers without a satellite; per schema on PostgreSQL; per table on SQL Server, where reusing a name across tables stays allowed. **Upgrading:** a SQLite model that reuses a complex index name across tables now fails at `migrations add`, naming both tables; rename one. On a provider without a satellite that scopes names per table, such as MySQL, that rename is one the database would not have needed, and with the differ registered at runtime (`UseComplexIndexes()`) `Migrate()` raises the same error until it is made. A snapshot holding such a name stays diffable.
+## [5.3.0] — 2026-09-05
 
-## 5.4.0
+### Fixed
 
-Fixes to what 5.x already ships, found while testing the packages against EF Core 11 and planning
-the next features: indexes on JSON members that no query could use, and constraint names that only
-failed — or quietly vanished — when the migration was applied.
+- Indexes: a property path through a value converter, such as `x => x.Email.Value`, resolves against a model snapshot. Every diff after the first `migrations add` threw `Could not resolve property path 'Email.Value'`, `has-pending-model-changes` and `Migrate()` included ([Converter paths](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/README.md#single-column-index-on-a-complex-property)).
 
-- **Fixed:** indexes on members of a `ToJson()` complex property are written the way Npgsql's queries read the member, so PostgreSQL can use them. It uses an expression index only for a query whose expression matches, and until now every member was extracted as `"doc" -> 'A' ->> 'B'` text with no cast, which matched only a top-level string. A nested member (`#>> '{Address,City}'` in the query) or a typed one (`CAST("doc" ->> 'Rank' AS integer)`) got an index that applied cleanly, enforced uniqueness, and was never used by a single query. Members now render as Npgsql renders them — `->>` or `#>>`, cast to the member's store type unless it is a string, `decode(…, 'base64')` for `byte[]`, `jsonb` for a primitive collection or a `json`/`jsonb` member — in index parts, typed expression indexes and index filters. That also makes a filter such as `x => x.Profile.Rank > 5` valid SQL: it compared text with an integer and failed at apply time. Default index names do not change. **Upgrading:** the first `migrations add` drops and re-creates each affected index under its existing name; indexes on top-level string members are untouched. Until that migration exists, `has-pending-model-changes` reports changes and `Migrate()` raises EF Core's pending-model-changes error. The re-create blocks writes while it builds, so on a large table declare the index with `IsCreatedConcurrently()` first. Exclusion constraint filters keep their rendering. The snapshot gains one `CustomIndex:RenderingVersion` annotation, which records the rules a model was declared under and is what lets the change reach databases built by earlier versions.
-- **Changed:** a non-unique index that starts with a date or time JSON member (`DateTime`, `DateTimeOffset`, `DateOnly`, `TimeOnly`) is rejected at `migrations add`. EF Core's queries cast such a member to `timestamptz`, `date` or `time`, and PostgreSQL cannot index those casts (the conversion from text is not IMMUTABLE), so no query could ever use the index. A unique one is still allowed and enforces uniqueness on the stored text; a member in a later position leaves the index usable through the parts before it.
-- **Fixed:** on PostgreSQL, a name this package introduces is checked against every object it shares a namespace with, at `migrations add`. PostgreSQL keeps constraint names unique per table and index names unique per schema — including the index behind every primary key, unique, exclusion and temporal constraint — but each kind was checked against its own kind on one table at most. Two temporal constraints with one name, a temporal foreign key named like a foreign key on its table, or a temporal constraint named like an index anywhere in the schema scaffolded cleanly and failed when applied (42710, 42P07). Against an exclusion constraint it did not even fail: every exclusion constraint is added after `DROP CONSTRAINT IF EXISTS`, so a same-named temporal constraint was dropped and the migration applied clean, one declared guarantee short. Two explicitly named complex indexes on different tables of one schema are caught the same way. A collision between two of EF Core's own objects is left to EF; a snapshot holding a collision stays diffable.
+## [5.2.0] — 2026-09-05
 
-## 5.3.0
+### Breaking
 
-One fix, found the first time a 5.2.0 converter-member path met the model snapshot
-it had just been scaffolded into.
+- Indexes: an index or constraint name longer than the provider's identifier limit is refused at `migrations add`, default names included. PostgreSQL truncated it silently and SQL Server failed at apply. Give the declaration a name; a name-only change renames in place ([Upgrading](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/docs/upgrading.md#upgrading-to-520)).
 
-- **Fixed:** a property path through a value converter (`x => x.Email.Value`) now resolves against a model snapshot as well as against the configured model. A snapshot persists a converted property as its provider type — `string`, on a property-bag type — and drops the converter, so the member check that guards `x.CreatedAt.Year` had nothing to check against and the path failed to resolve. The first `dotnet ef migrations add` succeeded, because the snapshot did not hold the path yet; everything that diffed the resulting snapshot then threw `Could not resolve property path 'Email.Value'` — the next `migrations add`, `has-pending-model-changes`, and `Migrate()`, whose pending-model-changes check runs the differ this package registers before applying anything. On a property-bag type the persisted scalar is now accepted for a path the configured model already validated; against a configured model the provider-type check is unchanged. Covers expression templates, column parts, composite parts, filter placeholders and PostgreSQL exclusion elements, at the top level and inside a complex type.
+### Added
 
-## 5.2.0
+- **`GetComplexIndexes()` and `FindComplexIndex(name)`**, which read back every declaration this package holds, on the mutable model inside `OnModelCreating` too ([Reading declarations back](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/README.md#reading-declarations-back)).
+- **`GetExclusionConstraints()` and `FindExclusionConstraint(name)`** on PostgreSQL, with `ExclusionPartDefinition` and `NpgsqlExclusionAnnotations.Constraints` now public ([Reading constraints back](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/docs/postgresql-constraints.md#reading-constraints-back)).
+- **`{Property.Path}` placeholders in filters**, resolved to the mapped column at `migrations add`, on every index and on exclusion constraints. A brace pair that holds no dotted identifier path, such as `'{urgent}'`, stays literal ([Filters](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/README.md#single-column-index-on-a-complex-property)).
+- **Property paths through a value converter**: `x => x.Email.Value` resolves to the converted column when the member's type is the converter's provider type ([Converter paths](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/README.md#single-column-index-on-a-complex-property)).
+- **`AddComplexIndexFilter(predicate, where)` and `AddComplexIndex(definition)`** on `IMutableEntityType`, and `AddExclusionConstraintFilter` on PostgreSQL, which amend declarations from a shared convention. Repeating a call is safe ([Amending declarations](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/README.md#amending-declarations)).
+- **Typed filter predicates** on PostgreSQL: every `filter:` string has a lambda form, and the builders take `HasFilter(x => …)`. Enums and values with no portable SQL spelling are refused at the declaration ([Typed filters](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/docs/postgresql-indexes.md#typed-filters)).
 
-The features a consumer's review of its own workarounds asked for, in the order they pay off:
-a validation for a failure that reports nothing, a read model so an application can check its
-own obligations, filters that resolve property paths the way index parts already do, an amend
-API, and typed filter predicates.
+### Changed
 
-- **Changed:** an index or constraint name longer than the provider's identifier limit is rejected at `dotnet ef migrations add`. PostgreSQL truncates a name past 63 bytes with a NOTICE and applies the migration cleanly, so the index exists under a name that neither the declaration nor a later constraint-violation error reports — a slice dispatching on the constraint name falls through in silence; SQL Server rejects the statement at apply time instead. Explicit and default names alike are checked, measured the way the provider measures them (bytes on PostgreSQL, characters on SQL Server), on the target model only. The names this package derives are never truncated, unlike EF Core's own default names, so a long table name plus a long column path reaches the limit quietly, and a default temporal foreign key name, built from two table names, is the first to. Give the declaration a name; a name-only change renames in place.
+- Expression indexes: on PostgreSQL, a typed expression with a `DateTime`, `Guid` or enum constant throws at the declaration, where it rendered the constant as bare text ([Typed expression indexes](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/docs/postgresql-indexes.md#typed-linq-expression-indexes)).
 
-- **New:** a read model. `GetComplexIndexes()` on an entity type or the model returns every declaration this package holds — property-level, entity-level, composite and expression indexes alike — as `ComplexIndexDeclaration`s carrying the parts as property paths, `IsUnique`, `Filter`, the explicit `Name` and, for entity-level declarations, the provider options; `FindComplexIndex(name)` looks one up by explicit name. The PostgreSQL package adds `GetExclusionConstraints()` and `FindExclusionConstraint(name)` for exclusion constraints, whose element type `ExclusionPartDefinition` and annotation key `NpgsqlExclusionAnnotations.Constraints` are now public. Both work on the mutable model inside `OnModelCreating`, so an application can check a convention such as "every unique index and exclusion constraint on a withdrawable aggregate is filtered to live rows" while the model is built. The differ builds its own descriptors from the same readers, so what the read model reports is what the migration is scaffolded from.
+## [5.1.0] — 2026-09-05
 
-- **New:** filters resolve `{Property.Path}` placeholders, the way expression parts already did — on complex, composite and expression indexes, and on PostgreSQL exclusion constraints. `filter: "{RevokedAt} IS NULL"` becomes `"revoked_at" IS NULL` (`[revoked_at]` on SQL Server) at `migrations add`, honouring `HasColumnName` and, on PostgreSQL, `ToJson()` members; the resolved text is what the migration carries, rendered by the stock generator with no runtime wiring, and what the snapshot is compared on. Only a brace pair holding a dotted identifier path outside a single-quoted literal is a placeholder, so existing filters with array or JSON literals (`'{urgent}'`, `'{"a": 1}'`) are unaffected, and a placeholder naming no property fails loudly. Template resolution now lives in the core differ over a new `QuoteIdentifier` seam, which is also why the SQL Server satellite resolves them.
-- **New:** property paths see through a value converter. For a value object mapped as one column, `x => x.Email.Value` — in `HasComplexIndex`, a typed `HasExpressionIndex`, an exclusion element, or a filter placeholder — resolves to that column, provided the member's type is the converter's provider type. Without that guard `x.CreatedAt.Year` would have indexed the whole column; it still fails, and says so.
+### Breaking
 
-- **New:** a mutable API. On an `IMutableEntityType`, `AddComplexIndexFilter(predicate, where)` ANDs a predicate onto the filter of every selected complex index — property-level and entity-level alike — so a shared convention can install a live-rows filter the way it installs the query filter, instead of every configuration repeating it; `AddComplexIndex(definition)` adds an entity-level declaration with the fluent API's identity and name rules. The PostgreSQL package adds `AddExclusionConstraintFilter`. An unfiltered declaration gets the predicate, a filtered one `(existing) AND (predicate)`, one that already carries it is left alone, so the calls are safe to repeat. They amend what is declared at the time of the call, so they belong after the configurations.
+- Indexes: a complex index, exclusion constraint or temporal constraint declared on an entity type mapped to no table, typically the abstract base of a TPC hierarchy, fails at `migrations add`, where it produced nothing. View-mapped and query-mapped types are still skipped ([Upgrading](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/docs/upgrading.md#upgrading-to-510)).
 
-- **New:** typed filter predicates on PostgreSQL. Every `filter:` string has a lambda form — `HasComplexIndex(x => x.Email, x => x.RevokedAt == null)`, `HasComplexCompositeIndex(…, x => …)`, `HasExpressionIndex(…, x => …)`, `HasExclusionConstraint(…, x => …)` — and the index and constraint builders take `HasFilter(x => …)` (`HasFilter<TEntity>` on the non-generic index builders). The predicate is translated at the declaration into a filter template, so the column names come from the model: `==`/`!=` (`IS NULL`/`IS NOT NULL` against null), `<`, `<=`, `>`, `>=`, `&&`, `||`, `!`, boolean properties, and on the operands the string operations and constants a typed expression index accepts. Enums are refused — how one is stored depends on a value conversion the filter cannot see, so `Status == Status.Active` would compare a text column against `0` and fail at apply time — as are values with no portable SQL spelling (`DateTime`, `Guid`), which the typed expression translator used to render as bare text. The amend calls have typed forms too.
+### Added
 
-## 5.1.0
+- **Runtime registration of the differ**: `UseNpgsqlComplexIndexes()`, `UseSqlServerComplexIndexes()` and, for other providers, `UseComplexIndexes()`, each with an `Add…ComplexIndexes()` counterpart, so `EnsureCreated()` and `GenerateCreateScript()` include complex indexes. Call the satellite's method only ([Runtime wiring](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/README.md#ensurecreated-generatecreatescript-and-the-pending-changes-check)).
+- **Whole-document JSON indexes** on PostgreSQL: `HasComplexIndex` on a `ToJson()` complex property or a complex collection indexes its `jsonb` column, for example with `UseGin()` ([Indexing the whole document](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/docs/postgresql-indexes.md#indexing-the-whole-document)).
+- **`HasStorageParameter(name, value)`** on PostgreSQL complex and expression indexes, for `WITH (fillfactor=70)` and the like ([Index methods](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/docs/postgresql-indexes.md#index-methods-on-a-complex-property)).
+- **`UseCollation(params string[])`** on PostgreSQL complex and expression indexes: per-column index collations, by position, independent of the column's own collation ([Index methods](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/docs/postgresql-indexes.md#index-methods-on-a-complex-property)).
+- **`HasComplexIndex` on the non-generic `ComplexTypePropertyBuilder`**, for a property configured by name or by type.
 
-Small enhancements around the two seams, plus the silent failures found while planning the next
-major: a pending-changes check that never saw this package, and two ways a declaration could vanish
-from a migration without a word.
+### Fixed
 
-- **Fixed:** `HasDifferences` now reports changes to complex indexes, exclusion constraints and temporal constraints. EF Core's base implementation runs its own `Diff` rather than the `GetDifferences` this package overrides, so every check built on it reported "no changes" when only a declaration from this package had changed: `dotnet ef migrations has-pending-model-changes`, the pending-model-changes warning `Migrate()` raises since EF Core 9, and the snapshot check in `migrations remove`. A CI gate built on `has-pending-model-changes` may now fail where it previously passed — that is the gate working.
-- **Fixed:** a complex index whose name matches a native `HasIndex` on the same table is now rejected at `dotnet ef migrations add`. The base differ emitted one and this package the other, neither seeing the other, so the migration scaffolded two `CREATE INDEX` statements under one name and failed when applied (42P07). Only the target model's native indexes are consulted, so an index *moving* between a native declaration and a complex one under the same name still diffs as before.
-- **Fixed:** a provider option from the other satellite on a *property-level* complex index is now rejected at `migrations add`, like an entity-level one, instead of being dropped by the forwarding whitelist without a word — `.UseGin()` on a property-level index diffed by the SQL Server satellite scaffolded a plain B-tree. The PostgreSQL differ likewise rejects SQL Server options, which it previously passed through to a generator that ignored them.
-- **New:** runtime registration of the differ. `Database.EnsureCreated()`, `GenerateCreateScript()` and the pending-model-changes check `Migrate()` performs run the context's *runtime* differ, which the design-time wiring never reaches — so `EnsureCreated()` created the tables and silently none of the complex indexes, and `Migrate()` never warned about one that was not scaffolded. `UseNpgsqlComplexIndexes()` now registers the PostgreSQL differ alongside the generator; SQL Server gets `UseSqlServerComplexIndexes()`; providers without a satellite get `UseComplexIndexes()` from the core package. Each has an `Add…ComplexIndexes` counterpart for a custom internal service provider. With a satellite installed, call the satellite's method only.
-- **New:** whole-document JSON indexes on PostgreSQL. Pointing `HasComplexIndex` at a `ToJson()` complex property — or at a complex collection, which is always JSON — now indexes its `jsonb` container column, so `HasComplexIndex(x => x.Payload, ix => ix.UseGin().HasOperators("jsonb_path_ops"))` produces the idiomatic GIN index. Previously the path failed with "could not resolve property path", and complex collections could not be indexed at all. The container is a real column, so no runtime wiring is involved; a complex property nested inside the document resolves to a `->` extraction and renders like any expression index.
-- **New:** `HasStorageParameter(name, value)` on PostgreSQL complex and expression indexes — `WITH (fillfactor=70)`, `WITH (fastupdate=false)`, and so on. Column indexes render through Npgsql's own generator; expression indexes through this package's, in the same clause position.
-- **New:** `UseCollation(params string[])` on PostgreSQL complex and expression indexes — per-column index collations (`"Name" COLLATE "C"`), positional, with an empty entry leaving that column on its default. Independent of the column's own collation, which is never copied onto the index.
-- **New:** the property-level `HasComplexIndex` overloads also exist on the non-generic `ComplexTypePropertyBuilder`, so a property configured by name (`c.Property("Value")`) or by type can carry a complex index.
-- **Changed:** a complex index, exclusion constraint or temporal constraint declared on an entity type that is mapped to no table — typically the abstract base of a TPC hierarchy — now fails at `migrations add` instead of producing nothing without a word. Declarations on view-mapped and query-mapped types are still ignored.
+- Indexes: a complex index named like a native `HasIndex` on the same table is refused at `migrations add`, where the migration failed at apply with 42P07.
+- Indexes: an option of the other provider on a property-level complex index is refused at `migrations add`, where `UseGin()` under the SQL Server differ was dropped and scaffolded a plain B-tree. The PostgreSQL differ refuses SQL Server options the same way.
+- Migrations: `HasDifferences` reports changes to complex indexes and constraints, so `has-pending-model-changes`, `Migrate()`'s pending-changes warning and `migrations remove` see them. A CI gate on `has-pending-model-changes` may now fail; that is the gate working ([Upgrading](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/docs/upgrading.md#upgrading-to-510)).
 
-## 5.0.3
+## [5.0.3] — 2026-08-15
 
-A packaging and documentation release. No behaviour changes to the differ or the generated SQL.
+A packaging and documentation release. The differ and the SQL it generates are unchanged.
 
-- **Changed:** the EF Core dependency now declares an exclusive upper bound — `[10.0.0, 11.0.0)` on `Microsoft.EntityFrameworkCore.Abstractions` for the core package, and on the provider package for each satellite. This package subclasses `MigrationsModelDiffer` and calls internals EF marks as changeable without notice in any release, so an open-ended `>= 10.0.0` let NuGet resolve a future major where the differ can break — surfacing as a confusing `dotnet ef` failure in your project rather than anywhere visible from here. **Nothing changes for existing consumers:** NuGet resolves the lowest version in a range, so restore still picks 10.0.0. Adopting EF Core 11 will need a release that lifts the ceiling deliberately, once the differ has been tested against it.
-- **New:** the public API is now fully documented, so IntelliSense no longer comes up empty on the fluent API, the annotation keys, `CompositeIndexDefinition`, or `IndexPartDefinition`. The shipped `.xml` had 64 holes in it; `TreatWarningsAsErrors` now keeps it complete.
-- **Tests:** a consumer smoke test runs on every PR and on release. It packs the packages, installs them into a throwaway project created outside this repository, and runs a real `dotnet ef migrations add` — then asserts on the scaffolded content, because the failure it guards against is a migration that succeeds while silently omitting every index. Nothing previously exercised the delivery chain end to end: NuGet restore, the packaged `.targets` injecting the design-time attribute, EF's host discovering it, and the right differ winning.
+### Added
 
-## 5.0.2
+- **XML documentation for the whole public API**, so IntelliSense shows the fluent API, the annotation keys, `CompositeIndexDefinition` and `IndexPartDefinition`, where the shipped `.xml` had 64 gaps.
 
-A review of the 5.0.1 tree turned up eleven issues. The first three produced migrations that
-scaffolded *and applied* cleanly while being silently wrong; the rest turn late, obscure, or silent
-failures into errors raised at the declaration or during `dotnet ef migrations add`.
+### Changed
 
-- **Fixed:** the design-time differ is now selected deterministically. A satellite package's `DesignTimeServicesReferenceAttribute` is scoped to its provider (`ForProvider`), and the core registration backs off when a satellite is present — previously, because the core package's attribute rides along transitively and EF resolves last-registration-wins, NuGet's restore order decided which differ ran. A solution referencing two satellites could hand one provider's model to the other provider's differ, silently dropping its index options.
-- **Fixed:** temporal `UNIQUE … WITHOUT OVERLAPS` constraints and temporal foreign keys are now rendered at design time, like exclusion constraints, and no longer need `UseNpgsqlComplexIndexes()`. Previously a consumer without that wiring got a plain `UNIQUE (key, period)` — valid DDL that applied cleanly and silently dropped the entire non-overlap guarantee. Migrations scaffolded before this change keep working: the SQL generator still renders the old stamped operations.
-- **Fixed:** exclusion-constraint identity now includes the filter, so two `EXCLUDE` constraints over the same columns with different predicates coexist (both must be named) instead of the second silently replacing the first — the filtered-overlap case the API exists for. Re-declaring with the same filter still updates in place.
-- **Fixed:** duplicate index and exclusion-constraint names are now rejected instead of producing a migration that fails at apply time (42P07) — or, for exclusion constraints, one that applies silently and leaves only the last constraint standing. Reusing an explicit name throws at the declaration; collisions between default names, or between a property-level and an entity-level declaration, throw during `migrations add`.
-- **Fixed:** `CompositeIndexDefinition` equality compares array-valued provider annotations (operator classes, INCLUDE lists) by content instead of by reference.
-- **Fixed:** index, temporal-constraint, and exclusion-constraint selectors that read a captured variable or static member instead of the lambda parameter (`x => captured.Name`) now throw at the declaration, naming the offending selector — previously they produced an unmatchable property path that failed much later with an opaque resolution error.
-- **Fixed:** provider validation no longer inspects index operations this package did not create. The satellites previously swept every `CreateIndexOperation` in the migration, so a plain native `HasIndex` carrying a provider option outside the satellite's whitelist would have failed the entire `migrations add` — harmless with today's providers, but it tied your migrations to the exact index-option set each satellite knows about.
-- **Fixed:** `DbOrder.Asc` now marks a column ascending, and combining it with `DbOrder.Desc` (or `NullsFirst` with `NullsLast`) throws instead of silently picking one. Repeating the same marker is still fine.
-- **Fixed:** `Npgsql:IndexSortOrder`/`IndexNullSortOrder` are no longer forwarded onto complex indexes, and setting either now throws with a pointer to `DbOrder`. They duplicated what `DbOrder.Asc`/`Desc`/`NullsFirst`/`NullsLast` already express per column, giving one index two sources of truth for its sort options — with the annotation's half silently losing whenever the index rendered through this package's generator.
-- **Fixed:** clustered-index combinations SQL Server rejects are now caught at `migrations add` rather than at apply time: a clustered index with `INCLUDE` columns, a clustered filtered index, two clustered complex indexes on one table, and — the common one — a clustered complex index on a table whose primary key already holds the clustered slot, which is the SQL Server default.
-- **New:** `UseDataCompression(DataCompressionType)` on SQL Server complex indexes — the annotation was already forwarded but had no way to set it.
+- Packaging: the EF Core dependency has an upper bound, `[10.0.0, 11.0.0)`, on `Microsoft.EntityFrameworkCore.Abstractions` for the core and on the provider package for each satellite. Restore still picks 10.0.0.
 
-## 5.0.1
+## [5.0.2] — 2026-08-15
 
-- **Changed:** exclusion-constraint `ADD CONSTRAINT` DDL is now preceded by `DROP CONSTRAINT IF EXISTS`, so adopting a pre-existing hand-written constraint of the same name applies cleanly instead of failing with `42P07`. The standalone drop path also uses `IF EXISTS`.
-- **Fixed:** renaming a table no longer drops and recreates the exclusion and temporal constraints it carries (the same normalization complex indexes already had).
-- **Changed:** a name-only change to an exclusion constraint, temporal constraint, or temporal foreign key — including the implicit one when a table rename changes a default-derived name — now emits `ALTER TABLE … RENAME CONSTRAINT` instead of dropping and rebuilding. Dependent temporal foreign keys survive such renames untouched.
-- **Tests:** the differ is now exercised against *real* model snapshots — generated as C#, compiled in-memory, and rebuilt exactly as `dotnet ef migrations add` does — guarding the whole feature set against snapshot round-trip churn.
+Eleven fixes from a review of 5.0.1. The first three were migrations that scaffolded and applied cleanly while silently wrong.
 
-## 5.0.0
+### Added
 
-- **Fixed:** custom `DROP INDEX` operations are now ordered *before* the base migration operations. Previously, moving an index between a native `HasIndex` and a complex-index declaration scaffolded a migration that created the new index before dropping the same-named old one — colliding at apply time.
-- **Fixed:** descending parts of expression indexes now render `DESC` (declarable via `ExpressionIndexBuilder.Descending()`).
-- **Fixed:** integral provider-annotation values (e.g. fill factor) survive snapshot round-trips as `int` instead of degrading to `double`, which made generators drop them.
-- **Changed:** property annotations are forwarded onto index operations through a provider **whitelist** instead of a blacklist. Column facets such as `Relational:ColumnName` no longer leak into scaffolded migrations, and the class of phantom drop/create churn caused by snapshot/code-model annotation asymmetries is closed for good.
-- **Changed:** an indexed property that resolves to no column now throws at `migrations add` instead of silently dropping the index — unless it is a `ToJson()` member, which now resolves to a JSON expression index (PostgreSQL).
-- **Changed:** two indexes over the same columns may now coexist when their filters differ (both must be named); re-declaring with the same filter still updates in place.
-- **New:** entity-level `HasComplexIndex(x => x.Complex.Prop, …)` for single-column indexes, enabling multiple filtered indexes per column.
-- **New:** `HasExclusionConstraint` — `EXCLUDE` constraints with `WHERE` predicates.
-- **New:** typed LINQ expression indexes — `HasExpressionIndex(x => x.Email.ToLower())`.
-- **New:** JSON member indexes for `ToJson()` complex properties.
-- **New:** `NULLS FIRST`/`NULLS LAST` via `DbOrder.NullsFirst/NullsLast` and `ExpressionIndexBuilder.NullsFirst()/NullsLast()` (PostgreSQL).
-- **New:** the **EFCore.ComplexIndexes.SqlServer** satellite — clustered, covering, online, fill-factor, and sort-in-tempdb options.
-- **Changed:** `IncludeProperties(...)` entries are now resolved as property paths (complex members included) with verbatim column-name fallback — `IncludeProperties("Email.Value")` finds the real column.
-- **Changed:** a name-only index change now emits `RenameIndexOperation` (PostgreSQL, SQL Server) instead of dropping and rebuilding the index; the core default remains drop + create for providers that cannot rename standalone.
-- **Changed:** renaming a table no longer drops and recreates the complex indexes it carries.
-- **Changed:** indexes requiring the custom PostgreSQL generator carry a loud sentinel column, so a missing `UseNpgsqlComplexIndexes()` fails at apply time with an actionable error instead of applying a silently wrong index.
+- **`UseDataCompression(DataCompressionType)`** on SQL Server complex indexes. The option was forwarded but nothing could set it ([Index options](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/docs/sqlserver.md#index-options)).
+
+### Fixed
+
+- Registration: the design-time differ is chosen per provider. Restore order decided it, so a solution referencing two satellites could hand one provider's model to the other's differ, which dropped its index options.
+- Indexes: a reused index or exclusion constraint name is refused at the declaration or at `migrations add`. The migration failed at apply or, for exclusion constraints, applied with only the last one standing.
+- Indexes: a selector that reads a captured variable or a static member, such as `x => captured.Name`, throws at the declaration and names the selector. It failed later with an opaque resolution error.
+- Indexes: `DbOrder.Asc` marks a column ascending, and combining it with `DbOrder.Desc`, or `NullsFirst` with `NullsLast`, throws.
+- Indexes: `CompositeIndexDefinition` compares array-valued provider annotations, such as operator classes and `INCLUDE` lists, by content.
+- Indexes: provider validation leaves index operations this package did not create alone, so a native `HasIndex` with provider options no longer fails `migrations add`.
+- Indexes: on PostgreSQL, `Npgsql:IndexSortOrder` and `Npgsql:IndexNullSortOrder` are no longer forwarded onto complex indexes, and setting either throws, pointing to `DbOrder`.
+- Indexes: on SQL Server, the clustered combinations SQL Server refuses fail at `migrations add`: with `INCLUDE`, with a filter, a second one on a table, and one where the primary key holds the slot ([Deliberate rejections](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/docs/sqlserver.md#deliberate-rejections)).
+- Indexes: on SQL Server, the data compression option survives the model snapshot, which dropped it from the generated DDL.
+- Constraints: on PostgreSQL, temporal `UNIQUE … WITHOUT OVERLAPS` constraints and temporal foreign keys render at design time, without `UseNpgsqlComplexIndexes()`. Without it they scaffolded a plain `UNIQUE (key, period)` ([Temporal constraints](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/docs/postgresql-constraints.md#temporal-unique-constraints-without-overlaps--requires-postgresql-18)).
+- Constraints: on PostgreSQL, two exclusion constraints over the same columns with different filters coexist, both named. The second replaced the first ([Exclusion constraints](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/docs/postgresql-constraints.md#exclusion-constraints-exclude)).
+
+## [5.0.1] — 2026-08-10
+
+### Changed
+
+- Constraints: on PostgreSQL, an exclusion constraint's `ADD CONSTRAINT` is preceded by `DROP CONSTRAINT IF EXISTS`, so adopting a hand-written constraint of the same name applies instead of failing with 42P07.
+- Constraints: on PostgreSQL, a name-only change to an exclusion constraint, temporal constraint or temporal foreign key emits `RENAME CONSTRAINT` instead of a rebuild, and dependent temporal foreign keys survive it.
+
+### Fixed
+
+- Constraints: on PostgreSQL, renaming a table no longer drops and re-creates its exclusion and temporal constraints.
+
+## [5.0.0] — 2026-08-10
+
+### Breaking
+
+- Indexes: an indexed property that resolves to no column throws at `migrations add` instead of dropping the index. On PostgreSQL, a `ToJson()` member resolves to a JSON expression index.
+
+### Added
+
+- **`EFCore.ComplexIndexes.SqlServer`**, the SQL Server satellite: clustered, covering, online, fill-factor and sort-in-tempdb options ([SQL Server](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/docs/sqlserver.md)).
+- **Entity-level `HasComplexIndex(x => x.Complex.Prop, …)`** for single-column indexes, so a column can carry several filtered indexes.
+- **`DbOrder.Asc` and `DbOrder.Desc`**, per-column sort direction on every relational provider ([Per-column sort direction](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/README.md#per-column-sort-direction)).
+- **`HasExclusionConstraint`** on PostgreSQL: `EXCLUDE` constraints with `WHERE` predicates ([Exclusion constraints](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/docs/postgresql-constraints.md#exclusion-constraints-exclude)).
+- **`HasExpressionIndex(x => x.Email.ToLower())`** on PostgreSQL, typed LINQ expression indexes ([Typed expression indexes](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/docs/postgresql-indexes.md#typed-linq-expression-indexes)).
+- **JSON member indexes** on PostgreSQL, for members of `ToJson()` complex properties ([JSON member indexes](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/docs/postgresql-indexes.md#json-member-indexes)).
+- **`DbOrder.NullsFirst` and `DbOrder.NullsLast`** on PostgreSQL, and `NullsFirst()` and `NullsLast()` on `ExpressionIndexBuilder` ([Per-column null ordering](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/docs/postgresql-indexes.md#per-column-null-ordering)).
+
+### Changed
+
+- Indexes: provider annotations reach index operations through a whitelist, so column facets such as `Relational:ColumnName` no longer leak into migrations as drop-and-create churn.
+- Indexes: two indexes over the same columns coexist when their filters differ, both named. Declaring one again with the same filter updates it in place.
+- Indexes: `IncludeProperties(…)` entries resolve as property paths, complex members included, with the column name as written as the fallback.
+- Indexes: on PostgreSQL, an index that needs this package's SQL generator carries a sentinel column, so a missing `UseNpgsqlComplexIndexes()` fails at apply with a message that says so.
+- Migrations: a name-only index change emits `RenameIndexOperation` on PostgreSQL and SQL Server, and renaming a table no longer re-creates its complex indexes.
+
+### Fixed
+
+- Indexes: integral provider annotations such as fill factor survive the snapshot as `int`. They became `double`, and the generator dropped them.
+- Expression indexes: descending parts render `DESC`, declared with `ExpressionIndexBuilder.Descending()`.
+- Migrations: the drops of complex indexes run before the base operations, so moving an index between `HasIndex` and a complex declaration under one name applies.
+
+[5.5.0]: https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/releases/tag/v5.5.0
+[5.4.1]: https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/releases/tag/v5.4.1
+[5.4.0]: https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/releases/tag/v5.4.0
+[5.3.0]: https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/releases/tag/v5.3.0
+[5.2.0]: https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/releases/tag/v5.2.0
+[5.1.0]: https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/releases/tag/v5.1.0
+[5.0.3]: https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/releases/tag/v5.0.3
+[5.0.2]: https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/releases/tag/v5.0.2
+[5.0.1]: https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/releases/tag/v5.0.1
+[5.0.0]: https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/releases/tag/v5.0.0
