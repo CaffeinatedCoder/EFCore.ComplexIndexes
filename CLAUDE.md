@@ -180,6 +180,21 @@ this package's. Investigating a suspected differ bug should be three lines, not 
 40-line setup. `NpgsqlSql(operations, complexIndexWiring: false)` is the one that matters most — it
 shows what a consumer who forgot `UseNpgsqlComplexIndexes()` actually gets.
 
+**`TranslatorParitySweepTests`** (under `test/…/TranslatorParity/`) is the typed translator's
+differential test. Every construct `NpgsqlLinqIndexTranslator` accepts is read from its own tables
+(`StringMethods`, `ValueMembers`, the operator sets, `LiteralTypes`), crossed with every operand
+shape (non-nullable, nullable, `ToJson()` member, converter member), compiled by Roslyn so the
+lambdas have the compiler's real shapes, and rendered both ways: through the declaration and the
+differ, and through EF Core's `ToQueryString()` (`Where` for filters, `Select` for expressions).
+Both sides are parsed with PostgreSQL's precedence before they are compared, so parentheses and
+aliases never count and a regrouping always does. A disagreement is fixed or listed in
+`test/EFCore.ComplexIndexes.Tests/TranslatorParity/waivers.txt` under a block with its reason; a
+planner rewrite such as `NOT (a = b)` against `a <> b` is a `rule:` block there, never a silent
+normalization. `PostgresIntegrationTests.Translator_parity_answers_alike_on_postgres` runs the same
+rows on PostgreSQL 18 and fails a pair that renders alike but answers differently, which is how a
+`ulong` concatenation EF Core writes as `5.0` was found. Add a construct to the translator's tables,
+not only to its dispatch, or the sweep cannot see it.
+
 **Skills** in `.claude/skills/`:
 
 - `migration-safety-review` — the domain review lens: silent degradation across the design-time and

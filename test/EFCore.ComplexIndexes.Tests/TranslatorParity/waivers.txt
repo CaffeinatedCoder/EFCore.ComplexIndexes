@@ -1,0 +1,931 @@
+# Waivers of the translator parity sweep (TranslatorParitySweepTests). Every row the sweep finds
+# rendering unlike EF Core is fixed or listed here under a block with its reason; a listed row the
+# sweep no longer finds fails it, so this file shrinks as fixes land. See ParityWaivers for the form:
+# "rule:" switches on one of PostgreSQL's own rewrites for every row, "same:" rows render differently
+# and answer alike (the live sweep checks them on PostgreSQL 18), "unchecked:" rows cannot be compared
+# or differ knowingly, and say why.
+
+rule: negator
+    PostgreSQL rewrites NOT over a comparison into the comparison's negator, pushes NOT through
+    AND and OR, and cancels a double NOT (negate_clause, in eval_const_expressions) before it compares
+    an index predicate with a query, so NOT ("Int" = 5) and "Int" <> 5 are one predicate to the
+    planner and select the same rows. The translator keeps NOT (…) over operands that cannot be null
+    so that filters scaffolded before 5.5.0 do not change (#68).
+
+rule: boolean-equality
+    PostgreSQL rewrites x = TRUE to x, x = FALSE to NOT x, and their <> forms to the opposite
+    (simplify_boolean_equality) before planning, so "Bool" = TRUE is "Bool" to it. The translator
+    keeps the comparison it was given so that existing filters do not change.
+
+rule: integer-length
+    length() returns integer, so EF Core's length(x)::int is a cast to the type the call already has,
+    which PostgreSQL's parser does not put in the tree. The index on length(x) serves the query.
+
+same: Concatenation with a value that is not a string
+    EF Core casts a non-string operand of + to text; the translator leaves it to PostgreSQL. PostgreSQL
+    resolves text || integer to textanycat, a SQL function it inlines as $1 || $2::text before it
+    compares an index with a query, and text || character(1) through the implicit cast to text, so
+    both build EF Core's tree. The live sweep builds an index on each and checks EF Core's query uses it.
+    - expression: x => x.Str + x.Int
+    - expression: x => x.Str + x.Chr
+    - expression: x => x.Doc.Str + x.Int
+    - expression: x => x.Doc.Str + x.Chr
+    - expression: x => x.Str + c  with System.Boolean c = true;
+    - expression: x => x.Str + c  with System.Int32 c = 5;
+    - expression: x => x.Str + c  with System.Int64 c = 5L;
+    - expression: x => x.Str + c  with System.Int16 c = (short)5;
+    - expression: x => x.Str + c  with System.Byte c = (byte)5;
+    - expression: x => x.Str + c  with System.SByte c = (sbyte)5;
+    - expression: x => x.Str + c  with System.UInt32 c = 5u;
+    - expression: x => x.Str + c  with System.UInt16 c = (ushort)5;
+    - expression: x => x.Str + c  with System.Decimal c = 5.5m;
+    - expression: x => x.Str + c  with System.Double c = 5.5;
+    - expression: x => x.Str + c  with System.Single c = 5.5f;
+    - filter: x => x.Str + x.Int == "{it's}"
+    - filter: x => x.Str + x.Int != "{it's}"
+    - filter: x => x.Str + x.Chr == "{it's}"
+    - filter: x => x.Str + x.Chr != "{it's}"
+    - filter: x => x.Doc.Str + x.Int == "{it's}"
+    - filter: x => x.Doc.Str + x.Int != "{it's}"
+    - filter: x => x.Doc.Str + x.Chr == "{it's}"
+    - filter: x => x.Doc.Str + x.Chr != "{it's}"
+    - filter: x => !(x.Str + x.Int == "{it's}")
+    - filter: x => !(x.Str + x.Int != "{it's}")
+    - filter: x => !(x.Str + x.Chr == "{it's}")
+    - filter: x => !(x.Str + x.Chr != "{it's}")
+    - filter: x => !(x.Doc.Str + x.Int == "{it's}")
+    - filter: x => !(x.Doc.Str + x.Int != "{it's}")
+    - filter: x => !(x.Doc.Str + x.Chr == "{it's}")
+    - filter: x => !(x.Doc.Str + x.Chr != "{it's}")
+
+unchecked: Concatenation with a ulong
+    EF Core maps ulong to numeric(20,0) and writes the value as 5.0, so its query concatenates '5.0'
+    where C# and the package write '5'. The package keeps C#'s answer.
+    - expression: x => x.Str + c  with System.UInt64 c = 5ul;
+
+unchecked: Members of a value object mapped through a converter
+    EF Core cannot translate a member of a converted value object (x.Email.Value): it would need the
+    converter's inverse in SQL. The package resolves the member to the column the converter writes,
+    which is the index the declaration asks for, so there is no EF Core query to compare it with.
+    - expression: x => x.Email.Value
+    - expression: x => x.Email.Value.ToLower()
+    - expression: x => x.Email.Value.ToUpper()
+    - expression: x => x.Email.Value.Trim()
+    - expression: x => x.Email.Value.TrimStart()
+    - expression: x => x.Email.Value.TrimEnd()
+    - expression: x => x.Email.Value.Replace("-", "")
+    - expression: x => x.Email.Value.Substring(1)
+    - expression: x => x.Email.Value.Substring(c)  with int c = 1;
+    - expression: x => x.Email.Value.Substring(1, 3)
+    - expression: x => x.Email.Value.Substring(c, 3)  with int c = 1;
+    - expression: x => x.Email.Value.Length
+    - expression: x => x.Email.Value + "x"
+    - expression: x => "x" + x.Email.Value
+    - expression: x => x.Email.Value + x.Str2
+    - expression: x => x.Email.Value + x.NStr2
+    - expression: x => x.Email.Value + x.Int
+    - expression: x => x.Email.Value + x.NInt
+    - expression: x => x.Email.Value + x.Chr
+    - filter: x => x.Email.Value == "{it's}"
+    - filter: x => "{it's}" == x.Email.Value
+    - filter: x => x.Email.Value == c  with System.String c = "{it's}";
+    - filter: x => x.Email.Value == x.Str
+    - filter: x => x.Email.Value == x.Str2
+    - filter: x => x.Email.Value == x.NStr
+    - filter: x => x.Email.Value == x.NStr2
+    - filter: x => x.Email.Value != "{it's}"
+    - filter: x => "{it's}" != x.Email.Value
+    - filter: x => x.Email.Value != c  with System.String c = "{it's}";
+    - filter: x => x.Email.Value != x.Str
+    - filter: x => x.Email.Value != x.Str2
+    - filter: x => x.Email.Value != x.NStr
+    - filter: x => x.Email.Value != x.NStr2
+    - filter: x => x.Email.Value.ToLower() == "{it's}"
+    - filter: x => x.Email.Value.ToLower() != "{it's}"
+    - filter: x => x.Email.Value.ToUpper() == "{it's}"
+    - filter: x => x.Email.Value.ToUpper() != "{it's}"
+    - filter: x => x.Email.Value.Trim() == "{it's}"
+    - filter: x => x.Email.Value.Trim() != "{it's}"
+    - filter: x => x.Email.Value.TrimStart() == "{it's}"
+    - filter: x => x.Email.Value.TrimStart() != "{it's}"
+    - filter: x => x.Email.Value.TrimEnd() == "{it's}"
+    - filter: x => x.Email.Value.TrimEnd() != "{it's}"
+    - filter: x => x.Email.Value.Replace("-", "") == "{it's}"
+    - filter: x => x.Email.Value.Replace("-", "") != "{it's}"
+    - filter: x => x.Email.Value.Substring(1) == "{it's}"
+    - filter: x => x.Email.Value.Substring(1) != "{it's}"
+    - filter: x => x.Email.Value.Substring(c) == "{it's}"  with int c = 1;
+    - filter: x => x.Email.Value.Substring(c) != "{it's}"  with int c = 1;
+    - filter: x => x.Email.Value.Substring(1, 3) == "{it's}"
+    - filter: x => x.Email.Value.Substring(1, 3) != "{it's}"
+    - filter: x => x.Email.Value.Substring(c, 3) == "{it's}"  with int c = 1;
+    - filter: x => x.Email.Value.Substring(c, 3) != "{it's}"  with int c = 1;
+    - filter: x => x.Email.Value.Length == 5
+    - filter: x => x.Email.Value.Length != 5
+    - filter: x => x.Email.Value.Length < 5
+    - filter: x => x.Email.Value.Length <= 5
+    - filter: x => x.Email.Value.Length > 5
+    - filter: x => x.Email.Value.Length >= 5
+    - filter: x => x.Email.Value + "x" == "{it's}"
+    - filter: x => x.Email.Value + "x" != "{it's}"
+    - filter: x => "x" + x.Email.Value == "{it's}"
+    - filter: x => "x" + x.Email.Value != "{it's}"
+    - filter: x => x.Email.Value + x.Str2 == "{it's}"
+    - filter: x => x.Email.Value + x.Str2 != "{it's}"
+    - filter: x => x.Email.Value + x.NStr2 == "{it's}"
+    - filter: x => x.Email.Value + x.NStr2 != "{it's}"
+    - filter: x => x.Email.Value + x.Int == "{it's}"
+    - filter: x => x.Email.Value + x.Int != "{it's}"
+    - filter: x => x.Email.Value + x.NInt == "{it's}"
+    - filter: x => x.Email.Value + x.NInt != "{it's}"
+    - filter: x => x.Email.Value + x.Chr == "{it's}"
+    - filter: x => x.Email.Value + x.Chr != "{it's}"
+    - filter: x => !(x.Email.Value == "{it's}")
+    - filter: x => !("{it's}" == x.Email.Value)
+    - filter: x => !(x.Email.Value == x.Str)
+    - filter: x => !(x.Email.Value == x.Str2)
+    - filter: x => !(x.Email.Value == x.NStr)
+    - filter: x => !(x.Email.Value == x.NStr2)
+    - filter: x => !(x.Email.Value != "{it's}")
+    - filter: x => !("{it's}" != x.Email.Value)
+    - filter: x => !(x.Email.Value != x.Str)
+    - filter: x => !(x.Email.Value != x.Str2)
+    - filter: x => !(x.Email.Value != x.NStr)
+    - filter: x => !(x.Email.Value != x.NStr2)
+    - filter: x => !(x.Email.Value.ToLower() == "{it's}")
+    - filter: x => !(x.Email.Value.ToLower() != "{it's}")
+    - filter: x => !(x.Email.Value.ToUpper() == "{it's}")
+    - filter: x => !(x.Email.Value.ToUpper() != "{it's}")
+    - filter: x => !(x.Email.Value.Trim() == "{it's}")
+    - filter: x => !(x.Email.Value.Trim() != "{it's}")
+    - filter: x => !(x.Email.Value.TrimStart() == "{it's}")
+    - filter: x => !(x.Email.Value.TrimStart() != "{it's}")
+    - filter: x => !(x.Email.Value.TrimEnd() == "{it's}")
+    - filter: x => !(x.Email.Value.TrimEnd() != "{it's}")
+    - filter: x => !(x.Email.Value.Replace("-", "") == "{it's}")
+    - filter: x => !(x.Email.Value.Replace("-", "") != "{it's}")
+    - filter: x => !(x.Email.Value.Substring(1) == "{it's}")
+    - filter: x => !(x.Email.Value.Substring(1) != "{it's}")
+    - filter: x => !(x.Email.Value.Substring(1, 3) == "{it's}")
+    - filter: x => !(x.Email.Value.Substring(1, 3) != "{it's}")
+    - filter: x => !(x.Email.Value.Length == 5)
+    - filter: x => !(x.Email.Value.Length != 5)
+    - filter: x => !(x.Email.Value.Length < 5)
+    - filter: x => !(x.Email.Value.Length <= 5)
+    - filter: x => !(x.Email.Value.Length > 5)
+    - filter: x => !(x.Email.Value.Length >= 5)
+    - filter: x => !(x.Email.Value + "x" == "{it's}")
+    - filter: x => !(x.Email.Value + "x" != "{it's}")
+    - filter: x => !("x" + x.Email.Value == "{it's}")
+    - filter: x => !("x" + x.Email.Value != "{it's}")
+    - filter: x => !(x.Email.Value + x.Str2 == "{it's}")
+    - filter: x => !(x.Email.Value + x.Str2 != "{it's}")
+    - filter: x => !(x.Email.Value + x.NStr2 == "{it's}")
+    - filter: x => !(x.Email.Value + x.NStr2 != "{it's}")
+    - filter: x => !(x.Email.Value + x.Int == "{it's}")
+    - filter: x => !(x.Email.Value + x.Int != "{it's}")
+    - filter: x => !(x.Email.Value + x.NInt == "{it's}")
+    - filter: x => !(x.Email.Value + x.NInt != "{it's}")
+    - filter: x => !(x.Email.Value + x.Chr == "{it's}")
+    - filter: x => !(x.Email.Value + x.Chr != "{it's}")
+
+unchecked: Date and time JSON members in an expression
+    A date or time member of a ToJson() document renders as text, not as EF Core's
+    CAST(… AS timestamp with time zone), because that cast is not IMMUTABLE and PostgreSQL refuses it in
+    an index (5.4.0). A non-unique index that starts with one is refused at migrations add.
+    - expression: x => x.Doc.Date
+
+unchecked: Date and time JSON members compared in a filter (#119)
+    The text a date or time JSON member renders as meets a typed column, and PostgreSQL refuses the
+    predicate at apply. Open: https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/issues/119
+    - filter: x => x.Doc.Date == x.Date
+    - filter: x => x.Doc.Date == x.NDate
+    - filter: x => x.Doc.Date != x.Date
+    - filter: x => x.Doc.Date != x.NDate
+    - filter: x => x.Doc.Date < x.Date
+    - filter: x => x.Doc.Date < x.NDate
+    - filter: x => x.Doc.Date <= x.Date
+    - filter: x => x.Doc.Date <= x.NDate
+    - filter: x => x.Doc.Date > x.Date
+    - filter: x => x.Doc.Date > x.NDate
+    - filter: x => x.Doc.Date >= x.Date
+    - filter: x => x.Doc.Date >= x.NDate
+    - filter: x => !(x.Doc.Date == x.Date)
+    - filter: x => !(x.Doc.Date == x.NDate)
+    - filter: x => !(x.Doc.Date != x.Date)
+    - filter: x => !(x.Doc.Date != x.NDate)
+    - filter: x => !(x.Doc.Date < x.Date)
+    - filter: x => !(x.Doc.Date < x.NDate)
+    - filter: x => !(x.Doc.Date <= x.Date)
+    - filter: x => !(x.Doc.Date <= x.NDate)
+    - filter: x => !(x.Doc.Date > x.Date)
+    - filter: x => !(x.Doc.Date > x.NDate)
+    - filter: x => !(x.Doc.Date >= x.Date)
+    - filter: x => !(x.Doc.Date >= x.NDate)
+
+unchecked: Char comparisons, HasValue, Value and members of scalar types (#80)
+    A char comparison renders the char's code ("Chr" = 65), which PostgreSQL refuses at apply, and
+    HasValue, Value or a member such as DateTime.Year passes the declaration as a property path and
+    fails at migrations add. Open: https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/issues/80
+    - expression: x => x.NInt.HasValue
+    - expression: x => x.NInt.Value
+    - expression: x => x.NLong.HasValue
+    - expression: x => x.NLong.Value
+    - expression: x => x.NShort.HasValue
+    - expression: x => x.NShort.Value
+    - expression: x => x.NByte.HasValue
+    - expression: x => x.NByte.Value
+    - expression: x => x.NDec.HasValue
+    - expression: x => x.NDec.Value
+    - expression: x => x.NDbl.HasValue
+    - expression: x => x.NDbl.Value
+    - expression: x => x.NFlt.HasValue
+    - expression: x => x.NFlt.Value
+    - expression: x => x.NBool.HasValue
+    - expression: x => x.NBool.Value
+    - expression: x => x.NChr.HasValue
+    - expression: x => x.NChr.Value
+    - expression: x => x.NGuid.HasValue
+    - expression: x => x.NGuid.Value
+    - expression: x => x.NDate.HasValue
+    - expression: x => x.NDate.Value
+    - expression: x => x.Doc.NInt.HasValue
+    - expression: x => x.Doc.NInt.Value
+    - expression: x => x.Doc.NBool.HasValue
+    - expression: x => x.Doc.NBool.Value
+    - filter: x => x.NInt.HasValue == true
+    - filter: x => x.NInt.HasValue != true
+    - filter: x => x.NInt.Value == 5
+    - filter: x => x.NInt.Value != 5
+    - filter: x => x.NInt.Value < 5
+    - filter: x => x.NInt.Value <= 5
+    - filter: x => x.NInt.Value > 5
+    - filter: x => x.NInt.Value >= 5
+    - filter: x => x.NLong.HasValue == true
+    - filter: x => x.NLong.HasValue != true
+    - filter: x => x.NLong.Value == 5L
+    - filter: x => x.NLong.Value != 5L
+    - filter: x => x.NLong.Value < 5L
+    - filter: x => x.NLong.Value <= 5L
+    - filter: x => x.NLong.Value > 5L
+    - filter: x => x.NLong.Value >= 5L
+    - filter: x => x.NShort.HasValue == true
+    - filter: x => x.NShort.HasValue != true
+    - filter: x => x.NShort.Value == (short)5
+    - filter: x => x.NShort.Value != (short)5
+    - filter: x => x.NShort.Value < (short)5
+    - filter: x => x.NShort.Value <= (short)5
+    - filter: x => x.NShort.Value > (short)5
+    - filter: x => x.NShort.Value >= (short)5
+    - filter: x => x.NByte.HasValue == true
+    - filter: x => x.NByte.HasValue != true
+    - filter: x => x.NByte.Value == (byte)5
+    - filter: x => x.NByte.Value != (byte)5
+    - filter: x => x.NByte.Value < (byte)5
+    - filter: x => x.NByte.Value <= (byte)5
+    - filter: x => x.NByte.Value > (byte)5
+    - filter: x => x.NByte.Value >= (byte)5
+    - filter: x => x.NDec.HasValue == true
+    - filter: x => x.NDec.HasValue != true
+    - filter: x => x.NDec.Value == 5.5m
+    - filter: x => x.NDec.Value != 5.5m
+    - filter: x => x.NDec.Value < 5.5m
+    - filter: x => x.NDec.Value <= 5.5m
+    - filter: x => x.NDec.Value > 5.5m
+    - filter: x => x.NDec.Value >= 5.5m
+    - filter: x => x.NDbl.HasValue == true
+    - filter: x => x.NDbl.HasValue != true
+    - filter: x => x.NDbl.Value == 5.5
+    - filter: x => x.NDbl.Value != 5.5
+    - filter: x => x.NDbl.Value < 5.5
+    - filter: x => x.NDbl.Value <= 5.5
+    - filter: x => x.NDbl.Value > 5.5
+    - filter: x => x.NDbl.Value >= 5.5
+    - filter: x => x.NFlt.HasValue == true
+    - filter: x => x.NFlt.HasValue != true
+    - filter: x => x.NFlt.Value == 5.5f
+    - filter: x => x.NFlt.Value != 5.5f
+    - filter: x => x.NFlt.Value < 5.5f
+    - filter: x => x.NFlt.Value <= 5.5f
+    - filter: x => x.NFlt.Value > 5.5f
+    - filter: x => x.NFlt.Value >= 5.5f
+    - filter: x => x.NBool.HasValue == true
+    - filter: x => x.NBool.HasValue != true
+    - filter: x => x.NBool.Value == true
+    - filter: x => x.NBool.Value != true
+    - filter: x => x.NChr.HasValue == true
+    - filter: x => x.NChr.HasValue != true
+    - filter: x => x.NChr.Value == 'A'
+    - filter: x => x.NChr.Value != 'A'
+    - filter: x => x.NChr.Value < 'A'
+    - filter: x => x.NChr.Value <= 'A'
+    - filter: x => x.NChr.Value > 'A'
+    - filter: x => x.NChr.Value >= 'A'
+    - filter: x => x.NGuid.HasValue == true
+    - filter: x => x.NGuid.HasValue != true
+    - filter: x => x.NDate.HasValue == true
+    - filter: x => x.NDate.HasValue != true
+    - filter: x => x.Doc.NInt.HasValue == true
+    - filter: x => x.Doc.NInt.HasValue != true
+    - filter: x => x.Doc.NInt.Value == 5
+    - filter: x => x.Doc.NInt.Value != 5
+    - filter: x => x.Doc.NInt.Value < 5
+    - filter: x => x.Doc.NInt.Value <= 5
+    - filter: x => x.Doc.NInt.Value > 5
+    - filter: x => x.Doc.NInt.Value >= 5
+    - filter: x => x.Doc.NBool.HasValue == true
+    - filter: x => x.Doc.NBool.HasValue != true
+    - filter: x => x.Doc.NBool.Value == true
+    - filter: x => x.Doc.NBool.Value != true
+    - filter: x => !(x.NInt.HasValue == true)
+    - filter: x => !(x.NInt.HasValue != true)
+    - filter: x => !(x.NInt.Value == 5)
+    - filter: x => !(x.NInt.Value != 5)
+    - filter: x => !(x.NInt.Value < 5)
+    - filter: x => !(x.NInt.Value <= 5)
+    - filter: x => !(x.NInt.Value > 5)
+    - filter: x => !(x.NInt.Value >= 5)
+    - filter: x => !(x.NLong.HasValue == true)
+    - filter: x => !(x.NLong.HasValue != true)
+    - filter: x => !(x.NLong.Value == 5L)
+    - filter: x => !(x.NLong.Value != 5L)
+    - filter: x => !(x.NLong.Value < 5L)
+    - filter: x => !(x.NLong.Value <= 5L)
+    - filter: x => !(x.NLong.Value > 5L)
+    - filter: x => !(x.NLong.Value >= 5L)
+    - filter: x => !(x.NShort.HasValue == true)
+    - filter: x => !(x.NShort.HasValue != true)
+    - filter: x => !(x.NShort.Value == (short)5)
+    - filter: x => !(x.NShort.Value != (short)5)
+    - filter: x => !(x.NShort.Value < (short)5)
+    - filter: x => !(x.NShort.Value <= (short)5)
+    - filter: x => !(x.NShort.Value > (short)5)
+    - filter: x => !(x.NShort.Value >= (short)5)
+    - filter: x => !(x.NByte.HasValue == true)
+    - filter: x => !(x.NByte.HasValue != true)
+    - filter: x => !(x.NByte.Value == (byte)5)
+    - filter: x => !(x.NByte.Value != (byte)5)
+    - filter: x => !(x.NByte.Value < (byte)5)
+    - filter: x => !(x.NByte.Value <= (byte)5)
+    - filter: x => !(x.NByte.Value > (byte)5)
+    - filter: x => !(x.NByte.Value >= (byte)5)
+    - filter: x => !(x.NDec.HasValue == true)
+    - filter: x => !(x.NDec.HasValue != true)
+    - filter: x => !(x.NDec.Value == 5.5m)
+    - filter: x => !(x.NDec.Value != 5.5m)
+    - filter: x => !(x.NDec.Value < 5.5m)
+    - filter: x => !(x.NDec.Value <= 5.5m)
+    - filter: x => !(x.NDec.Value > 5.5m)
+    - filter: x => !(x.NDec.Value >= 5.5m)
+    - filter: x => !(x.NDbl.HasValue == true)
+    - filter: x => !(x.NDbl.HasValue != true)
+    - filter: x => !(x.NDbl.Value == 5.5)
+    - filter: x => !(x.NDbl.Value != 5.5)
+    - filter: x => !(x.NDbl.Value < 5.5)
+    - filter: x => !(x.NDbl.Value <= 5.5)
+    - filter: x => !(x.NDbl.Value > 5.5)
+    - filter: x => !(x.NDbl.Value >= 5.5)
+    - filter: x => !(x.NFlt.HasValue == true)
+    - filter: x => !(x.NFlt.HasValue != true)
+    - filter: x => !(x.NFlt.Value == 5.5f)
+    - filter: x => !(x.NFlt.Value != 5.5f)
+    - filter: x => !(x.NFlt.Value < 5.5f)
+    - filter: x => !(x.NFlt.Value <= 5.5f)
+    - filter: x => !(x.NFlt.Value > 5.5f)
+    - filter: x => !(x.NFlt.Value >= 5.5f)
+    - filter: x => !(x.NBool.HasValue == true)
+    - filter: x => !(x.NBool.HasValue != true)
+    - filter: x => !(x.NBool.Value == true)
+    - filter: x => !(x.NBool.Value != true)
+    - filter: x => !(x.NChr.HasValue == true)
+    - filter: x => !(x.NChr.HasValue != true)
+    - filter: x => !(x.NChr.Value == 'A')
+    - filter: x => !(x.NChr.Value != 'A')
+    - filter: x => !(x.NChr.Value < 'A')
+    - filter: x => !(x.NChr.Value <= 'A')
+    - filter: x => !(x.NChr.Value > 'A')
+    - filter: x => !(x.NChr.Value >= 'A')
+    - filter: x => !(x.NGuid.HasValue == true)
+    - filter: x => !(x.NGuid.HasValue != true)
+    - filter: x => !(x.NDate.HasValue == true)
+    - filter: x => !(x.NDate.HasValue != true)
+    - filter: x => !(x.Doc.NInt.HasValue == true)
+    - filter: x => !(x.Doc.NInt.HasValue != true)
+    - filter: x => !(x.Doc.NInt.Value == 5)
+    - filter: x => !(x.Doc.NInt.Value != 5)
+    - filter: x => !(x.Doc.NInt.Value < 5)
+    - filter: x => !(x.Doc.NInt.Value <= 5)
+    - filter: x => !(x.Doc.NInt.Value > 5)
+    - filter: x => !(x.Doc.NInt.Value >= 5)
+    - filter: x => !(x.Doc.NBool.HasValue == true)
+    - filter: x => !(x.Doc.NBool.HasValue != true)
+    - filter: x => !(x.Doc.NBool.Value == true)
+    - filter: x => !(x.Doc.NBool.Value != true)
+    - filter: x => x.NInt.HasValue
+    - filter: x => !x.NInt.HasValue
+    - filter: x => x.NLong.HasValue
+    - filter: x => !x.NLong.HasValue
+    - filter: x => x.NShort.HasValue
+    - filter: x => !x.NShort.HasValue
+    - filter: x => x.NByte.HasValue
+    - filter: x => !x.NByte.HasValue
+    - filter: x => x.NDec.HasValue
+    - filter: x => !x.NDec.HasValue
+    - filter: x => x.NDbl.HasValue
+    - filter: x => !x.NDbl.HasValue
+    - filter: x => x.NFlt.HasValue
+    - filter: x => !x.NFlt.HasValue
+    - filter: x => x.NBool.HasValue
+    - filter: x => !x.NBool.HasValue
+    - filter: x => x.NBool.Value
+    - filter: x => !x.NBool.Value
+    - filter: x => x.NChr.HasValue
+    - filter: x => !x.NChr.HasValue
+    - filter: x => x.NGuid.HasValue
+    - filter: x => !x.NGuid.HasValue
+    - filter: x => x.NDate.HasValue
+    - filter: x => !x.NDate.HasValue
+    - filter: x => x.Doc.NInt.HasValue
+    - filter: x => !x.Doc.NInt.HasValue
+    - filter: x => x.Doc.NBool.HasValue
+    - filter: x => !x.Doc.NBool.HasValue
+    - filter: x => x.Doc.NBool.Value
+    - filter: x => !x.Doc.NBool.Value
+    - expression: x => x.Date.Year
+    - expression: x => x.Doc.Date.Year
+    - filter: x => x.Date.Year == 5
+    - filter: x => x.Date.Year != 5
+    - filter: x => x.Date.Year < 5
+    - filter: x => x.Date.Year <= 5
+    - filter: x => x.Date.Year > 5
+    - filter: x => x.Date.Year >= 5
+    - filter: x => x.Doc.Date.Year == 5
+    - filter: x => x.Doc.Date.Year != 5
+    - filter: x => x.Doc.Date.Year < 5
+    - filter: x => x.Doc.Date.Year <= 5
+    - filter: x => x.Doc.Date.Year > 5
+    - filter: x => x.Doc.Date.Year >= 5
+    - filter: x => !(x.Date.Year == 5)
+    - filter: x => !(x.Date.Year != 5)
+    - filter: x => !(x.Date.Year < 5)
+    - filter: x => !(x.Date.Year <= 5)
+    - filter: x => !(x.Date.Year > 5)
+    - filter: x => !(x.Date.Year >= 5)
+    - filter: x => !(x.Doc.Date.Year == 5)
+    - filter: x => !(x.Doc.Date.Year != 5)
+    - filter: x => !(x.Doc.Date.Year < 5)
+    - filter: x => !(x.Doc.Date.Year <= 5)
+    - filter: x => !(x.Doc.Date.Year > 5)
+    - filter: x => !(x.Doc.Date.Year >= 5)
+    - filter: x => x.Chr == 'A'
+    - filter: x => 'A' == x.Chr
+    - filter: x => x.Chr != 'A'
+    - filter: x => 'A' != x.Chr
+    - filter: x => x.Chr < 'A'
+    - filter: x => 'A' < x.Chr
+    - filter: x => x.Chr <= 'A'
+    - filter: x => 'A' <= x.Chr
+    - filter: x => x.Chr > 'A'
+    - filter: x => 'A' > x.Chr
+    - filter: x => x.Chr >= 'A'
+    - filter: x => 'A' >= x.Chr
+    - filter: x => (x.NChr ?? 'A') == 'A'
+    - filter: x => (x.NChr ?? 'A') != 'A'
+    - filter: x => (x.NChr ?? 'A') < 'A'
+    - filter: x => (x.NChr ?? 'A') <= 'A'
+    - filter: x => (x.NChr ?? 'A') > 'A'
+    - filter: x => (x.NChr ?? 'A') >= 'A'
+    - filter: x => x.Doc.Chr == 'A'
+    - filter: x => 'A' == x.Doc.Chr
+    - filter: x => x.Doc.Chr != 'A'
+    - filter: x => 'A' != x.Doc.Chr
+    - filter: x => x.Doc.Chr < 'A'
+    - filter: x => 'A' < x.Doc.Chr
+    - filter: x => x.Doc.Chr <= 'A'
+    - filter: x => 'A' <= x.Doc.Chr
+    - filter: x => x.Doc.Chr > 'A'
+    - filter: x => 'A' > x.Doc.Chr
+    - filter: x => x.Doc.Chr >= 'A'
+    - filter: x => 'A' >= x.Doc.Chr
+    - filter: x => !(x.Chr == 'A')
+    - filter: x => !('A' == x.Chr)
+    - filter: x => !(x.Chr != 'A')
+    - filter: x => !('A' != x.Chr)
+    - filter: x => !(x.Chr < 'A')
+    - filter: x => !('A' < x.Chr)
+    - filter: x => !(x.Chr <= 'A')
+    - filter: x => !('A' <= x.Chr)
+    - filter: x => !(x.Chr > 'A')
+    - filter: x => !('A' > x.Chr)
+    - filter: x => !(x.Chr >= 'A')
+    - filter: x => !('A' >= x.Chr)
+    - filter: x => !((x.NChr ?? 'A') == 'A')
+    - filter: x => !((x.NChr ?? 'A') != 'A')
+    - filter: x => !((x.NChr ?? 'A') < 'A')
+    - filter: x => !((x.NChr ?? 'A') <= 'A')
+    - filter: x => !((x.NChr ?? 'A') > 'A')
+    - filter: x => !((x.NChr ?? 'A') >= 'A')
+    - filter: x => !(x.Doc.Chr == 'A')
+    - filter: x => !('A' == x.Doc.Chr)
+    - filter: x => !(x.Doc.Chr != 'A')
+    - filter: x => !('A' != x.Doc.Chr)
+    - filter: x => !(x.Doc.Chr < 'A')
+    - filter: x => !('A' < x.Doc.Chr)
+    - filter: x => !(x.Doc.Chr <= 'A')
+    - filter: x => !('A' <= x.Doc.Chr)
+    - filter: x => !(x.Doc.Chr > 'A')
+    - filter: x => !('A' > x.Doc.Chr)
+    - filter: x => !(x.Doc.Chr >= 'A')
+    - filter: x => !('A' >= x.Doc.Chr)
+
+unchecked: Concatenation with a nullable operand (#94)
+    C# concatenates null as an empty string, PostgreSQL's || returns NULL, and EF Core wraps the
+    operand in COALESCE(…, ''). The index holds NULL where the query computes a value, so a unique
+    index leaves those rows unchecked. Open: https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/issues/94
+    - expression: x => x.Str + x.NStr2
+    - expression: x => x.Str + x.NInt
+    - expression: x => x.NStr + "x"
+    - expression: x => "x" + x.NStr
+    - expression: x => x.NStr + x.Str2
+    - expression: x => x.NStr + x.NStr2
+    - expression: x => x.NStr + x.Int
+    - expression: x => x.NStr + x.NInt
+    - expression: x => x.NStr + x.Chr
+    - expression: x => x.Doc.Str + x.NStr2
+    - expression: x => x.Doc.Str + x.NInt
+    - expression: x => x.Doc.NStr + "x"
+    - expression: x => "x" + x.Doc.NStr
+    - expression: x => x.Doc.NStr + x.Str2
+    - expression: x => x.Doc.NStr + x.NStr2
+    - expression: x => x.Doc.NStr + x.Int
+    - expression: x => x.Doc.NStr + x.NInt
+    - expression: x => x.Doc.NStr + x.Chr
+    - filter: x => x.Str + x.NStr2 == "{it's}"
+    - filter: x => x.Str + x.NStr2 != "{it's}"
+    - filter: x => x.Str + x.NInt == "{it's}"
+    - filter: x => x.Str + x.NInt != "{it's}"
+    - filter: x => x.NStr + "x" == "{it's}"
+    - filter: x => x.NStr + "x" != "{it's}"
+    - filter: x => "x" + x.NStr == "{it's}"
+    - filter: x => "x" + x.NStr != "{it's}"
+    - filter: x => x.NStr + x.Str2 == "{it's}"
+    - filter: x => x.NStr + x.Str2 != "{it's}"
+    - filter: x => x.NStr + x.NStr2 == "{it's}"
+    - filter: x => x.NStr + x.NStr2 != "{it's}"
+    - filter: x => x.NStr + x.Int == "{it's}"
+    - filter: x => x.NStr + x.Int != "{it's}"
+    - filter: x => x.NStr + x.NInt == "{it's}"
+    - filter: x => x.NStr + x.NInt != "{it's}"
+    - filter: x => x.NStr + x.Chr == "{it's}"
+    - filter: x => x.NStr + x.Chr != "{it's}"
+    - filter: x => x.Doc.Str + x.NStr2 == "{it's}"
+    - filter: x => x.Doc.Str + x.NStr2 != "{it's}"
+    - filter: x => x.Doc.Str + x.NInt == "{it's}"
+    - filter: x => x.Doc.Str + x.NInt != "{it's}"
+    - filter: x => x.Doc.NStr + "x" == "{it's}"
+    - filter: x => x.Doc.NStr + "x" != "{it's}"
+    - filter: x => "x" + x.Doc.NStr == "{it's}"
+    - filter: x => "x" + x.Doc.NStr != "{it's}"
+    - filter: x => x.Doc.NStr + x.Str2 == "{it's}"
+    - filter: x => x.Doc.NStr + x.Str2 != "{it's}"
+    - filter: x => x.Doc.NStr + x.NStr2 == "{it's}"
+    - filter: x => x.Doc.NStr + x.NStr2 != "{it's}"
+    - filter: x => x.Doc.NStr + x.Int == "{it's}"
+    - filter: x => x.Doc.NStr + x.Int != "{it's}"
+    - filter: x => x.Doc.NStr + x.NInt == "{it's}"
+    - filter: x => x.Doc.NStr + x.NInt != "{it's}"
+    - filter: x => x.Doc.NStr + x.Chr == "{it's}"
+    - filter: x => x.Doc.NStr + x.Chr != "{it's}"
+    - filter: x => !(x.Str + x.NStr2 == "{it's}")
+    - filter: x => !(x.Str + x.NStr2 != "{it's}")
+    - filter: x => !(x.Str + x.NInt == "{it's}")
+    - filter: x => !(x.Str + x.NInt != "{it's}")
+    - filter: x => !(x.NStr + "x" == "{it's}")
+    - filter: x => !(x.NStr + "x" != "{it's}")
+    - filter: x => !("x" + x.NStr == "{it's}")
+    - filter: x => !("x" + x.NStr != "{it's}")
+    - filter: x => !(x.NStr + x.Str2 == "{it's}")
+    - filter: x => !(x.NStr + x.Str2 != "{it's}")
+    - filter: x => !(x.NStr + x.NStr2 == "{it's}")
+    - filter: x => !(x.NStr + x.NStr2 != "{it's}")
+    - filter: x => !(x.NStr + x.Int == "{it's}")
+    - filter: x => !(x.NStr + x.Int != "{it's}")
+    - filter: x => !(x.NStr + x.NInt == "{it's}")
+    - filter: x => !(x.NStr + x.NInt != "{it's}")
+    - filter: x => !(x.NStr + x.Chr == "{it's}")
+    - filter: x => !(x.NStr + x.Chr != "{it's}")
+    - filter: x => !(x.Doc.Str + x.NStr2 == "{it's}")
+    - filter: x => !(x.Doc.Str + x.NStr2 != "{it's}")
+    - filter: x => !(x.Doc.Str + x.NInt == "{it's}")
+    - filter: x => !(x.Doc.Str + x.NInt != "{it's}")
+    - filter: x => !(x.Doc.NStr + "x" == "{it's}")
+    - filter: x => !(x.Doc.NStr + "x" != "{it's}")
+    - filter: x => !("x" + x.Doc.NStr == "{it's}")
+    - filter: x => !("x" + x.Doc.NStr != "{it's}")
+    - filter: x => !(x.Doc.NStr + x.Str2 == "{it's}")
+    - filter: x => !(x.Doc.NStr + x.Str2 != "{it's}")
+    - filter: x => !(x.Doc.NStr + x.NStr2 == "{it's}")
+    - filter: x => !(x.Doc.NStr + x.NStr2 != "{it's}")
+    - filter: x => !(x.Doc.NStr + x.Int == "{it's}")
+    - filter: x => !(x.Doc.NStr + x.Int != "{it's}")
+    - filter: x => !(x.Doc.NStr + x.NInt == "{it's}")
+    - filter: x => !(x.Doc.NStr + x.NInt != "{it's}")
+    - filter: x => !(x.Doc.NStr + x.Chr == "{it's}")
+    - filter: x => !(x.Doc.NStr + x.Chr != "{it's}")
+    - expression: x => x.Str + c  with string? c = null;
+
+same: A captured Substring start renders unfolded (#117)
+    substring("Str", (1 + 1)) against EF Core's substring("Str", 2): PostgreSQL folds the constant
+    before it matches an index to a query, so the index serves it. The live sweep checks it.
+    Open: https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/issues/117
+    - expression: x => x.Str.Substring(c)  with int c = 1;
+    - expression: x => x.Str.Substring(c, 3)  with int c = 1;
+    - expression: x => x.NStr.Substring(c)  with int c = 1;
+    - expression: x => x.NStr.Substring(c, 3)  with int c = 1;
+    - expression: x => x.Doc.Str.Substring(c)  with int c = 1;
+    - expression: x => x.Doc.Str.Substring(c, 3)  with int c = 1;
+    - expression: x => x.Doc.NStr.Substring(c)  with int c = 1;
+    - expression: x => x.Doc.NStr.Substring(c, 3)  with int c = 1;
+    - filter: x => x.Str.Substring(c) == "{it's}"  with int c = 1;
+    - filter: x => x.Str.Substring(c) != "{it's}"  with int c = 1;
+    - filter: x => x.Str.Substring(c, 3) == "{it's}"  with int c = 1;
+    - filter: x => x.Str.Substring(c, 3) != "{it's}"  with int c = 1;
+    - filter: x => x.NStr.Substring(c) == "{it's}"  with int c = 1;
+    - filter: x => x.NStr.Substring(c) != "{it's}"  with int c = 1;
+    - filter: x => x.NStr.Substring(c, 3) == "{it's}"  with int c = 1;
+    - filter: x => x.NStr.Substring(c, 3) != "{it's}"  with int c = 1;
+    - filter: x => x.Doc.Str.Substring(c) == "{it's}"  with int c = 1;
+    - filter: x => x.Doc.Str.Substring(c) != "{it's}"  with int c = 1;
+    - filter: x => x.Doc.Str.Substring(c, 3) == "{it's}"  with int c = 1;
+    - filter: x => x.Doc.Str.Substring(c, 3) != "{it's}"  with int c = 1;
+    - filter: x => x.Doc.NStr.Substring(c) == "{it's}"  with int c = 1;
+    - filter: x => x.Doc.NStr.Substring(c) != "{it's}"  with int c = 1;
+    - filter: x => x.Doc.NStr.Substring(c, 3) == "{it's}"  with int c = 1;
+    - filter: x => x.Doc.NStr.Substring(c, 3) != "{it's}"  with int c = 1;
+
+same: Null checks shaped unlike EF Core's (#118)
+    The translator tests a computed operand for NULL (lower("NStr") IS NULL) where EF Core tests its
+    columns ("NStr" IS NULL), and writes a negated comparison over a nullable operand as a disjunction
+    where EF Core writes a CASE. Every function the translator accepts is strict and a COALESCE is
+    null only when all its inputs are, so the rows are the same; the live sweep checks it.
+    Open: https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/issues/118
+    - filter: x => x.NStr.ToLower() != "{it's}"
+    - filter: x => x.NStr.ToUpper() != "{it's}"
+    - filter: x => x.NStr.Trim() != "{it's}"
+    - filter: x => x.NStr.TrimStart() != "{it's}"
+    - filter: x => x.NStr.TrimEnd() != "{it's}"
+    - filter: x => x.NStr.Replace("-", "") != "{it's}"
+    - filter: x => x.NStr.Substring(1) != "{it's}"
+    - filter: x => x.NStr.Substring(1, 3) != "{it's}"
+    - filter: x => x.NStr.Length != 5
+    - filter: x => (x.NStr ?? x.NStr2) != "{it's}"
+    - filter: x => x.Doc.NStr.ToLower() != "{it's}"
+    - filter: x => x.Doc.NStr.ToUpper() != "{it's}"
+    - filter: x => x.Doc.NStr.Trim() != "{it's}"
+    - filter: x => x.Doc.NStr.TrimStart() != "{it's}"
+    - filter: x => x.Doc.NStr.TrimEnd() != "{it's}"
+    - filter: x => x.Doc.NStr.Replace("-", "") != "{it's}"
+    - filter: x => x.Doc.NStr.Substring(1) != "{it's}"
+    - filter: x => x.Doc.NStr.Substring(1, 3) != "{it's}"
+    - filter: x => x.Doc.NStr.Length != 5
+    - filter: x => (x.Doc.NStr ?? x.NStr2) != "{it's}"
+    - filter: x => !(x.NStr.ToLower() == "{it's}")
+    - filter: x => !(x.NStr.ToUpper() == "{it's}")
+    - filter: x => !(x.NStr.Trim() == "{it's}")
+    - filter: x => !(x.NStr.TrimStart() == "{it's}")
+    - filter: x => !(x.NStr.TrimEnd() == "{it's}")
+    - filter: x => !(x.NStr.Replace("-", "") == "{it's}")
+    - filter: x => !(x.NStr.Substring(1) == "{it's}")
+    - filter: x => !(x.NStr.Substring(1, 3) == "{it's}")
+    - filter: x => !(x.NStr.Length == 5)
+    - filter: x => !((x.NStr ?? x.NStr2) == "{it's}")
+    - filter: x => !(x.Doc.NStr.ToLower() == "{it's}")
+    - filter: x => !(x.Doc.NStr.ToUpper() == "{it's}")
+    - filter: x => !(x.Doc.NStr.Trim() == "{it's}")
+    - filter: x => !(x.Doc.NStr.TrimStart() == "{it's}")
+    - filter: x => !(x.Doc.NStr.TrimEnd() == "{it's}")
+    - filter: x => !(x.Doc.NStr.Replace("-", "") == "{it's}")
+    - filter: x => !(x.Doc.NStr.Substring(1) == "{it's}")
+    - filter: x => !(x.Doc.NStr.Substring(1, 3) == "{it's}")
+    - filter: x => !(x.Doc.NStr.Length == 5)
+    - filter: x => !((x.Doc.NStr ?? x.NStr2) == "{it's}")
+    - filter: x => !(x.Int < x.NInt)
+    - filter: x => !(x.Int <= x.NInt)
+    - filter: x => !(x.Int > x.NInt)
+    - filter: x => !(x.Int >= x.NInt)
+    - filter: x => !(x.Long < x.NLong)
+    - filter: x => !(x.Long <= x.NLong)
+    - filter: x => !(x.Long > x.NLong)
+    - filter: x => !(x.Long >= x.NLong)
+    - filter: x => !(x.Short < x.NShort)
+    - filter: x => !(x.Short <= x.NShort)
+    - filter: x => !(x.Short > x.NShort)
+    - filter: x => !(x.Short >= x.NShort)
+    - filter: x => !(x.Byte < x.NByte)
+    - filter: x => !(x.Byte <= x.NByte)
+    - filter: x => !(x.Byte > x.NByte)
+    - filter: x => !(x.Byte >= x.NByte)
+    - filter: x => !(x.Dec < x.NDec)
+    - filter: x => !(x.Dec <= x.NDec)
+    - filter: x => !(x.Dec > x.NDec)
+    - filter: x => !(x.Dec >= x.NDec)
+    - filter: x => !(x.Dbl < x.NDbl)
+    - filter: x => !(x.Dbl <= x.NDbl)
+    - filter: x => !(x.Dbl > x.NDbl)
+    - filter: x => !(x.Dbl >= x.NDbl)
+    - filter: x => !(x.Flt < x.NFlt)
+    - filter: x => !(x.Flt <= x.NFlt)
+    - filter: x => !(x.Flt > x.NFlt)
+    - filter: x => !(x.Flt >= x.NFlt)
+    - filter: x => !(x.Chr < x.NChr)
+    - filter: x => !(x.Chr <= x.NChr)
+    - filter: x => !(x.Chr > x.NChr)
+    - filter: x => !(x.Chr >= x.NChr)
+    - filter: x => !(x.Guid < x.NGuid)
+    - filter: x => !(x.Guid <= x.NGuid)
+    - filter: x => !(x.Guid > x.NGuid)
+    - filter: x => !(x.Guid >= x.NGuid)
+    - filter: x => !(x.Date < x.NDate)
+    - filter: x => !(x.Date <= x.NDate)
+    - filter: x => !(x.Date > x.NDate)
+    - filter: x => !(x.Date >= x.NDate)
+    - filter: x => !(x.NStr.Length < 5)
+    - filter: x => !(x.NStr.Length <= 5)
+    - filter: x => !(x.NStr.Length > 5)
+    - filter: x => !(x.NStr.Length >= 5)
+    - filter: x => !(x.NInt < 5)
+    - filter: x => !(5 < x.NInt)
+    - filter: x => !(x.NInt < x.Int)
+    - filter: x => !(x.NInt <= 5)
+    - filter: x => !(5 <= x.NInt)
+    - filter: x => !(x.NInt <= x.Int)
+    - filter: x => !(x.NInt > 5)
+    - filter: x => !(5 > x.NInt)
+    - filter: x => !(x.NInt > x.Int)
+    - filter: x => !(x.NInt >= 5)
+    - filter: x => !(5 >= x.NInt)
+    - filter: x => !(x.NInt >= x.Int)
+    - filter: x => !(x.NLong < 5L)
+    - filter: x => !(5L < x.NLong)
+    - filter: x => !(x.NLong < x.Long)
+    - filter: x => !(x.NLong <= 5L)
+    - filter: x => !(5L <= x.NLong)
+    - filter: x => !(x.NLong <= x.Long)
+    - filter: x => !(x.NLong > 5L)
+    - filter: x => !(5L > x.NLong)
+    - filter: x => !(x.NLong > x.Long)
+    - filter: x => !(x.NLong >= 5L)
+    - filter: x => !(5L >= x.NLong)
+    - filter: x => !(x.NLong >= x.Long)
+    - filter: x => !(x.NShort < (short)5)
+    - filter: x => !((short)5 < x.NShort)
+    - filter: x => !(x.NShort < x.Short)
+    - filter: x => !(x.NShort <= (short)5)
+    - filter: x => !((short)5 <= x.NShort)
+    - filter: x => !(x.NShort <= x.Short)
+    - filter: x => !(x.NShort > (short)5)
+    - filter: x => !((short)5 > x.NShort)
+    - filter: x => !(x.NShort > x.Short)
+    - filter: x => !(x.NShort >= (short)5)
+    - filter: x => !((short)5 >= x.NShort)
+    - filter: x => !(x.NShort >= x.Short)
+    - filter: x => !(x.NByte < (byte)5)
+    - filter: x => !((byte)5 < x.NByte)
+    - filter: x => !(x.NByte < x.Byte)
+    - filter: x => !(x.NByte <= (byte)5)
+    - filter: x => !((byte)5 <= x.NByte)
+    - filter: x => !(x.NByte <= x.Byte)
+    - filter: x => !(x.NByte > (byte)5)
+    - filter: x => !((byte)5 > x.NByte)
+    - filter: x => !(x.NByte > x.Byte)
+    - filter: x => !(x.NByte >= (byte)5)
+    - filter: x => !((byte)5 >= x.NByte)
+    - filter: x => !(x.NByte >= x.Byte)
+    - filter: x => !(x.NDec < 5.5m)
+    - filter: x => !(5.5m < x.NDec)
+    - filter: x => !(x.NDec < x.Dec)
+    - filter: x => !(x.NDec <= 5.5m)
+    - filter: x => !(5.5m <= x.NDec)
+    - filter: x => !(x.NDec <= x.Dec)
+    - filter: x => !(x.NDec > 5.5m)
+    - filter: x => !(5.5m > x.NDec)
+    - filter: x => !(x.NDec > x.Dec)
+    - filter: x => !(x.NDec >= 5.5m)
+    - filter: x => !(5.5m >= x.NDec)
+    - filter: x => !(x.NDec >= x.Dec)
+    - filter: x => !(x.NDbl < 5.5)
+    - filter: x => !(5.5 < x.NDbl)
+    - filter: x => !(x.NDbl < x.Dbl)
+    - filter: x => !(x.NDbl <= 5.5)
+    - filter: x => !(5.5 <= x.NDbl)
+    - filter: x => !(x.NDbl <= x.Dbl)
+    - filter: x => !(x.NDbl > 5.5)
+    - filter: x => !(5.5 > x.NDbl)
+    - filter: x => !(x.NDbl > x.Dbl)
+    - filter: x => !(x.NDbl >= 5.5)
+    - filter: x => !(5.5 >= x.NDbl)
+    - filter: x => !(x.NDbl >= x.Dbl)
+    - filter: x => !(x.NFlt < 5.5f)
+    - filter: x => !(5.5f < x.NFlt)
+    - filter: x => !(x.NFlt < x.Flt)
+    - filter: x => !(x.NFlt <= 5.5f)
+    - filter: x => !(5.5f <= x.NFlt)
+    - filter: x => !(x.NFlt <= x.Flt)
+    - filter: x => !(x.NFlt > 5.5f)
+    - filter: x => !(5.5f > x.NFlt)
+    - filter: x => !(x.NFlt > x.Flt)
+    - filter: x => !(x.NFlt >= 5.5f)
+    - filter: x => !(5.5f >= x.NFlt)
+    - filter: x => !(x.NFlt >= x.Flt)
+    - filter: x => !(x.NChr < 'A')
+    - filter: x => !('A' < x.NChr)
+    - filter: x => !(x.NChr < x.Chr)
+    - filter: x => !(x.NChr <= 'A')
+    - filter: x => !('A' <= x.NChr)
+    - filter: x => !(x.NChr <= x.Chr)
+    - filter: x => !(x.NChr > 'A')
+    - filter: x => !('A' > x.NChr)
+    - filter: x => !(x.NChr > x.Chr)
+    - filter: x => !(x.NChr >= 'A')
+    - filter: x => !('A' >= x.NChr)
+    - filter: x => !(x.NChr >= x.Chr)
+    - filter: x => !(x.NGuid < x.Guid)
+    - filter: x => !(x.NGuid <= x.Guid)
+    - filter: x => !(x.NGuid > x.Guid)
+    - filter: x => !(x.NGuid >= x.Guid)
+    - filter: x => !(x.NDate < x.Date)
+    - filter: x => !(x.NDate <= x.Date)
+    - filter: x => !(x.NDate > x.Date)
+    - filter: x => !(x.NDate >= x.Date)
+    - filter: x => !(x.Doc.Int < x.NInt)
+    - filter: x => !(x.Doc.Int <= x.NInt)
+    - filter: x => !(x.Doc.Int > x.NInt)
+    - filter: x => !(x.Doc.Int >= x.NInt)
+    - filter: x => !(x.Doc.Long < x.NLong)
+    - filter: x => !(x.Doc.Long <= x.NLong)
+    - filter: x => !(x.Doc.Long > x.NLong)
+    - filter: x => !(x.Doc.Long >= x.NLong)
+    - filter: x => !(x.Doc.Short < x.NShort)
+    - filter: x => !(x.Doc.Short <= x.NShort)
+    - filter: x => !(x.Doc.Short > x.NShort)
+    - filter: x => !(x.Doc.Short >= x.NShort)
+    - filter: x => !(x.Doc.Dec < x.NDec)
+    - filter: x => !(x.Doc.Dec <= x.NDec)
+    - filter: x => !(x.Doc.Dec > x.NDec)
+    - filter: x => !(x.Doc.Dec >= x.NDec)
+    - filter: x => !(x.Doc.Dbl < x.NDbl)
+    - filter: x => !(x.Doc.Dbl <= x.NDbl)
+    - filter: x => !(x.Doc.Dbl > x.NDbl)
+    - filter: x => !(x.Doc.Dbl >= x.NDbl)
+    - filter: x => !(x.Doc.Chr < x.NChr)
+    - filter: x => !(x.Doc.Chr <= x.NChr)
+    - filter: x => !(x.Doc.Chr > x.NChr)
+    - filter: x => !(x.Doc.Chr >= x.NChr)
+    - filter: x => !(x.Doc.Guid < x.NGuid)
+    - filter: x => !(x.Doc.Guid <= x.NGuid)
+    - filter: x => !(x.Doc.Guid > x.NGuid)
+    - filter: x => !(x.Doc.Guid >= x.NGuid)
+    - filter: x => !(x.Doc.NStr.Length < 5)
+    - filter: x => !(x.Doc.NStr.Length <= 5)
+    - filter: x => !(x.Doc.NStr.Length > 5)
+    - filter: x => !(x.Doc.NStr.Length >= 5)
+    - filter: x => !(x.Doc.NInt < 5)
+    - filter: x => !(5 < x.Doc.NInt)
+    - filter: x => !(x.Doc.NInt < x.Int)
+    - filter: x => !(x.Doc.NInt < x.NInt)
+    - filter: x => !(x.Doc.NInt <= 5)
+    - filter: x => !(5 <= x.Doc.NInt)
+    - filter: x => !(x.Doc.NInt <= x.Int)
+    - filter: x => !(x.Doc.NInt <= x.NInt)
+    - filter: x => !(x.Doc.NInt > 5)
+    - filter: x => !(5 > x.Doc.NInt)
+    - filter: x => !(x.Doc.NInt > x.Int)
+    - filter: x => !(x.Doc.NInt > x.NInt)
+    - filter: x => !(x.Doc.NInt >= 5)
+    - filter: x => !(5 >= x.Doc.NInt)
+    - filter: x => !(x.Doc.NInt >= x.Int)
+    - filter: x => !(x.Doc.NInt >= x.NInt)
+    - filter: x => !(x.Int == 5 && x.Doc.NInt > 5)
+    - filter: x => !(x.Int == 5 || x.Doc.NInt > 5)
+    - filter: x => !(x.NInt == 5 && x.Doc.NInt > 5)
+    - filter: x => !(x.NInt == 5 || x.Doc.NInt > 5)
+    - filter: x => !(x.NStr != "a" && x.Doc.NInt > 5)
+    - filter: x => !(x.NStr != "a" || x.Doc.NInt > 5)
+    - filter: x => !(x.Bool && x.Doc.NInt > 5)
+    - filter: x => !(x.Bool || x.Doc.NInt > 5)
+    - filter: x => !(x.NBool == true && x.Doc.NInt > 5)
+    - filter: x => !(x.NBool == true || x.Doc.NInt > 5)
+    - filter: x => !(x.Doc.NInt > 5 && x.Int == 5)
+    - filter: x => !(x.Doc.NInt > 5 || x.Int == 5)
+    - filter: x => !(x.Doc.NInt > 5 && x.NInt == 5)
+    - filter: x => !(x.Doc.NInt > 5 || x.NInt == 5)
+    - filter: x => !(x.Doc.NInt > 5 && x.NStr != "a")
+    - filter: x => !(x.Doc.NInt > 5 || x.NStr != "a")
+    - filter: x => !(x.Doc.NInt > 5 && x.Bool)
+    - filter: x => !(x.Doc.NInt > 5 || x.Bool)
+    - filter: x => !(x.Doc.NInt > 5 && x.NBool == true)
+    - filter: x => !(x.Doc.NInt > 5 || x.NBool == true)
+    - filter: x => !(x.Doc.NInt > 5 && x.Str.Trim() == "a")
+    - filter: x => !(x.Doc.NInt > 5 || x.Str.Trim() == "a")
+    - filter: x => !(x.Str.Trim() == "a" && x.Doc.NInt > 5)
+    - filter: x => !(x.Str.Trim() == "a" || x.Doc.NInt > 5)
