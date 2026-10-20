@@ -259,6 +259,44 @@ public class SnapshotRoundTripTests
         Assert.IsFalse(operations.OfType<SqlOperation>().Any(), "Exclusion constraints keep their rendering.");
     }
 
+    // Each declaration on the TPC base is resolved once per table of the hierarchy, on both sides of
+    // the diff: the snapshot must keep the mapping strategy, or its side would hold the base's table
+    // only and every `migrations add` would create the derived tables' copies again.
+    [TestMethod(DisplayName = "Declarations on a TPC base survive the snapshot round trip without churn")]
+    public void Tpc_declarations_roundtrip_is_noop()
+    {
+        var target = BuildLiveModel<RoundTripTpcContext>();
+
+        // Not vacuous: from nothing, each declaration lands on all three tables (the tenth constraint
+        // is the room's own).
+        var created = GetDifferences(null, target);
+        Assert.HasCount(3, created.OfType<CreateIndexOperation>());
+        Assert.HasCount(10, created.OfType<SqlOperation>().Where(o => o.Sql.Contains("ADD CONSTRAINT")));
+
+        var operations = GetDifferences(BuildModelViaSnapshot<RoundTripTpcContext>(), target);
+        Assert.IsEmpty(operations, string.Join("\n", operations.Select(o => o.GetType().Name)));
+    }
+
+    // A snapshot scaffolded before 5.5.0 holds the base table's declarations only: resolved by that
+    // rule, the first migration after upgrading creates exactly the derived tables' copies.
+    [TestMethod(DisplayName = "A snapshot scaffolded before 5.5.0 creates exactly the copies on a TPC base's derived tables")]
+    public void Pre_55_snapshot_creates_tpc_copies()
+    {
+        var source = BuildModelViaSnapshot<RoundTripTpcContext>(code => System.Text.RegularExpressions.Regex.Replace(
+            code, $@"\s*\.HasAnnotation\(""{ComplexIndexAnnotations.RenderingVersion}"", {ComplexIndexStorage.CurrentRenderingVersion}\)", ""));
+
+        var operations = GetDifferences(source, BuildLiveModel<RoundTripTpcContext>());
+
+        Assert.IsFalse(operations.Any(o => o is DropIndexOperation or DropTableOperation or DropUniqueConstraintOperation or DropForeignKeyOperation));
+        CollectionAssert.AreEquivalent(
+            new[] { "IX_rt_special_bookings_Code", "IX_rt_vip_bookings_Code" },
+            operations.OfType<CreateIndexOperation>().Select(o => o.Name).ToArray());
+
+        var adds = operations.OfType<SqlOperation>().Select(o => o.Sql).Where(s => s.Contains("ADD CONSTRAINT")).ToList();
+        Assert.HasCount(6, adds);
+        Assert.IsTrue(adds.All(s => !s.Contains("ALTER TABLE \"rt_bookings\"")), string.Join("\n", adds));
+    }
+
     [TestMethod(DisplayName = "A filter change against the snapshot model is still detected")]
     public void Exclusion_filter_change_is_detected_against_snapshot()
     {
@@ -508,4 +546,55 @@ internal class RoundTripSqlServerContext(DbContextOptions<RoundTripSqlServerCont
                 .HasFillFactor(80).IsCreatedOnline().SortInTempDb().UseDataCompression(DataCompressionType.Page));
             b.HasComplexIndex(x => x.Contact.Email, isUnique: true, filter: "{RevokedAt} IS NULL", indexName: "ux_rt_email_active");
         });
+}
+
+internal class RoundTripRoom
+{
+    public int                   Id        { get; set; }
+    public int                   RoomId    { get; set; }
+    public NpgsqlRange<DateOnly> Available { get; set; }
+}
+
+internal class RoundTripBooking
+{
+    public int                   Id     { get; set; }
+    public int                   RoomId { get; set; }
+    public string                Code   { get; set; } = "";
+    public NpgsqlRange<DateOnly> During { get; set; }
+}
+
+internal class RoundTripSpecialBooking : RoundTripBooking
+{
+    public string Note { get; set; } = "";
+}
+
+internal class RoundTripVipBooking : RoundTripSpecialBooking
+{
+    public int Level { get; set; }
+}
+
+// A concrete TPC base with a derived type and a derived type of that, declaring every kind.
+internal class RoundTripTpcContext(DbContextOptions<RoundTripTpcContext> options) : DbContext(options)
+{
+    protected override void OnModelCreating(ModelBuilder modelBuilder)
+    {
+        modelBuilder.Entity<RoundTripRoom>(b =>
+        {
+            b.ToTable("rt_rooms");
+            b.HasTemporalConstraint(x => x.RoomId, x => x.Available);
+        });
+
+        modelBuilder.Entity<RoundTripBooking>(b =>
+        {
+            b.UseTpcMappingStrategy();
+            b.ToTable("rt_bookings");
+            b.HasComplexIndex(x => x.Code, isUnique: true);
+            b.HasExclusionConstraint(x => x.RoomId, x => x.During);
+            b.HasTemporalConstraint(x => x.Code, x => x.During);
+            b.HasTemporalForeignKey<RoundTripBooking, RoundTripRoom>(x => x.RoomId, x => x.During, r => r.RoomId, r => r.Available);
+        });
+
+        modelBuilder.Entity<RoundTripSpecialBooking>().ToTable("rt_special_bookings");
+        modelBuilder.Entity<RoundTripVipBooking>().ToTable("rt_vip_bookings");
+    }
 }

@@ -380,6 +380,96 @@ public partial class PostgresIntegrationTests
         Assert.AreEqual(0L, cmd.ExecuteScalar());
     }
 
+    // ── TPC: a declaration on a concrete base holds on every table of the hierarchy (#93) ──
+
+    private class TpcStay
+    {
+        public int                   Id     { get; set; }
+        public int                   RoomId { get; set; }
+        public string                Code   { get; set; } = "";
+        public NpgsqlRange<DateOnly> During { get; set; }
+    }
+
+    private class TpcLongStay : TpcStay
+    {
+        public int Nights { get; set; }
+    }
+
+    private abstract class TpcStayContextBase(DbContextOptions options) : DbContext(options)
+    {
+        protected override void OnModelCreating(ModelBuilder modelBuilder)
+        {
+            modelBuilder.Entity<TpcStay>(b =>
+            {
+                b.UseTpcMappingStrategy();
+                b.ToTable("ig_tpc_stays");
+                b.HasComplexIndex(x => x.Code, isUnique: true);
+                b.HasExclusionConstraint(x => x.RoomId, x => x.During);
+            });
+            modelBuilder.Entity<TpcLongStay>().ToTable("ig_tpc_long_stays");
+            ConfigureModel(modelBuilder);
+        }
+
+        protected virtual void ConfigureModel(ModelBuilder modelBuilder) { }
+    }
+
+    private class TpcStayContext(DbContextOptions<TpcStayContext> options) : TpcStayContextBase(options);
+
+    // The same model as a snapshot scaffolded before 5.5.0 holds it: rendering version 2.
+    private class TpcStayBefore55Context(DbContextOptions<TpcStayBefore55Context> options) : TpcStayContextBase(options)
+    {
+        protected override void ConfigureModel(ModelBuilder modelBuilder)
+            => modelBuilder.HasAnnotation(ComplexIndexAnnotations.RenderingVersion, 2);
+    }
+
+    // As `database update` applies a migration: in one transaction, so a failed statement leaves
+    // nothing behind.
+    private static void ApplyInTransaction(IReadOnlyList<MigrationOperation> operations)
+    {
+        using var context  = new MigrationHarness.EmptyContext(new DbContextOptionsBuilder().UseNpgsql(ConnectionString).UseNpgsqlComplexIndexes().Options);
+        var       commands = context.GetService<IMigrationsSqlGenerator>().Generate(operations, model: null);
+
+        using var connection = new NpgsqlConnection(ConnectionString);
+        connection.Open();
+        using var transaction = connection.BeginTransaction();
+        foreach (var command in commands)
+        {
+            using var cmd = new NpgsqlCommand(command.CommandText, connection, transaction);
+            cmd.ExecuteNonQuery();
+        }
+
+        transaction.Commit();
+    }
+
+    [TestMethod(DisplayName = "On a concrete TPC base, the upgrade migration makes the derived table enforce the index and the exclusion constraint")]
+    public void Tpc_derived_table_enforces_after_upgrade()
+    {
+        // What 5.4 scaffolded: the base table only.
+        Apply(GetDifferences(source: null, target: BuildRelationalModel<TpcStayBefore55Context>()));
+
+        AssertRejected("INSERT INTO ig_tpc_stays (\"Id\", \"RoomId\", \"Code\", \"During\") VALUES (1, 7, 'a', '[2024-01-01,2024-02-01)'), (2, 7, 'b', '[2024-01-15,2024-02-15)')");
+
+        // The derived table accepted the overlap the base refuses.
+        Sql("INSERT INTO ig_tpc_long_stays (\"Id\", \"RoomId\", \"Code\", \"During\", \"Nights\") VALUES (3, 7, 'c', '[2024-01-01,2024-02-01)', 31), (4, 7, 'd', '[2024-01-15,2024-02-15)', 31)");
+
+        // The first migration after upgrading adds the derived table's copies, and refuses to apply
+        // over rows that violate them, as docs/upgrading.md says.
+        var upgrade = GetDifferences(BuildRelationalModel<TpcStayBefore55Context>(), BuildRelationalModel<TpcStayContext>());
+        Assert.AreEqual("ig_tpc_long_stays", upgrade.OfType<CreateIndexOperation>().Single().Table);
+
+        var refused = Assert.ThrowsExactly<PostgresException>(() => ApplyInTransaction(upgrade));
+        Assert.AreEqual(PostgresErrorCodes.ExclusionViolation, refused.SqlState); // 23P01
+
+        Sql("DELETE FROM ig_tpc_long_stays WHERE \"Id\" = 4");
+        ApplyInTransaction(upgrade);
+
+        AssertRejected("INSERT INTO ig_tpc_long_stays (\"Id\", \"RoomId\", \"Code\", \"During\", \"Nights\") VALUES (5, 7, 'e', '[2024-01-15,2024-02-15)', 31)");
+        AssertRejected("INSERT INTO ig_tpc_long_stays (\"Id\", \"RoomId\", \"Code\", \"During\", \"Nights\") VALUES (6, 8, 'c', '[2025-01-01,2025-02-01)', 31)");
+
+        // Each table enforces its own rows, as EF's own indexes do under TPC.
+        Sql("INSERT INTO ig_tpc_long_stays (\"Id\", \"RoomId\", \"Code\", \"During\", \"Nights\") VALUES (7, 9, 'f', '[2024-01-01,2024-02-01)', 31)");
+    }
+
     // ── Implicit sequences: an identity column's sequence takes its name among the schema's relations ──
 
     private class Ticket

@@ -824,6 +824,11 @@ public class CustomMigrationsModelDiffer(
 
         var members  = collision.ToList();
         var oneTable = members.All(d => d.TableName == members[0].TableName);
+
+        if (members[0].Origin is { } origin && members.All(d => d.Origin == origin))
+            throw new InvalidOperationException(
+                origin.RepeatedName("complex index", members[0].IndexName, UniquenessRule(sameTable: false, ignoringCase: false) + "."));
+
         var names    = members.Select(d => d.IndexName).Distinct(StringComparer.Ordinal).ToList();
         var named    = names.Count == 1
                            ? $"the name '{names[0]}'"
@@ -1062,36 +1067,208 @@ public class CustomMigrationsModelDiffer(
             if (declarations.Count == 0)
                 continue;
 
-            var tableName = entityType.GetTableName();
-            var schema    = entityType.GetSchema();
-            if (tableName is null)
+            var tables = DeclarationTables(entityType);
+            if (tables.Count == 0)
             {
                 ThrowIfDeclaredOnUnmappedType(entityType, "complex indexes");
                 continue;
             }
 
-            var storeObject = StoreObjectIdentifier.Table(tableName, schema);
-
             foreach (var declaration in declarations)
             {
-                result.Add(declaration.Property is { } property
-                               ? ResolvePropertyLevelIndex(entityType, declaration, property, tableName, schema, storeObject)
-                               : ResolveEntityLevelIndex(entityType, declaration, tableName, schema, storeObject));
+                var origin = TpcDeclaration.For(entityType, tables);
+
+                foreach (var (tableType, storeObject) in tables)
+                {
+                    ThrowIfMissingFromDerivedTable(relationalModel, entityType, tableType, storeObject, PathsOf(declaration), "a complex index");
+
+                    var descriptor = declaration.Property is { } property
+                                         ? ResolvePropertyLevelIndex(tableType, declaration, property, storeObject.Name, storeObject.Schema, storeObject)
+                                         : ResolveEntityLevelIndex(tableType, declaration, storeObject.Name, storeObject.Schema, storeObject);
+
+                    result.Add(descriptor with { Origin = origin });
+                }
             }
         }
 
         return result;
     }
 
+    // Every property path a declaration reads: its parts, the placeholders of its templates and
+    // filter, and its INCLUDE entries, which resolve as paths too.
+    private static IEnumerable<string> PathsOf(ComplexIndexDeclaration declaration)
+    {
+        foreach (var part in declaration.Parts)
+        {
+            if (part.PropertyPath is { } path)
+                yield return path;
+
+            foreach (var placeholder in PlaceholderPaths(part.Template))
+                yield return placeholder;
+        }
+
+        foreach (var placeholder in PlaceholderPaths(declaration.Filter))
+            yield return placeholder;
+
+        var options = declaration.Property?.GetAnnotations().Select(a => a.Value)
+                   ?? declaration.ProviderAnnotations.Values;
+
+        foreach (var value in options)
+        {
+            if (value is string || value is not System.Collections.IEnumerable entries)
+                continue;
+
+            foreach (var entry in entries.OfType<string>())
+                yield return entry;
+        }
+    }
+
     /// <summary>
-    /// Fails when <paramref name="entityType"/> is mapped to no table yet carries declarations only a
-    /// table can satisfy. Call it after establishing both; satellites use it for their own descriptors.
+    /// The tables a declaration on <paramref name="entityType"/> is created on, each with the entity
+    /// type mapped to it: the type's own table and, under TPC, the table of every type derived from
+    /// it, which repeats the inherited columns. Empty when none of them is mapped to a table.
     /// </summary>
     /// <remarks>
-    /// The usual shape is the abstract base of a TPC hierarchy: it has no table of its own, so its
-    /// declarations produced nothing — no DDL, no error. Types mapped to a view, a SQL query or a
-    /// function are left alone: an index on those is nothing this package could create, and models
-    /// have carried the annotation there harmlessly.
+    /// This is where EF Core puts a <c>HasIndex</c> declared on a TPC type: on every concrete table
+    /// of the hierarchy below it, each under its own default name. Until 5.5.0 every declaration of
+    /// this package landed on the declaring type's table only, so a unique index or an exclusion
+    /// constraint on a concrete TPC base held among its own rows and not among a derived type's.
+    /// Under TPH and TPT the inherited columns live in the declaring type's table, the only one.
+    /// <para>
+    /// A model declared before rendering version 3 — a snapshot scaffolded before 5.5.0 — keeps the
+    /// old answer. Resolved alike, the snapshot and the model would never differ, and an existing
+    /// database would never get the derived tables' copies; resolved by the old rule, the first
+    /// <c>migrations add</c> after upgrading creates them.
+    /// </para>
+    /// </remarks>
+    internal static IReadOnlyList<(IEntityType EntityType, StoreObjectIdentifier Table)> DeclarationTables(IEntityType entityType)
+    {
+        var everyTable = entityType.GetMappingStrategy() == RelationalAnnotationNames.TpcMappingStrategy
+                      && ComplexIndexStorage.GetRenderingVersion(entityType.Model) >= 3;
+
+        IEnumerable<IEntityType> types = everyTable ? entityType.GetDerivedTypesInclusive() : [entityType];
+
+        var tables = new List<(IEntityType, StoreObjectIdentifier)>();
+        foreach (var type in types)
+        {
+            if (type.GetTableName() is { } table)
+                tables.Add((type, StoreObjectIdentifier.Table(table, type.GetSchema())));
+        }
+
+        return tables;
+    }
+
+    /// <summary>
+    /// Fails when a declaration on a TPC type reads a member that EF Core maps to no column in the
+    /// table of a derived type. Call it for each table of <see cref="DeclarationTables"/>; it checks
+    /// the derived types' tables only.
+    /// </summary>
+    /// <remarks>
+    /// EF Core 10 keeps the complex properties of a TPC type in that type's own table: the table of a
+    /// derived type has no column for them, table-split or JSON. Resolving such a member there gave a
+    /// column the table does not have, or worse, the name of one it does: a table-split member
+    /// resolves to its bare property name on a derived table, so <c>Contact.Email</c> came out as
+    /// <c>"Email"</c>, which a derived type with an <c>Email</c> property of its own would have
+    /// indexed instead.
+    /// </remarks>
+    internal static void ThrowIfMissingFromDerivedTable(
+        IRelationalModel      model,
+        IEntityType           declaringType,
+        IEntityType           tableType,
+        StoreObjectIdentifier storeObject,
+        IEnumerable<string>   paths,
+        string                declaration)
+    {
+        if (tableType == declaringType || model.FindTable(storeObject.Name, storeObject.Schema) is not { } table)
+            return;
+
+        foreach (var path in paths)
+        {
+            if (IsMappedTo(table, tableType, path))
+                continue;
+
+            throw new InvalidOperationException(
+                $"'{declaringType.DisplayName()}' declares {declaration} over '{path}'. Declared on a TPC type, it is created on "
+              + $"the table of every type derived from it too, but EF Core maps no column for '{path}' in '{table.Name}', the table "
+              + $"of '{tableType.DisplayName()}': it keeps the complex properties of a TPC type in that type's own table only. Map "
+              + "the member as a regular property, or remove the declaration.");
+        }
+    }
+
+    // True unless the path reaches into a complex property that has no column in the table. The
+    // entity type's scalars are always there: TPC repeats them in every table of the hierarchy.
+    private static bool IsMappedTo(ITable table, IEntityType entityType, string path)
+    {
+        ITypeBase current   = entityType;
+        var       traversed = false;
+
+        foreach (var segment in path.Split('.'))
+        {
+            var complexProperty = current.FindComplexProperty(segment);
+            if (complexProperty is null)
+                break;
+
+            if (complexProperty.ComplexType.IsMappedToJson())
+                return complexProperty.ComplexType.GetContainerColumnName() is { } container && table.FindColumn(container) is not null;
+
+            current   = complexProperty.ComplexType;
+            traversed = true;
+        }
+
+        if (!traversed || ResolveProperty(entityType, path) is not { } property)
+            return true;
+
+        return property.GetTableColumnMappings().Any(m => m.TableMapping.Table.Name   == table.Name
+                                                        && m.TableMapping.Table.Schema == table.Schema);
+    }
+
+    // The {Property.Path} placeholders of a template or a filter. A brace pair that is no
+    // placeholder ('{urgent}' inside a literal, an escaped {{x}}) adds at worst a path that reaches
+    // into no complex property, which the column check passes.
+    internal static IEnumerable<string> PlaceholderPaths(string? text)
+        => text is null
+               ? []
+               : PlaceholderPattern.Matches(text).Select(m => m.Groups[1].Value);
+
+    private static readonly System.Text.RegularExpressions.Regex PlaceholderPattern =
+        new(@"\{([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*)\}", System.Text.RegularExpressions.RegexOptions.Compiled);
+
+    /// <summary>
+    /// One declaration on a TPC type that is created on more than one table. Its copies carry the
+    /// same instance, which lets a name check tell a name repeated by one declaration from two
+    /// declarations that happen to share it.
+    /// </summary>
+    internal sealed class TpcDeclaration
+    {
+        private readonly IEntityType                          _declaredOn;
+        private readonly IReadOnlyList<StoreObjectIdentifier> _tables;
+
+        private TpcDeclaration(IEntityType declaredOn, IReadOnlyList<StoreObjectIdentifier> tables)
+        {
+            _declaredOn = declaredOn;
+            _tables     = tables;
+        }
+
+        /// <summary>The origin of a declaration on <paramref name="declaredOn"/>, or null when it lands on one table.</summary>
+        public static TpcDeclaration? For(IEntityType declaredOn, IReadOnlyList<(IEntityType EntityType, StoreObjectIdentifier Table)> tables)
+            => tables.Count > 1 ? new TpcDeclaration(declaredOn, [.. tables.Select(t => t.Table)]) : null;
+
+        /// <summary>The message for an explicit name that collides with itself across the copies.</summary>
+        public string RepeatedName(string kind, string name, string rule)
+            => $"The {kind} '{name}' is declared on '{_declaredOn.DisplayName()}', a TPC type, so it is created on the table of every "
+             + $"type derived from it too ({string.Join(", ", _tables.Select(t => $"'{t.Name}'"))}), each time under the same explicit "
+             + $"name. {rule} Leave the name out: each table's copy then takes a default name that includes its table.";
+    }
+
+    /// <summary>
+    /// Fails when <paramref name="entityType"/> carries declarations only a table can satisfy, yet
+    /// neither it nor, under TPC, any type derived from it is mapped to one. Call it when
+    /// <see cref="DeclarationTables"/> is empty; satellites use it for their own descriptors.
+    /// </summary>
+    /// <remarks>
+    /// Such declarations produced nothing: no DDL, no error. Types mapped to a view, a SQL query or
+    /// a function are left alone: an index on those is nothing this package could create, and
+    /// models have carried the annotation there harmlessly.
     /// </remarks>
     protected static void ThrowIfDeclaredOnUnmappedType(IEntityType entityType, string declarations)
     {
@@ -1101,9 +1278,9 @@ public class CustomMigrationsModelDiffer(
             return;
 
         throw new InvalidOperationException(
-            $"'{entityType.DisplayName()}' declares {declarations} but is not mapped to a table, so they cannot be "
-          + "created. This is typically the abstract base of a TPC hierarchy, whose columns live on each concrete "
-          + "table: declare them on the concrete entity types instead.");
+            $"'{entityType.DisplayName()}' declares {declarations} but is not mapped to a table, and no type derived from it "
+          + "under TPC is either, so they cannot be created. Map it or a derived type to a table, or declare them on an "
+          + "entity type that is.");
     }
 
     private IndexDescriptor ResolvePropertyLevelIndex(
@@ -1295,6 +1472,9 @@ public class CustomMigrationsModelDiffer(
         string?                       Filter,
         Dictionary<string, object?>   ProviderAnnotations)
     {
+        // For messages only, outside equality: the copies of one declaration on a TPC type share it.
+        public TpcDeclaration? Origin { get; init; }
+
         public IEnumerable<string> ColumnNames => Parts.Where(p => !p.IsExpression).Select(p => p.Value);
 
         public bool HasExpression => Parts.Any(p => p.IsExpression);

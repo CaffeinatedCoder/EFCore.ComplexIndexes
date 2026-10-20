@@ -58,6 +58,7 @@ public static class NpgsqlTemporalConstraintExtensions
             existing.Add(definition);
 
             builder.HasAnnotation(NpgsqlTemporalAnnotations.Constraints, TemporalConstraintSerializer.Serialize(existing));
+            ComplexIndexStorage.MarkRenderingVersion(builder.Metadata.Model);
             return builder;
         }
 
@@ -121,6 +122,7 @@ public static class NpgsqlTemporalConstraintExtensions
             existing.Add(definition);
 
             builder.HasAnnotation(NpgsqlTemporalAnnotations.ForeignKeys, TemporalForeignKeySerializer.Serialize(existing));
+            ComplexIndexStorage.MarkRenderingVersion(builder.Metadata.Model);
             return builder;
         }
 
