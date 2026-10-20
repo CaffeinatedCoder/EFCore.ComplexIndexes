@@ -38,6 +38,9 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
     // to the base constructor, and capturing it as well would store it twice (CS9107).
     private readonly IRelationalTypeMappingSource _typeMappingSource = typeMappingSource;
 
+    // Set while an exclusion constraint's filter is resolved; see ResolveUnmappedPart.
+    private bool _resolvingExclusionFilter;
+
     private static readonly HashSet<string> SupportedNpgsqlAnnotations =
     [
         NpgsqlAnnotations.IndexMethod,
@@ -221,6 +224,14 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
         // Default index names come from the container and the path, never from the rendered SQL.
         var nameToken = containerColumn + string.Concat(jsonPath);
 
+        // Exclusion constraint filters are pinned to rendering 1, which renders every member as
+        // text. A member the current rendering casts — a number, boolean, uuid or enum — compared
+        // as text fails at apply (text > integer with 42883, a text WHERE with 42804), so it takes
+        // the current rendering; the cast keeps NULL as NULL, so a filter that did apply, such as
+        // IS NOT NULL, still holds for the same rows. Every other member keeps rendering 1.
+        if (!queryAligned && _resolvingExclusionFilter && RendersAsCast(leaf))
+            queryAligned = true;
+
         if (!queryAligned)
             return new ResolvedIndexPart(true, BuildLegacyJsonExtraction(containerColumn, jsonPath, asText: true), part.Descending, part.NullSort)
                    {
@@ -234,6 +245,17 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
                    NameToken    = nameToken,
                    TextFallback = fallbackStoreType is null ? null : (part.PropertyPath, fallbackStoreType)
                };
+    }
+
+    // Whether RenderJsonScalar renders the member as a CAST of its text.
+    private bool RendersAsCast(IProperty leaf)
+    {
+        var mapping = leaf.FindRelationalTypeMapping() ?? _typeMappingSource.FindMapping(leaf);
+
+        return !leaf.IsPrimitiveCollection
+            && mapping is not (null or StringTypeMapping)
+            && mapping.StoreTypeNameBase is not ("jsonb" or "json" or "bytea")
+            && !StableTextInputTypes.Contains(mapping.StoreTypeNameBase);
     }
 
     // Types whose text input function is STABLE rather than IMMUTABLE — the conversion depends on
@@ -380,8 +402,8 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
     /// table: a clash fails the migration with 42710, or — every exclusion constraint being added
     /// after <c>DROP CONSTRAINT IF EXISTS</c> — silently replaces the other constraint. And an index
     /// name, including the index behind every primary key, unique, exclusion and temporal
-    /// constraint, is unique among all relations of its schema, not its table: a clash fails with
-    /// 42P07. Each kind used to be checked against its own kind on the same table at most, so a
+    /// constraint, is unique among all relations of its schema, not its table — tables, views and
+    /// sequences included: a clash fails with 42P07. Each kind used to be checked against its own kind on the same table at most, so a
     /// temporal constraint named like an exclusion constraint, or like an index anywhere in the
     /// schema, scaffolded cleanly. Collisions between two of EF Core's own objects are not this
     /// package's to police. Target model only: a snapshot that already holds a collision must stay
@@ -407,6 +429,14 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
 
         void Add(string name, string table, string? schema, string kind, bool ours, bool constraint, bool indexBacked)
             => names.Add(new NamedObject(name, table, schema ?? defaultSchema, kind, ours, constraint, indexBacked));
+
+        // The relations themselves: an index named like a table, view or sequence of its schema
+        // fails with 42P07 just as one named like another index does.
+        void AddRelation(string name, string? schema, string kind)
+            => names.Add(new NamedObject(name, name, schema ?? defaultSchema, kind, Ours: false, IsConstraint: false, InRelationNamespace: true)
+                         {
+                             IsRelation = true
+                         });
 
         foreach (var index in ExtractAllIndexDescriptors(target))
             Add(index.IndexName, index.TableName, index.Schema, "complex index", ours: true, constraint: false, indexBacked: true);
@@ -435,7 +465,15 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
             // A check constraint without a name gets one from PostgreSQL, which never collides.
             foreach (var check in table.CheckConstraints.Where(c => c.Name is not null))
                 Add(check.Name!, table.Name, table.Schema, "check constraint", ours: false, constraint: true, indexBacked: false);
+
+            AddRelation(table.Name, table.Schema, "table");
         }
+
+        foreach (var view in target.Views)
+            AddRelation(view.Name, view.Schema, "view");
+
+        foreach (var sequence in target.Model.GetSequences())
+            AddRelation(sequence.Name, sequence.Schema, "sequence");
 
         ThrowOnFirstCollision(
             names.Where(n => n.IsConstraint).GroupBy(n => (n.Schema, n.Table, n.Name)),
@@ -445,9 +483,10 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
                           : "."));
 
         ThrowOnFirstCollision(
-            names.Where(n => n.IsIndexBacked).GroupBy(n => (n.Schema, "", n.Name)),
+            names.Where(n => n.InRelationNamespace).GroupBy(n => (n.Schema, "", n.Name)),
             other => "PostgreSQL keeps index names — including the index behind every primary key, unique, exclusion and "
-                   + $"temporal constraint — unique per schema ('{other[0].Schema}'), so the migration would fail when applied (42P07).");
+                   + $"temporal constraint — unique per schema ('{other[0].Schema}'), a namespace they share with its tables, "
+                   + "views and sequences, so the migration would fail when applied (42P07).");
 
         static void ThrowOnFirstCollision(
             IEnumerable<IGrouping<(string Schema, string Table, string Name), NamedObject>> groups,
@@ -462,13 +501,19 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
 
                 var other = members.First(m => !ReferenceEquals(m, ours));
 
+                var otherDescription = other.IsRelation
+                                           ? $"the {other.Kind} '{other.Name}'"
+                                           : $"the {other.Kind} on table '{other.Table}'";
+
                 throw new InvalidOperationException(
-                    $"The {ours.Kind} '{ours.Name}' on table '{ours.Table}' has the same name as the {other.Kind} on table "
-                  + $"'{other.Table}'. {rule([ours, other])} Give one of them a different name.");
+                    $"The {ours.Kind} '{ours.Name}' on table '{ours.Table}' has the same name as {otherDescription}. "
+                  + $"{rule([ours, other])} Give one of them a different name.");
             }
         }
     }
 
+    // InRelationNamespace: an index, a constraint backed by one, or a table, view or sequence —
+    // everything PostgreSQL names in pg_class, whose names are unique per schema.
     private sealed record NamedObject(
         string Name,
         string Table,
@@ -476,7 +521,10 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
         string Kind,
         bool   Ours,
         bool   IsConstraint,
-        bool   IsIndexBacked);
+        bool   InRelationNamespace)
+    {
+        public bool IsRelation { get; init; }
+    }
 
     // Diffs the temporal UNIQUE constraints and temporal FOREIGN KEY constraints declared on entity
     // types. Drops are emitted as EF's own Drop* operations (the stock generator renders those
@@ -530,6 +578,7 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
         }
 
         var normalizedForeignKeys = new Dictionary<TemporalForeignKeyDescriptor, (string Table, string? Schema)>();
+        var principalDropped      = new HashSet<TemporalForeignKeyDescriptor>();
         foreach (var src in sourceForeignKeys)
         {
             var normalized = src;
@@ -537,11 +586,18 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
                 normalized = normalized with { DependentTable = dependent.Name, DependentSchema = dependent.Schema };
             if (renamedTables.TryGetValue((src.PrincipalTable, src.PrincipalSchema), out var principal))
                 normalized = normalized with { PrincipalTable = principal.Name, PrincipalSchema = principal.Schema };
-            normalizedForeignKeys.TryAdd(normalized, (src.DependentTable, src.DependentSchema));
+            if (normalizedForeignKeys.TryAdd(normalized, (src.DependentTable, src.DependentSchema))
+             && droppedTables.Contains((src.PrincipalTable, src.PrincipalSchema)))
+                principalDropped.Add(normalized);
         }
 
+        // A foreign key whose dependent table is dropped goes with it — unless its principal table is
+        // dropped too. EF orders the DropTable operations without knowing about the temporal foreign
+        // key, so when the principal's comes first it fails with 2BP01; dropping the key before the
+        // base operations makes the order irrelevant. Down() of the migration that created both
+        // tables has exactly this shape.
         var pendingForeignKeyDrops = normalizedForeignKeys.Keys
-            .Where(src => !droppedTables.Contains(normalizedForeignKeys[src])
+            .Where(src => (!droppedTables.Contains(normalizedForeignKeys[src]) || principalDropped.Contains(src))
                        && (!targetForeignKeys.Contains(src)
                         || DependsOnChangedTemporalConstraint(src, normalizedConstraints.Keys, targetConstraints)))
             .ToList();
@@ -762,8 +818,7 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
         {
             adds.Add(new SqlOperation { Sql = BuildAddExclusionSql(tgt) });
 
-            // Scalar equality elements under gist need the btree_gist operator classes.
-            if (tgt.Method == "gist" && tgt.Parts.Any(p => p.Operator == "="))
+            if (NeedsBtreeGist(tgt))
                 needsBtreeGist = true;
         }
 
@@ -771,6 +826,41 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
             return operations;
 
         return [.. drops, .. operations, .. renames, .. adds];
+    }
+
+    // Store types with a default GiST operator class of their own: the geometric and full-text
+    // search types in core, and the types of the extensions that define them. Ranges and
+    // multiranges are matched by suffix.
+    private static readonly HashSet<string> NativeGistTypes = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "box", "circle", "point", "polygon", "tsvector", "tsquery",
+        "geometry", "geography", "box2d", "box3d", "ltree", "cube", "hstore", "seg"
+    };
+
+    private static readonly HashSet<string> BtreeOperators = ["=", "<>", "!=", "<", "<=", ">", ">="];
+
+    // Under gist, every element needs a default GiST operator class for its type, whatever its
+    // operator: a scalar column has one only through btree_gist, and PostgreSQL rejects the
+    // constraint without it ("data type integer has no default operator class for access method
+    // gist"). A column is checked by its store type; an expression's type is unknown here, so it
+    // counts when it is compared with a B-tree operator. The method is compared case-insensitively,
+    // as PostgreSQL reads it: UseMethod("GiST") is gist.
+    private static bool NeedsBtreeGist(ExclusionDescriptor constraint)
+        => string.Equals(constraint.Method, "gist", StringComparison.OrdinalIgnoreCase)
+        && constraint.Parts.Any(p => p.IsExpression
+                                         ? BtreeOperators.Contains(p.Operator)
+                                         : !HasNativeGistOperatorClass(p.StoreType));
+
+    private static bool HasNativeGistOperatorClass(string? storeType)
+    {
+        if (storeType is null)
+            return false;
+
+        var parenthesis = storeType.IndexOf('(');
+        var baseType    = (parenthesis < 0 ? storeType : storeType[..parenthesis]).Trim();
+
+        return !baseType.EndsWith("[]", StringComparison.Ordinal)
+            && (baseType.EndsWith("range", StringComparison.OrdinalIgnoreCase) || NativeGistTypes.Contains(baseType));
     }
 
     /// <summary>
@@ -855,7 +945,7 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
                               ?? throw new InvalidOperationException(
                                      $"Exclusion constraint property '{part.PropertyPath}' on entity '{entityType.Name}' has no column mapping for table '{table}'.");
 
-                    parts.Add(new ResolvedExclusionPart(false, column, part.Operator));
+                    parts.Add(new ResolvedExclusionPart(false, column, part.Operator) { StoreType = property.GetColumnType(storeObject) });
                 }
 
                 var name = def.Name ?? $"EX_{table}_{string.Join("_", parts.Select(ExclusionPartToken))}";
@@ -868,13 +958,27 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
                     def.Method,
                     // Pinned to the original JSON rendering: the constraint enforces the same rows
                     // either way, so the 5.4.0 rendering change would only drop and re-add it.
-                    ResolveFilter(entityType, def.Filter, storeObject, renderingVersion: 1),
+                    // Non-string members are the exception (ResolveUnmappedPart).
+                    ResolveExclusionFilter(entityType, def.Filter, storeObject),
                     def.Deferrable,
                     def.InitiallyDeferred));
             }
         }
 
         return set;
+    }
+
+    private string? ResolveExclusionFilter(IEntityType entityType, string? filter, StoreObjectIdentifier storeObject)
+    {
+        _resolvingExclusionFilter = true;
+        try
+        {
+            return ResolveFilter(entityType, filter, storeObject, renderingVersion: 1);
+        }
+        finally
+        {
+            _resolvingExclusionFilter = false;
+        }
     }
 
     // The ADD is preceded by DROP CONSTRAINT IF EXISTS so the migration also applies cleanly on
@@ -1237,7 +1341,20 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
         }
     }
 
-    private sealed record ResolvedExclusionPart(bool IsExpression, string Value, string Operator);
+    private sealed record ResolvedExclusionPart(bool IsExpression, string Value, string Operator)
+    {
+        // Decides btree_gist only. Kept out of equality: a column type change is the base
+        // operations' business, and PostgreSQL rebuilds the constraint's index with the column.
+        public string? StoreType { get; init; }
+
+        public bool Equals(ResolvedExclusionPart? other) =>
+            other is not null
+         && IsExpression == other.IsExpression
+         && Value        == other.Value
+         && Operator     == other.Operator;
+
+        public override int GetHashCode() => HashCode.Combine(IsExpression, Value, Operator);
+    }
 
     private sealed record ExclusionDescriptor(
         string                               Table,

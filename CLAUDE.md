@@ -23,8 +23,10 @@ dotnet pack src/EFCore.ComplexIndexes/EFCore.ComplexIndexes.csproj
 
 Tests run in parallel at the method level (`Scope = ExecutionScope.MethodLevel`). The
 `PostgresIntegrationTests` class (`[TestCategory("Integration")]`, `[DoNotParallelize]`) spins up a
-PostgreSQL 18 Testcontainer and applies generated DDL for real; without Docker it needs excluding
-via `--filter "TestCategory!=Integration"`.
+PostgreSQL 18 Testcontainer and applies generated DDL for real; `Postgres16IntegrationTests` does
+the same on PostgreSQL 16, one fresh database per test, so an extension an earlier test installed
+cannot hide a migration that would not install it. Without Docker they need excluding via
+`--filter "TestCategory!=Integration"`.
 
 Locally, no Docker means those tests go **inconclusive**. When the `CI` environment variable is set
 they **fail** instead — an unreachable container must not quietly retire the end-to-end layer while
@@ -304,11 +306,13 @@ time — the second constraint silently replaces the first.
 The per-kind checks above each compare a kind with itself on one table, which is not how
 PostgreSQL scopes names, so since 5.4.0 the Npgsql differ's `ValidateNamesAcrossKinds` runs last
 over everything the target model introduces — complex indexes, exclusion, temporal and temporal
-foreign key constraints — plus EF's own indexes, keys, foreign keys and check constraints. Two
+foreign key constraints — plus EF's own indexes, keys, foreign keys and check constraints, and
+(since 5.5.0) the model's tables, views and sequences. Two
 namespaces: constraint names per **table** (42710; against an exclusion constraint, a silent
 replacement instead, confirmed on PostgreSQL 18: the temporal `UNIQUE` vanished and the migration
 applied clean), and index names per **schema**, where every primary key, unique, exclusion and
-temporal constraint also owns an index (42P07). A collision is reported only when one party is
+temporal constraint also owns an index, and which tables, views and sequences share — the
+relation namespace, `pg_class` (42P07). A collision is reported only when one party is
 this package's; two of EF's own objects are EF's business. It collects into a list, not a set: the
 two same-named declarations it exists to find produce identical entries, and a set merged them.
 
@@ -432,6 +436,9 @@ differ let satellites resolve what the core cannot:
   so a rendering change never renames an index; and `ResolvedIndexPart` equality ignores both
   internal members, or identical SQL would still rebuild. Exclusion constraint filters pass
   `renderingVersion: 1` and keep the old rendering: rebuilding a constraint buys no enforcement.
+  The exception is a member the current rendering casts (a number, boolean, uuid or enum): as
+  text it never applied (42883, 42804), so since 5.5.0 it takes the current rendering, on both
+  sides of the diff alike.
 - `ResolveTemplatePart` — substitutes template placeholders with quoted columns or parenthesized
   JSON extractions. Since 5.2.0 the core implements it, quoting through the `QuoteIdentifier`
   virtual (ANSI by default; the SQL Server satellite brackets), so satellites override neither.
@@ -496,7 +503,9 @@ if a constraint nevertheless re-emits on every `migrations add` in a consuming a
 snapshot is stale (`--no-build`, stale migrations assembly), not a differ bug. The
 `btree_gist` auto-injection is shared with temporal constraints (single `CREATE EXTENSION`, same
 `UseBtreeGist()` / `SuppressTemporalExtensionAutoInjection()` switches) and triggers when a gist
-constraint has an `=` element.
+constraint (method compared case-insensitively) has a column element whose store type has no GiST
+operator class of its own, or an expression element under a B-tree operator — whatever the
+operator: `<>` on an integer needs it as much as `=` does.
 
 ### Provider validation is scoped, never a list sweep
 

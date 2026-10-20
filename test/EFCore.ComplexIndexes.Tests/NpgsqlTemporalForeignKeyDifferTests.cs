@@ -201,6 +201,35 @@ public class NpgsqlTemporalForeignKeyDifferTests
             });
     }
 
+    // The principal's table sorts before the dependent's. EF orders DropTable operations without
+    // knowing about the temporal foreign key, so with these names the principal's drop comes first.
+    private class PrincipalSortsFirstContext(DbContextOptions<PrincipalSortsFirstContext> options) : DbContext(options)
+    {
+        public DbSet<Subscription>      Subscriptions => Set<Subscription>();
+        public DbSet<SubscriptionAddOn> AddOns        => Set<SubscriptionAddOn>();
+
+        protected override void OnModelCreating(ModelBuilder modelBuilder)
+        {
+            modelBuilder.Entity<Subscription>(b =>
+            {
+                MapSubscription(b);
+                b.ToTable("a_subscriptions");
+                b.HasTemporalConstraint(x => x.SubscriptionId, x => x.ValidDuring);
+            });
+
+            modelBuilder.Entity<SubscriptionAddOn>(b =>
+            {
+                MapAddOn(b);
+                b.ToTable("b_addons");
+                b.HasTemporalForeignKey<SubscriptionAddOn, Subscription>(
+                    x => x.SubscriptionId,
+                    x => x.ActiveDuring,
+                    x => x.SubscriptionId,
+                    x => x.ValidDuring);
+            });
+        }
+    }
+
     private class AddOnOnlyContext(DbContextOptions<AddOnOnlyContext> options) : DbContext(options)
     {
         public DbSet<SubscriptionAddOn> AddOns => Set<SubscriptionAddOn>();
@@ -507,6 +536,30 @@ public class NpgsqlTemporalForeignKeyDifferTests
 
         Assert.IsTrue(dropForeignKey     >= 0);
         Assert.IsTrue(dropPrincipalTable > dropForeignKey);
+    }
+
+    // Dropping both tables is also the Down() of the migration that created them, so without the
+    // explicit drop neither `database update <previous>` nor `migrations remove` could roll back.
+    [TestMethod(DisplayName = "Dropping both tables drops temporal FK first when the principal sorts first")]
+    public void Dropping_both_tables_drops_foreign_key_first_when_principal_sorts_first()
+    {
+        var operations = GetDifferences(
+            source: BuildRelationalModel<PrincipalSortsFirstContext>(),
+            target: null).ToList();
+
+        var dropForeignKey = operations.FindIndex(o => o is DropForeignKeyOperation);
+        var firstDropTable = operations.FindIndex(o => o is DropTableOperation);
+
+        Assert.IsTrue(dropForeignKey >= 0, "The temporal foreign key must be dropped explicitly.");
+        Assert.IsLessThan(firstDropTable, dropForeignKey);
+        Assert.AreEqual(
+            "a_subscriptions",
+            ((DropTableOperation)operations[firstDropTable]).Name,
+            "The premise: EF drops the principal's table first.");
+
+        var dropped = (DropForeignKeyOperation)operations[dropForeignKey];
+        Assert.AreEqual("b_addons", dropped.Table);
+        Assert.AreEqual("FK_b_addons_a_subscriptions_subscription_id_active_during", dropped.Name);
     }
 
     [TestMethod(DisplayName = "Dropping the dependent period column drops temporal FK first")]

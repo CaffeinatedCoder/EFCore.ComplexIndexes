@@ -87,8 +87,9 @@ such a name stays diffable.
 
 Every registration entry point throws `InvalidOperationException` when the EF Core it runs on is
 not version 10: `UseComplexIndexes()`, `UseNpgsqlComplexIndexes()`, `UseSqlServerComplexIndexes()`,
-their `Add…` counterparts, and the design-time registration `dotnet ef` runs. The
-message names `CodoMetis.EFCore.SchemaKit`, the package for EF Core 11.
+their `Add…` counterparts, and the design-time registration `dotnet ef` runs. The differs and
+the PostgreSQL SQL generator check too when an application registers them itself with
+`ReplaceService`. The message names `CodoMetis.EFCore.SchemaKit`, the package for EF Core 11.
 
 Nothing changes on EF Core 10, and EF Core 10 on .NET 11 keeps working: the check reads EF Core's
 version, not the runtime's. An application on EF Core 11 now fails at startup or at

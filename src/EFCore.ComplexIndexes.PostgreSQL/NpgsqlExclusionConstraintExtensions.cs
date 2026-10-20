@@ -11,10 +11,10 @@ namespace EFCore.ComplexIndexes.PostgreSQL;
 /// soft-deleted rows) — and works on every supported PostgreSQL version.
 /// </summary>
 /// <remarks>
-/// Scalar equality elements under <c>USING gist</c> require the <c>btree_gist</c> extension; the
-/// differ injects <c>CREATE EXTENSION IF NOT EXISTS btree_gist</c> automatically (call
-/// <c>UseBtreeGist</c> for explicit control or <c>SuppressTemporalExtensionAutoInjection</c> to opt
-/// out). The constraint DDL is emitted as a raw SQL operation at design time, so — unlike
+/// Scalar elements under <c>USING gist</c> require the <c>btree_gist</c> extension, whatever their
+/// operator; the differ injects <c>CREATE EXTENSION IF NOT EXISTS btree_gist</c> automatically
+/// (call <c>UseBtreeGist</c> for explicit control or <c>SuppressTemporalExtensionAutoInjection</c>
+/// to opt out). The constraint DDL is emitted as a raw SQL operation at design time, so — unlike
 /// expression indexes — no runtime <c>UseNpgsqlComplexIndexes()</c> wiring is required.
 /// The generated <c>ADD CONSTRAINT</c> is preceded by <c>DROP CONSTRAINT IF EXISTS</c>, so
 /// declaring a constraint that already exists in the database under the same name (hand-written

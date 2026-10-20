@@ -166,13 +166,20 @@ public class NpgsqlJsonMemberRenderingTests
             });
     }
 
-    // Filters: index filters follow the new rules; exclusion constraint filters keep the old ones.
+    // Filters: index filters follow the new rules. Exclusion constraint filters keep the old ones
+    // for string members, and take the new ones for every other member, which never applied under
+    // the old rules (text compared with an integer, or a text WHERE).
     internal static void DeclareFilters(EntityTypeBuilder<Account> b)
     {
         ConfigureAccount(b);
         b.HasComplexIndex(x => x.Profile.Slug, filter: "{Profile.Address.City} IS NOT NULL", indexName: "ix_filtered_city");
         b.HasComplexIndex(x => x.Profile.Slug, x => x.Profile.Rank > 5, indexName: "ix_filtered_rank");
         b.HasExclusionConstraint(x => x.Id, x => x.Period, filter: "{Profile.Address.City} IS NOT NULL", name: "ex_accounts_city");
+        b.HasExclusionConstraint(x => x.Id, x => x.Period, x => x.Profile.Rank > 5, name: "ex_accounts_rank");
+        b.HasExclusionConstraint(x => x.Id, x => x.Period, x => x.Profile.Address.Zip > 0, name: "ex_accounts_zip");
+        b.HasExclusionConstraint(ex => ex.WithEquality(x => x.Id).WithOverlaps(x => x.Period)
+                                         .HasFilter(x => x.Profile.Active).HasName("ex_accounts_active"));
+        b.HasExclusionConstraint(x => x.Id, x => x.Period, filter: "{Profile.Tags} IS NOT NULL", name: "ex_accounts_tags");
     }
 
     public class FilterContext(DbContextOptions<FilterContext> options) : DbContext(options)
@@ -408,9 +415,25 @@ public class NpgsqlJsonMemberRenderingTests
     public void Exclusion_filters_keep_the_original_rendering()
     {
         var add = MigrationHarness.NpgsqlDiff(null, MigrationHarness.NpgsqlModel<FilterContext>())
-                                  .OfType<SqlOperation>().Single(o => o.Sql.Contains("EXCLUDE")).Sql;
+                                  .OfType<SqlOperation>().Single(o => o.Sql.Contains("\"ex_accounts_city\" EXCLUDE")).Sql;
 
         StringAssert.Contains(add, "WHERE ((\"profile\" -> 'Address' ->> 'City') IS NOT NULL)");
+    }
+
+    [TestMethod(DisplayName = "Exclusion constraint filters render non-string JSON members by the new rules")]
+    public void Exclusion_filters_cast_non_string_members()
+    {
+        var adds = MigrationHarness.NpgsqlDiff(null, MigrationHarness.NpgsqlModel<FilterContext>())
+                                   .OfType<SqlOperation>().Where(o => o.Sql.Contains("EXCLUDE"))
+                                   .ToDictionary(o => Regex.Match(o.Sql, "ADD CONSTRAINT \"(\\w+)\"").Groups[1].Value, o => o.Sql);
+
+        // Under the old rendering: 42883 text > integer, and 42804 argument of WHERE must be boolean.
+        StringAssert.Contains(adds["ex_accounts_rank"], "WHERE ((CAST(\"profile\" ->> 'Rank' AS integer)) > 5)");
+        StringAssert.Contains(adds["ex_accounts_zip"], "WHERE ((CAST(\"profile\" #>> '{Address,Zip}' AS integer)) > 0)");
+        StringAssert.Contains(adds["ex_accounts_active"], "WHERE ((CAST(\"profile\" ->> 'Active' AS boolean)))");
+
+        // Not cast by the new rules, so not changed: a JSON null is NULL under ->>, but not under ->.
+        StringAssert.Contains(adds["ex_accounts_tags"], "WHERE ((\"profile\" ->> 'Tags') IS NOT NULL)");
     }
 
     [TestMethod(DisplayName = "The rollout leaves exclusion constraints alone")]
@@ -420,7 +443,7 @@ public class NpgsqlJsonMemberRenderingTests
             MigrationHarness.NpgsqlModel<FilterBefore54Context>(),
             MigrationHarness.NpgsqlModel<FilterContext>());
 
-        Assert.IsFalse(operations.OfType<SqlOperation>().Any(o => o.Sql.Contains("ex_accounts_city")));
+        Assert.IsFalse(operations.OfType<SqlOperation>().Any(o => o.Sql.Contains("ex_accounts_")));
         CollectionAssert.AreEquivalent(
             new[] { "ix_filtered_city", "ix_filtered_rank" },
             operations.OfType<CreateIndexOperation>().Select(o => o.Name).ToList());

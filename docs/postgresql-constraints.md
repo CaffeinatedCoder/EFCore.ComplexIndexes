@@ -185,9 +185,13 @@ decided, JSON members become extractions, and a path that names no property fail
 `migrations add`. Or write it typed — the scheduling overload takes a predicate in place of the
 string, and the builder has `HasFilter(x => x.RevokedAt == null)` — with the subset described under
 [typed filters](postgresql-indexes.md#typed-filters).
-Scalar equality elements under `gist` need the `btree_gist` extension — the differ injects
-`CREATE EXTENSION IF NOT EXISTS btree_gist` automatically, shared with temporal constraints and
-governed by the same `UseBtreeGist()` / `SuppressTemporalExtensionAutoInjection()` switches.
+Scalar elements under `gist` (any method spelling, `UseMethod("GiST")` included) need the
+`btree_gist` extension whatever their operator, `<>` as much as `=`, since a scalar type has no GiST
+operator class of its own. The differ injects `CREATE EXTENSION IF NOT EXISTS btree_gist`
+automatically for any element over a column whose type is not a range, multirange, geometric,
+full-text or extension type with its own GiST support, and for an expression element compared with
+`=`, `<>`, `<`, `<=`, `>` or `>=`. It is shared with temporal constraints and governed by the same
+`UseBtreeGist()` / `SuppressTemporalExtensionAutoInjection()` switches.
 Constraint identity is the ordered elements **plus the filter** (operators are ignored, so
 re-declaring updates them). Re-declaring the same elements with the same filter replaces the
 constraint; the same elements with a *different* filter give you two coexisting partial
