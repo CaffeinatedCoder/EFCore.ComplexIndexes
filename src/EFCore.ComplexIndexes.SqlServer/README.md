@@ -1,15 +1,15 @@
 # EFCore.ComplexIndexes.SqlServer
 
-> **On EF Core 11 or later?** This package serves EF Core 10 only, and from 5.5.0 it refuses to
-> register on another major. Its successor for EF Core 11 is a new package,
+> **On EF Core 11 or later?** This package supports EF Core 10 only. From 5.5.0 it throws when you
+> register it on any other major version. Its successor for EF Core 11 is a new package,
 > `CodoMetis.EFCore.SchemaKit`, tracked in
 > [#37](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/issues/37).
 
 SQL Server index options for
-[EFCore.ComplexIndexes](https://www.nuget.org/packages/EFCore.ComplexIndexes/). The core package is
-included automatically.
+[EFCore.ComplexIndexes](https://www.nuget.org/packages/EFCore.ComplexIndexes/). This package brings
+the core package with it.
 
-Brings the SQL Server option set to complex-property indexes:
+You get SQL Server's index options on indexes over complex properties:
 
 - **Clustered / nonclustered** control
 - **Covering indexes** (`INCLUDE`)
@@ -22,20 +22,22 @@ Brings the SQL Server option set to complex-property indexes:
 
 ## Setup
 
-None for migrations. Every option flows as a native SQL Server annotation that the provider's own
-migrations SQL generator renders — install the package, declare your indexes, and run
+Migrations need no setup. Every option goes into the migration as a SQL Server annotation that EF
+Core's own SQL Server generator writes. Install the package, declare your indexes, and run
 `dotnet ef migrations add`.
 
-One optional call exists. `Database.EnsureCreated()`, `GenerateCreateScript()` and the
-pending-model-changes check in `Migrate()` run the *runtime* differ, which the design-time wiring never
-reaches; without a registration, `EnsureCreated()` creates the tables and silently none of the
-indexes. Register the differ once so those see the complex indexes too:
+There is one optional call. `Database.EnsureCreated()`, `GenerateCreateScript()` and the
+pending-model-changes check in `Migrate()` use your context's own services, which the automatic
+design-time registration never reaches. Without a registration, `EnsureCreated()` creates the tables
+and none of the indexes, with no error. Register the package once so these see your complex indexes
+too:
 
 ```csharp
 options.UseSqlServer(connectionString).UseSqlServerComplexIndexes();
 ```
 
-`AddSqlServerComplexIndexes()` is the equivalent for a custom internal service provider.
+If you build your own internal service provider, call `AddSqlServerComplexIndexes()` on your
+`IServiceCollection` instead.
 
 ## Usage
 
@@ -53,36 +55,36 @@ builder.HasComplexIndex(x => x.Email.Value, ix => ix
 //   INCLUDE ([name]) WITH (FILLFACTOR = 80, ONLINE = ON);
 ```
 
-Also available: `IsClustered()`, `SortInTempDb()`, and
+The builder also has `IsClustered()`, `SortInTempDb()` and
 `UseDataCompression(DataCompressionType.Page)`.
 
-Filtered indexes (`filter:`) and `DbOrder.Desc` need nothing from this package — both ride on EF
-Core's native index operation.
+Filtered indexes (`filter:`) and `DbOrder.Desc` need nothing from this package, because EF Core's own
+index operation carries both.
 
-A filter may name properties instead of columns: `filter: "{DeletedAt} IS NULL"` resolves to
-`[deleted_at] IS NULL` at `migrations add`.
+A filter can name properties instead of columns: `migrations add` turns
+`filter: "{DeletedAt} IS NULL"` into `[deleted_at] IS NULL`.
 
 ### Deliberate rejections
 
-Declarations SQL Server cannot express fail at `dotnet ef migrations add` with a targeted error
-rather than producing DDL that cannot apply:
+If you declare something SQL Server can't express, `dotnet ef migrations add` fails and names the
+problem, instead of writing a migration that would fail when it runs:
 
-- **Expression parts** — SQL Server has no functional-index DDL. Model the expression as a persisted
-  computed column and index that column instead.
-- **`DbOrder.NullsFirst` / `NullsLast`** — there is no `NULLS FIRST`/`NULLS LAST` in T-SQL.
-- **Clustered index with `INCLUDE` columns** — included columns are a nonclustered-index feature; a
+- **Expression parts.** SQL Server has no DDL for an index on an expression. Store the expression in
+  a persisted computed column and index that column instead.
+- **`DbOrder.NullsFirst` / `NullsLast`.** T-SQL has no `NULLS FIRST`/`NULLS LAST`.
+- **A clustered index with `INCLUDE` columns.** Included columns belong to nonclustered indexes. A
   clustered index already stores every column.
-- **Clustered filtered index** — filtered indexes must be nonclustered.
-- **A second clustered index on a table** — including the usual case, where the primary key already
-  holds the clustered slot. SQL Server clusters the primary key unless you declare
-  `HasKey(...).IsClustered(false)`, so that is normally what a clustered complex index collides with.
+- **A clustered filtered index.** A filtered index must be nonclustered.
+- **A second clustered index on a table.** Usually the primary key already holds the clustered slot:
+  SQL Server clusters the primary key unless you declare `HasKey(...).IsClustered(false)`. So that is
+  normally what a clustered complex index collides with.
 
 ---
 
 ## Documentation
 
 - [SQL Server](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/docs/sqlserver.md)
-  — the full index-option reference and every deliberate rejection
+  — every index option and the declarations SQL Server can't express
 - [Full documentation](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes)
 
 ## Changelog

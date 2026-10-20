@@ -1,20 +1,18 @@
 # EFCore.ComplexIndexes
 
-> **On EF Core 11 or later?** This package serves EF Core 10 only, and from 5.5.0 it refuses to
-> register on another major. Its successor for EF Core 11 is a new package,
+> **On EF Core 11 or later?** This package supports EF Core 10 only. From 5.5.0 it throws when you
+> register it on any other major version. Its successor for EF Core 11 is a new package,
 > `CodoMetis.EFCore.SchemaKit`, tracked in
 > [#37](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/issues/37).
 
-Index support for **complex type properties** in EF Core migrations — the missing piece for value
-object-driven architectures.
+Indexes on **complex type properties** in EF Core migrations, for models built on value objects.
 
-EF Core models complex properties (value objects) but its migration tooling does not generate
-indexes for their nested columns. This package hooks into EF Core's design-time pipeline and emits
-the `CREATE INDEX` / `DROP INDEX` operations for you.
+EF Core lets you map value objects as complex properties, but `dotnet ef migrations add` writes no
+index on their columns. With this package you declare those indexes in `OnModelCreating`, and
+`migrations add` writes the `CREATE INDEX` and `DROP INDEX` for you.
 
-This is the **core, provider-agnostic package**. It works with any EF Core relational provider.
-For provider-specific index features, add a satellite package — each one includes this package
-automatically:
+This is the **core package**, and it works with any EF Core relational provider. For a provider's own
+index features, add its package. Each one brings this package with it:
 
 | Package | Adds |
 |---|---|
@@ -25,8 +23,8 @@ automatically:
 
 ## Setup
 
-None. The migration differ is registered through EF Core's design-time tooling automatically —
-install the package, declare your indexes in `OnModelCreating`, and run `dotnet ef migrations add`.
+None. The package registers itself with EF Core's design-time tools. Install it, declare your indexes
+in `OnModelCreating`, and run `dotnet ef migrations add`.
 
 ## Usage
 
@@ -39,19 +37,15 @@ builder.ComplexProperty(x => x.EmailAddress, c =>
 );
 ```
 
-Column names are resolved against the real model, so both convention-based names (`Origin_Source`)
-and explicit `HasColumnName` overrides are honored.
+The package finds the real column names in your model. It follows both EF Core's naming conventions
+(`Origin_Source`) and names you set with `HasColumnName`.
 
-A filter may name properties instead of columns — `filter: "{DeletedAt} IS NULL"` resolves to the
-mapped column at `migrations add`, quoted for the provider, and is baked into the migration. A
-selector reaches into complex properties and, for a value object mapped through a converter, one
-step further: `x => x.Email.Value` resolves to the converted column.
+A filter can name properties instead of columns. `migrations add` turns `filter: "{DeletedAt} IS NULL"`
+into the mapped column, quoted for your provider, and writes the result into the migration. The
+lambda that picks the column reaches into complex properties. For a value object stored through a converter, it reaches one step
+further: `x => x.Email.Value` is the converted column.
 
 ### Several indexes over one column
-
-A property-level declaration holds **one** index per property. To give a column several
-differently-filtered indexes (the classic soft-delete pattern), declare them at the entity level —
-the selector reaches into complex properties, and each index needs its own explicit name:
 
 ```csharp
 builder.HasComplexIndex(x => x.EmailAddress.Value,
@@ -60,17 +54,25 @@ builder.HasComplexIndex(x => x.EmailAddress.Value,
     indexName: "ix_person_email_all");
 ```
 
-Index names must be unique wherever the provider requires (across the database on SQLite, per
-schema on PostgreSQL, per table on SQL Server) and within the provider's identifier limit (63 bytes
-on PostgreSQL, which would otherwise truncate silently), and the package enforces both at
-`dotnet ef migrations add` rather than letting the database reject — or quietly shorten — the name.
+A declaration on a property holds **one** index for that property. To give a column several indexes
+with different filters, as in the usual soft-delete pattern, declare them on the entity. The lambda
+can reach into complex properties. Each of these indexes needs its own explicit name, or the
+declaration throws.
 
-On SQLite, a migration that rebuilds a table (altering or dropping a column, a key or constraint
-change, or a table rename) drops the table's complex indexes, and EF Core's SQL generator runs the
-rebuild after everything else. Register `UseComplexIndexes()` after `UseSqlite()`, both where
-`dotnet ef` builds the context and where the migration is applied, and the indexes are created again
-after the rebuild. Without it, `dotnet ef migrations add` refuses the migration and says how to split
-it ([Upgrading](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/docs/upgrading.md#sqlite-re-creates-complex-indexes-after-a-table-rebuild)).
+`migrations add` checks every index name, so the database doesn't reject or quietly shorten one:
+
+- **Unique where the provider needs it:** across the database on SQLite, per schema on PostgreSQL,
+  per table on SQL Server.
+- **Within the provider's length limit:** 63 bytes on PostgreSQL, which would otherwise shorten the
+  name without an error.
+
+On SQLite, some migrations rebuild a table: altering or dropping a column, changing a key or
+constraint, or renaming the table. A rebuild drops the table's complex indexes, and EF Core's SQL
+generator runs it after everything else. Call `UseComplexIndexes()` after `UseSqlite()`, both where
+`dotnet ef` builds the context and where the migration runs, and the indexes are created again after
+the rebuild. Without the call, `dotnet ef migrations add` fails and says how to split the change into
+several migrations
+([Upgrading](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/docs/upgrading.md#sqlite-re-creates-complex-indexes-after-a-table-rebuild)).
 
 ### Composite index across scalar and nested properties
 
@@ -89,23 +91,23 @@ builder.HasComplexCompositeIndex(
 // CREATE INDEX ix_commits_created_counter ON ... (created, counter DESC);
 ```
 
-Direction maps onto EF Core's native `CreateIndexOperation.IsDescending`, so **every** relational
-provider renders it. Because a wrapped member is a method call, C# requires you to name it in the
-anonymous type.
+**Every** relational provider writes the direction, because it maps to EF Core's own
+`CreateIndexOperation.IsDescending`. A wrapped member is a method call, so C# needs you to name it in
+the anonymous type.
 
-`DbOrder.NullsFirst`/`NullsLast` are declared here too, but only the PostgreSQL package renders
-them. On SQL Server and on providers without a satellite, such as SQLite, an index that uses them
-fails at `dotnet ef migrations add`.
+You can declare `DbOrder.NullsFirst`/`NullsLast` here too, but only the PostgreSQL package writes
+them. On SQL Server, and on providers without their own package such as SQLite, an index that uses
+them makes `dotnet ef migrations add` fail.
 
 ---
 
 ### Reading declarations back
 
-`GetComplexIndexes()` on an entity type (or the model) returns every declaration — property-level,
-entity-level, composite, expression — with its parts, `IsUnique`, `Filter` and explicit `Name`, so an
-application can check its own conventions; `FindComplexIndex(name)` looks one up by explicit name.
-It works on the mutable model inside `OnModelCreating` too, and the differ reads declarations
-through the same code.
+`GetComplexIndexes()` on an entity type, or on the model, returns every declaration: property-level,
+entity-level, composite and expression indexes. Each one has its parts, `IsUnique`, `Filter` and the
+`Name` you gave it, so you can check your own conventions in code. `FindComplexIndex(name)` finds one
+by that name. This works on the mutable model inside `OnModelCreating` too, and `migrations add`
+reads declarations through the same code.
 
 ```csharp
 var unfiltered = modelBuilder.Model.GetEntityTypes()
@@ -113,14 +115,15 @@ var unfiltered = modelBuilder.Model.GetEntityTypes()
     .Where(ix => ix.IsUnique && ix.Filter is null);
 ```
 
-Or install the convention: on the mutable model, `AddComplexIndexFilter(predicate, where)` ANDs a
-predicate onto every selected declaration's filter, idempotently, and `AddComplexIndex(definition)`
-adds one with the fluent API's identity rules. Both amend what is declared at the time of the call,
-so run them after the configurations.
+You can also apply a convention instead of checking it. On the mutable model,
+`AddComplexIndexFilter(predicate, where)` adds a predicate with `AND` to the filter of every
+declaration you select, and repeating the call changes nothing. `AddComplexIndex(definition)` adds a declaration, and
+follows the fluent API's rules for duplicates and names. Both change only what is declared when they
+run, so call them after the configurations.
 
 ## Documentation
 
-Full documentation, including every provider-specific feature:
+Full documentation, including every provider's features:
 **https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes**
 
 ## Changelog

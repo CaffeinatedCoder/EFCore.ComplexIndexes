@@ -1,17 +1,23 @@
 # PostgreSQL — temporal and exclusion constraints
 
-Provided by the **EFCore.ComplexIndexes.PostgreSQL** package. None of these features need runtime
-wiring: the DDL is rendered at design time into the migration itself.
+With the **EFCore.ComplexIndexes.PostgreSQL** package you can declare temporal `UNIQUE` constraints,
+temporal foreign keys and exclusion constraints. They let the database check time periods: that
+they don't overlap, or that one covers another. Exclusion constraints go further, as a general form
+of uniqueness. For migrations, none of them needs `UseNpgsqlComplexIndexes()`: `migrations add`
+writes their SQL into the migration itself.
 
 For index methods, expression indexes and JSON member indexes, see
 [PostgreSQL — indexes](postgresql-indexes.md).
 
 ## Temporal `UNIQUE` constraints (`WITHOUT OVERLAPS`) — requires PostgreSQL 18
 
-> No runtime wiring required — the DDL is rendered at design time into the migration itself.
-> Available as an extension on `EntityTypeBuilder<TEntity>`, so it works on any entity — complex or not.
+> Migrations need no `UseNpgsqlComplexIndexes()`: `migrations add` writes the SQL into the migration
+> itself. `HasTemporalConstraint` extends `EntityTypeBuilder<TEntity>`, so you can use it on any entity, with
+> complex properties or without.
 
-PostgreSQL 18 introduced `WITHOUT OVERLAPS` for unique constraints — a long-requested feature for scheduling, booking, and versioning scenarios. Instead of only checking *"is this exact value already present?"*, the database enforces *"no two rows for the same key have overlapping time periods"*.
+PostgreSQL 18 added `WITHOUT OVERLAPS` to unique constraints, for scheduling, booking and versioning.
+A plain unique constraint checks *"is this exact value already there?"*. With `WITHOUT OVERLAPS`, the
+database checks *"do two rows for the same key have overlapping time periods?"*.
 
 ```sql
 ALTER TABLE bookings
@@ -19,9 +25,13 @@ ALTER TABLE bookings
     UNIQUE (room_id, period WITHOUT OVERLAPS);
 ```
 
-`HasTemporalConstraint` exposes this as a first-class EF Core API. You supply scalar key columns (the "group" — e.g. a room, a resource, an employee) and a period column (a [PostgreSQL range type](https://www.postgresql.org/docs/current/rangetypes.html) such as `daterange`, `tstzrange`, or `NpgsqlRange<T>`):
+`HasTemporalConstraint` lets you declare this in EF Core. You pass the scalar key columns, which form
+a group, such as a room, a resource or an employee. Within a group, periods must not overlap. You
+also pass the period column, of a
+[PostgreSQL range type](https://www.postgresql.org/docs/current/rangetypes.html) such as `daterange`,
+`tstzrange` or `NpgsqlRange<T>`:
 
-**Single key column:**
+**One key column:**
 
 ```csharp
 builder.HasTemporalConstraint(
@@ -31,7 +41,7 @@ builder.HasTemporalConstraint(
 //   UNIQUE ("RoomId", "ValidPeriod" WITHOUT OVERLAPS);
 ```
 
-**Composite key columns:**
+**Several key columns:**
 
 ```csharp
 builder.HasTemporalConstraint(
@@ -40,7 +50,7 @@ builder.HasTemporalConstraint(
 // UNIQUE ("Facility", "RoomId", "ValidPeriod" WITHOUT OVERLAPS)
 ```
 
-**Explicit constraint name:**
+**A name you choose:**
 
 ```csharp
 builder.HasTemporalConstraint(
@@ -49,19 +59,28 @@ builder.HasTemporalConstraint(
     name:       "uk_room_no_overlap");
 ```
 
-### How the period column is validated
+### Which period columns work
 
-The migration differ validates the period property at migration-generation time (`dotnet ef migrations add`). It must be mapped to a PostgreSQL range or multirange store type (anything ending in `range` — e.g. `daterange`, `tstzrange`, `int4multirange`) or have a CLR type of `NpgsqlRange<T>` / a multirange struct from `NpgsqlTypes`. Using an incompatible type such as `string`, `int`, or `DateOnly` throws an `InvalidOperationException` *before* any SQL is generated:
+`dotnet ef migrations add` checks the period property. It must map to a PostgreSQL range or
+multirange store type, meaning any type ending in `range`, such as `daterange`, `tstzrange` or
+`int4multirange`. A CLR type of `NpgsqlRange<T>`, or a multirange struct from `NpgsqlTypes`, works
+too. Any other type, such as `string`, `int` or `DateOnly`, throws an `InvalidOperationException`
+*before* any SQL is written:
 
 ```
 The temporal constraint period property 'Start' on entity 'Booking' does not appear to be a range or multirange type. Found CLR type 'DateTime' (store type: 'timestamp with time zone'). Expected NpgsqlRange<T>, a PostgreSQL range/multirange column type, or a store type ending in 'range' (e.g., daterange, int4multirange).
 ```
 
-The period column stays a plain mapped column — it is deliberately **not** part of an EF key, because EF Core forbids non-comparable range types in primary keys. Use a surrogate or scalar EF primary key for change tracking; the temporal constraint handles the non-overlap guarantee independently.
+The period stays a plain mapped column. On purpose, it is **not** part of an EF key: EF Core doesn't
+allow range types in primary keys, since they can't be compared. Give the entity a surrogate or
+scalar EF primary key for change tracking. The temporal constraint keeps the periods from overlapping
+on its own.
 
-### `btree_gist` extension
+### The `btree_gist` extension
 
-Temporal constraints over scalar key columns require the `btree_gist` PostgreSQL extension. The differ injects `CREATE EXTENSION IF NOT EXISTS btree_gist;` automatically when a temporal constraint is first added. You can take explicit control or opt out:
+A temporal constraint over scalar key columns needs PostgreSQL's `btree_gist` extension. When a
+migration adds a temporal constraint, the package puts `CREATE EXTENSION IF NOT EXISTS btree_gist;` into
+the migration for you. You can manage the extension yourself, or leave it out:
 
 ```csharp
 // Explicit: declare the extension yourself (Npgsql's own differ handles it)
@@ -71,23 +90,27 @@ modelBuilder.UseBtreeGist();
 modelBuilder.SuppressTemporalExtensionAutoInjection();
 ```
 
-When `UseBtreeGist()` is present, automatic injection backs off to avoid a duplicate `CREATE EXTENSION` statement.
+With `UseBtreeGist()` in the model, the package doesn't add its own statement, so the migration has
+only one `CREATE EXTENSION`.
 
-### Idempotency and renames
+### Change, remove or rename a constraint
 
-Re-declaring a temporal constraint on the same key + period replaces the previous one. Removing `HasTemporalConstraint` from the model causes the differ to emit a `DROP CONSTRAINT` in the next migration (unless the table itself is being dropped).
-
-A change that only affects the **name** — whether you pass a new `name:` or rename the table, which
-changes the default-derived name — emits `ALTER TABLE … RENAME CONSTRAINT` rather than dropping and
-rebuilding the constraint, so dependent temporal foreign keys survive untouched.
+- **Declaring a temporal constraint again** on the same key and period replaces the earlier one.
+- **Removing `HasTemporalConstraint`** from the model gives you a `DROP CONSTRAINT` in the next
+  migration, unless the table itself is dropped.
+- **Changing only the name** gives you `ALTER TABLE … RENAME CONSTRAINT`, instead of dropping and
+  re-creating the constraint. That's the case when you pass a new `name:`, or rename the table, which
+  changes the default name. Temporal foreign keys that depend on the constraint stay as they are.
 
 ## Temporal foreign keys (`PERIOD`) — requires PostgreSQL 18
 
-> No runtime wiring required — the `PERIOD` DDL is rendered at design time into the migration itself.
+> Migrations need no `UseNpgsqlComplexIndexes()`: `migrations add` writes the `PERIOD` SQL into the
+> migration itself.
 
-`HasTemporalForeignKey` adds PostgreSQL 18 temporal referential integrity. The scalar key columns are matched by equality, and the dependent period must be fully covered by matching principal periods.
+`HasTemporalForeignKey` adds PostgreSQL 18's temporal foreign keys. The scalar key columns must be
+equal, and the principal rows with matching keys must cover the dependent's whole period.
 
-A typical subscription/add-on model looks like this:
+A typical subscription with add-ons looks like this:
 
 ```csharp
 modelBuilder.Entity<Subscription>(b =>
@@ -111,7 +134,7 @@ modelBuilder.Entity<SubscriptionAddOn>(b =>
 });
 ```
 
-Generated SQL:
+The migration contains:
 
 ```sql
 ALTER TABLE subscription_addons
@@ -120,7 +143,7 @@ ALTER TABLE subscription_addons
     REFERENCES subscriptions (subscription_id, PERIOD valid_during);
 ```
 
-Composite keys use anonymous types on both sides:
+For several key columns, use anonymous types on both sides:
 
 ```csharp
 b.HasTemporalForeignKey<SubscriptionAddOn, Subscription>(
@@ -131,28 +154,33 @@ b.HasTemporalForeignKey<SubscriptionAddOn, Subscription>(
 );
 ```
 
-### Restrictions and validation
+### What a temporal foreign key needs
 
-- PostgreSQL 18+ only.
-- Period columns must be PostgreSQL range or multirange columns (`daterange`, `tstzrange`, `NpgsqlRange<T>`, etc.).
-- The referenced principal columns must have a matching `HasTemporalConstraint` in the model. PostgreSQL requires a referenced temporal `UNIQUE`/`PRIMARY KEY` constraint with `WITHOUT OVERLAPS`.
-- Temporal foreign keys emit `NO ACTION` referential actions. PostgreSQL does not support temporal FK `CASCADE`, `RESTRICT`, `SET NULL`, or `SET DEFAULT` actions.
-- This API emits standalone database constraints; it does not try to model the temporal relationship as an EF navigation/relationship key.
+- **PostgreSQL 18 or later.**
+- **Range or multirange period columns:** `daterange`, `tstzrange`, `NpgsqlRange<T>` and so on.
+- **A matching `HasTemporalConstraint` on the principal columns.** PostgreSQL requires the referenced
+  columns to have a temporal `UNIQUE` or `PRIMARY KEY` constraint with `WITHOUT OVERLAPS`.
+- **`NO ACTION` only.** The package writes `NO ACTION` referential actions, because PostgreSQL doesn't
+  support `CASCADE`, `RESTRICT`, `SET NULL` or `SET DEFAULT` on a temporal foreign key.
+- **No EF relationship.** You get a database constraint only. The package doesn't model the
+  relationship as an EF navigation or relationship key.
 
-The standalone design is intentional. The period column remains a normal mapped property, not an EF key member. EF keys require key values suitable for change tracking, while Npgsql range values are not suitable EF key members; PostgreSQL enforces the temporal relationship independently at the database level.
+That last point is on purpose. The period column stays a normal mapped property, not part of an EF
+key. EF keys need values that change tracking can use, and Npgsql range values don't fit. PostgreSQL
+enforces the temporal relationship in the database on its own.
 
 ## Exclusion constraints (`EXCLUDE`)
 
-> No runtime wiring required — the DDL is rendered at design time into the migration itself.
+> Migrations need no `UseNpgsqlComplexIndexes()`: `migrations add` writes the SQL into the migration
+> itself.
 
-An exclusion constraint generalizes uniqueness: no two rows may satisfy all the per-element
-comparisons at once. Its killer feature over `UNIQUE … WITHOUT OVERLAPS`: it accepts a **`WHERE`
-predicate**. PostgreSQL's `ADD CONSTRAINT UNIQUE`/`PRIMARY KEY` grammar has never allowed one, so a
-*filtered* overlap guarantee — "no overlapping periods per key, but ignore revoked/soft-deleted
-rows" — can **only** be expressed as an EXCLUDE constraint. It also works on every supported
-PostgreSQL version, not just 18+.
+An exclusion constraint is a more general kind of uniqueness: no two rows may satisfy all of its
+comparisons at once. Unlike `UNIQUE … WITHOUT OVERLAPS`, it takes a **`WHERE` filter**. PostgreSQL's
+`ADD CONSTRAINT UNIQUE` and `PRIMARY KEY` have never allowed one. So to keep periods from overlapping
+per key while ignoring revoked or soft-deleted rows, an `EXCLUDE` constraint is the **only** way. It
+also works on every supported PostgreSQL version, not just 18 and later.
 
-**The scheduling shape** (equality keys + overlap column + predicate):
+**Keys that must match, a period that must not overlap, and a filter:**
 
 ```csharp
 builder.HasExclusionConstraint(
@@ -165,7 +193,7 @@ builder.HasExclusionConstraint(
 //   WHERE (revoked_at IS NULL);
 ```
 
-**Full control** (arbitrary operators, expressions, method, deferrability):
+**Full control** over operators, expressions, the index method and deferral:
 
 ```csharp
 builder.HasExclusionConstraint(ex => ex
@@ -178,24 +206,39 @@ builder.HasExclusionConstraint(ex => ex
     .IsDeferrable(initiallyDeferred: true));
 ```
 
-Selectors resolve complex-property members to their mapped columns, exactly like complex indexes,
-and the filter takes the same `{Property.Path}` placeholders a complex index filter does —
-`filter: "{RevokedAt} IS NULL"` renders `WHERE ("revoked_at" IS NULL)` whatever `HasColumnName`
-decided, JSON members become extractions, and a path that names no property fails at
-`migrations add`. Or write it typed — the scheduling overload takes a predicate in place of the
-string, and the builder has `HasFilter(x => x.RevokedAt == null)` — with the subset described under
-[typed filters](postgresql-indexes.md#typed-filters).
-Scalar elements under `gist` (any method spelling, `UseMethod("GiST")` included) need the
-`btree_gist` extension whatever their operator, `<>` as much as `=`, since a scalar type has no GiST
-operator class of its own. The differ injects `CREATE EXTENSION IF NOT EXISTS btree_gist`
-automatically for any element over a column whose type is not a range, multirange, geometric,
-full-text or extension type with its own GiST support, and for an expression element compared with
-`=`, `<>`, `<`, `<=`, `>` or `>=`. It is shared with temporal constraints and governed by the same
-`UseBtreeGist()` / `SuppressTemporalExtensionAutoInjection()` switches.
-Constraint identity is the ordered elements **plus the filter** (operators are ignored, so
-re-declaring updates them). Re-declaring the same elements with the same filter replaces the
-constraint; the same elements with a *different* filter give you two coexisting partial
-constraints — which is the point of the feature:
+Selectors map complex-property members to their columns, as they do for complex indexes.
+
+### Filter with property names
+
+The filter takes the same `{Property.Path}` placeholders as a complex index filter.
+`filter: "{RevokedAt} IS NULL"` becomes `WHERE ("revoked_at" IS NULL)`, whatever `HasColumnName` set.
+JSON members become JSON reads, and a path that names no property makes `migrations add` fail.
+
+You can also write the filter as a lambda. The overload with keys and a period takes a predicate in
+place of the string, and the builder has `HasFilter(x => x.RevokedAt == null)`. The lambda can use
+what [typed filters](postgresql-indexes.md#typed-filters) support.
+
+### The `btree_gist` extension for scalar elements
+
+A scalar element under `gist` needs the `btree_gist` extension, whatever its operator: `<>` as much
+as `=`. A scalar type has no GiST operator class of its own. This holds however you spell the method,
+`UseMethod("GiST")` included. The package adds `CREATE EXTENSION IF NOT EXISTS btree_gist` to the
+migration for you:
+
+- **for an element over a column** whose type has no GiST support of its own, meaning anything other
+  than a range, multirange, geometric, full-text or extension type with that support;
+- **for an expression element** compared with `=`, `<>` (or `!=`), `<`, `<=`, `>` or `>=`.
+
+Temporal constraints share this, with the same `UseBtreeGist()` and
+`SuppressTemporalExtensionAutoInjection()` switches.
+
+### Two constraints on the same columns
+
+Two declarations are the same constraint when they have the same elements in the same order **and**
+the same filter. Operators don't count, so declaring a constraint again updates its operators. The
+same elements with the same filter replace the earlier constraint. The same elements with a
+*different* filter give you two constraints side by side, each over its own rows, which is the point
+of the feature:
 
 ```csharp
 b.HasExclusionConstraint(x => x.GranteeId, x => x.Period,
@@ -204,28 +247,31 @@ b.HasExclusionConstraint(x => x.GranteeId, x => x.Period,
                          filter: "revoked_at IS NOT NULL", name: "ex_grant_revoked");
 ```
 
-Coexisting constraints must both be named: the default `EX_{table}_{columns}` name is derived from
-the elements alone, so the two would collide in the database. Removing a declaration emits a
-`DROP CONSTRAINT` in the next migration.
+Name both. The default name, `EX_{table}_{columns}`, comes from the elements alone, so the two would
+get the same name in the database. When you remove a declaration, the next migration has a
+`DROP CONSTRAINT` for it.
 
-**Adopting hand-written constraints:** the generated `ADD CONSTRAINT` is preceded by
-`DROP CONSTRAINT IF EXISTS`, so declaring a constraint that already exists in the database under
-the same name — e.g. raw `migrationBuilder.Sql(...)` DDL from an earlier migration — applies
-cleanly on both fresh and existing databases. No hand-editing of the scaffolded migration needed;
-just make sure the declared name matches the existing one.
+### Take over a constraint you wrote by hand
 
-> **If a constraint re-appears in every scaffolded migration:** the differ compares the model
-> against the *compiled* model snapshot, not the `…ModelSnapshot.cs` file. A constraint that is
-> re-emitted on every `dotnet ef migrations add` even though the snapshot file contains its
-> `CustomExclusion:Constraints` annotation means the compiled snapshot is stale — typically
-> scaffolding with `--no-build`, or a migrations assembly (`MigrationsAssembly(...)`) resolved from
-> an out-of-date build output. Rebuild the project that hosts the snapshot and re-scaffold.
+The migration runs `DROP CONSTRAINT IF EXISTS` before each `ADD CONSTRAINT`. So you can declare a
+constraint that already exists in the database under the same name, for example from raw
+`migrationBuilder.Sql(...)` in an earlier migration. The migration runs without an error on new and
+existing databases alike, and you don't edit it by hand. Make sure the name you declare matches the
+existing one.
+
+> **Does a constraint show up again in every new migration?** `migrations add` compares your model
+> with the *compiled* model snapshot, not with the `…ModelSnapshot.cs` file. Say a constraint is
+> added again by every `dotnet ef migrations add`, although the snapshot file has its
+> `CustomExclusion:Constraints` annotation. Then the compiled snapshot is out of date. Usually you
+> ran `migrations add` with `--no-build`, or the migrations assembly (`MigrationsAssembly(...)`) was
+> loaded from an old build. Rebuild the project that holds the snapshot, and run `migrations add`
+> again.
 
 ### Reading constraints back
 
-Exclusion constraints can be read back from the model, mutable or finalized, exactly like
-[complex indexes](../README.md#reading-declarations-back) — which is what makes an application-level
-convention checkable in full rather than for the index half only:
+You can read exclusion constraints back from the model, mutable or finalized, as you can
+[complex indexes](../README.md#reading-declarations-back). That lets you check a convention in your
+application for constraints as well as indexes:
 
 ```csharp
 var unfiltered = modelBuilder.Model.GetEntityTypes()
@@ -236,25 +282,34 @@ var unfiltered = modelBuilder.Model.GetEntityTypes()
 var active = modelBuilder.Model.FindExclusionConstraint("ex_role_grant_active_period");
 ```
 
-Each `ExclusionConstraintDeclaration` carries the elements as property paths or expressions with
-their operators, `Method` (`gist` unless set), `Filter`, deferrability and the explicit `Name` —
-null for a default-named constraint, which `FindExclusionConstraint` therefore does not match.
-`GetDeclaredExclusionConstraints()` leaves inherited declarations to the declaring type. The differ
-builds its constraint DDL from the same reader.
+Each `ExclusionConstraintDeclaration` has:
+
+- **The elements**, as property paths or expressions, each with its operator.
+- **`Method`**, which is `gist` unless you set another.
+- **`Filter` and the deferral settings.**
+- **`Name`**, the name you gave it. It is null for a constraint with a default name, and
+  `FindExclusionConstraint` doesn't find those.
+
+`GetDeclaredExclusionConstraints()` leaves out inherited declarations, and lists each one on the
+type that declares it. `migrations add` builds the constraint's SQL from the same reader.
 
 ### Amending constraints
 
-On the mutable model, `AddExclusionConstraintFilter` ANDs a predicate onto the filter of every
-selected constraint, the way [`AddComplexIndexFilter`](../README.md#amending-declarations) does
-for indexes — an unfiltered constraint gets the predicate, a filtered one `(existing) AND
-(predicate)`, one that already carries it is left alone:
+On the mutable model, `AddExclusionConstraintFilter` adds a predicate to the filter of every
+constraint you select, the way [`AddComplexIndexFilter`](../README.md#amending-declarations) does
+for indexes:
 
 ```csharp
 foreach (var entityType in modelBuilder.Model.GetEntityTypes().Where(IsWithdrawable))
     entityType.AddExclusionConstraintFilter("{RevokedAt} IS NULL");
 ```
 
-Both amend calls have a typed form, `AddComplexIndexFilter<TEntity>(x => x.RevokedAt == null)` and
-`AddExclusionConstraintFilter<TEntity>(…)`, with the entity type given explicitly.
+- **An unfiltered constraint** gets the predicate as its filter.
+- **A filtered constraint** gets `(existing) AND (predicate)`.
+- **A constraint that already has the predicate** stays as it is.
 
-It amends what is declared at the time of the call, so it belongs after the configurations.
+Both methods also take a lambda, with the entity type given explicitly:
+`AddComplexIndexFilter<TEntity>(x => x.RevokedAt == null)` and
+`AddExclusionConstraintFilter<TEntity>(…)`.
+
+The call changes only what is declared when it runs, so put it after the configurations.
