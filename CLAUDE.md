@@ -115,10 +115,11 @@ than working around it: the workflow **file name** (`release.yml`), the **enviro
 Work is tracked as labelled GitHub issues, not as lists in docs or memory: open the issue before
 the work, give the PR the issue's labels and milestone, open it with `Closes #n`. The label legend
 is the pinned Roadmap issue (#35) and `CONTRIBUTING.md`'s Issues section; `AGENTS.md` has the
-rules in short form, including the two supported lines (10.x LTS on EF Core 10, 11.x on EF Core
-11), the branches, and the silent-fix rule: after 10.0.0 a fix that changes what an existing model
-scaffolds ships as a minor on every line, never a patch, with `### Changed answers` at the top of
-its changelog entry. `.github/workflows/pr-hygiene.yml` enforces the label half through
+rules in short form, including the two supported lines (`EFCore.ComplexIndexes` 5.x, LTS on EF
+Core 10, on `release/5.x` from the `v5.5.0` tag; `CodoMetis.EFCore.SchemaKit` 11.x on EF Core 11,
+on `main`), the branches, and the silent-fix rule: from 5.5.0 a fix that changes what an existing
+model scaffolds ships as a minor, never a patch, with `### Changed answers` at the top of its
+changelog entry. `.github/workflows/pr-hygiene.yml` enforces the label half through
 `pr-hygiene.sh`; `ChangelogConsistencyTests` and `SecurityPolicyConsistencyTests` the file half.
 
 ## Quality controls
