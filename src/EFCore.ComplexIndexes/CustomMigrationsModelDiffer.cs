@@ -463,6 +463,21 @@ public class CustomMigrationsModelDiffer(
     protected virtual IndexNameScope IndexNameScope => IndexNameScope.Database;
 
     /// <summary>
+    /// How the provider compares index names, which decides whether two names that differ only in
+    /// case collide. The core default is <see cref="StringComparer.OrdinalIgnoreCase"/>: SQLite
+    /// compares identifiers without regard to case even when they are quoted, and SQL Server does
+    /// under its default collation. The PostgreSQL satellite compares ordinally, because EF Core
+    /// quotes every identifier and PostgreSQL keeps the case of a quoted one.
+    /// </summary>
+    /// <remarks>
+    /// Ignoring case is the default for the reason the widest <see cref="IndexNameScope"/> is: where
+    /// the database tells the two names apart — a case-sensitive SQL Server collation, a letter
+    /// outside ASCII on SQLite, which folds ASCII only — it costs a rename, where comparing
+    /// ordinally approves a migration that fails when applied.
+    /// </remarks>
+    protected virtual StringComparer IndexNameComparer => StringComparer.OrdinalIgnoreCase;
+
+    /// <summary>
     /// Decides whether a property-level annotation is carried onto the emitted
     /// <see cref="CreateIndexOperation"/> as a provider index option. The core package forwards
     /// nothing; provider satellites override this to whitelist exactly the index-option keys their
@@ -801,7 +816,7 @@ public class CustomMigrationsModelDiffer(
     private void ValidateUniqueIndexNames(HashSet<IndexDescriptor> descriptors)
     {
         var collision = descriptors
-                       .GroupBy(d => NameKey(d.TableName, d.Schema, d.IndexName))
+                       .GroupBy(d => NameKey(d.TableName, d.Schema, d.IndexName), NameKeys)
                        .FirstOrDefault(g => g.Count() > 1);
 
         if (collision is null)
@@ -809,14 +824,18 @@ public class CustomMigrationsModelDiffer(
 
         var members  = collision.ToList();
         var oneTable = members.All(d => d.TableName == members[0].TableName);
+        var names    = members.Select(d => d.IndexName).Distinct(StringComparer.Ordinal).ToList();
+        var named    = names.Count == 1
+                           ? $"the name '{names[0]}'"
+                           : $"the names {string.Join(" and ", names.Select(n => $"'{n}'"))}, which differ only in case";
 
         throw new InvalidOperationException(
             (oneTable
-                 ? $"Two complex indexes on table '{members[0].TableName}' both resolve to the name '{members[0].IndexName}': "
+                 ? $"Two complex indexes on table '{members[0].TableName}' both resolve to {named}: "
                  + string.Join(" and ", members.Select(Describe))
-                 : $"Two complex indexes both resolve to the name '{members[0].IndexName}': "
+                 : $"Two complex indexes both resolve to {named}: "
                  + string.Join(" and ", members.Select(d => $"{Describe(d)} on table '{d.TableName}'")))
-          + $". {UniquenessRule(oneTable)} — give each declaration an explicit, distinct name.");
+          + $". {UniquenessRule(oneTable, ignoringCase: names.Count > 1)} — give each declaration an explicit, distinct name.");
 
         static string Describe(IndexDescriptor descriptor)
         {
@@ -883,7 +902,7 @@ public class CustomMigrationsModelDiffer(
         if (target is null || descriptors.Count == 0)
             return;
 
-        var native = new Dictionary<(string? Schema, string? Table, string Name), (string Table, string Properties)>();
+        var native = new Dictionary<(string? Schema, string? Table, string Name), (string Table, string Name, string Properties)>(NameKeys);
 
         foreach (var entityType in target.Model.GetEntityTypes())
         {
@@ -900,7 +919,7 @@ public class CustomMigrationsModelDiffer(
                 var name = index.GetDatabaseName(storeObject);
                 if (name is null) continue;
 
-                native.TryAdd(NameKey(tableName, schema, name), (tableName, string.Join(", ", index.Properties.Select(p => p.Name))));
+                native.TryAdd(NameKey(tableName, schema, name), (tableName, name, string.Join(", ", index.Properties.Select(p => p.Name))));
             }
         }
 
@@ -909,18 +928,20 @@ public class CustomMigrationsModelDiffer(
             if (!native.TryGetValue(NameKey(descriptor.TableName, descriptor.Schema, descriptor.IndexName), out var other))
                 continue;
 
-            var where = other.Table == descriptor.TableName ? "" : $" on table '{other.Table}'";
+            var where     = other.Table == descriptor.TableName ? "" : $" on table '{other.Table}'";
+            var caseOnly  = !string.Equals(other.Name, descriptor.IndexName, StringComparison.Ordinal);
+            var otherName = caseOnly ? $" '{other.Name}'" : "";
 
             throw new InvalidOperationException(
                 $"The complex index '{descriptor.IndexName}' on table '{descriptor.TableName}' has the same name as "
-              + $"the native index on ({other.Properties}) declared with HasIndex{where}. {UniquenessRule(where == "")} — "
+              + $"the native index{otherName} on ({other.Properties}) declared with HasIndex{where}. {UniquenessRule(where == "", caseOnly)} — "
               + "the migration would scaffold two CREATE INDEX statements under one name and fail when applied. "
               + "Give one of them a different name.");
         }
     }
 
-    // Two index names clash exactly when their keys are equal: the parts outside the provider's
-    // scope are blanked out.
+    // Two index names clash exactly when their keys are equal under NameKeys: the parts outside the
+    // provider's scope are blanked out, and the name is compared as the provider compares it.
     private (string? Schema, string? Table, string Name) NameKey(string table, string? schema, string name)
         => IndexNameScope switch
            {
@@ -929,12 +950,25 @@ public class CustomMigrationsModelDiffer(
                _                     => (null, null, name)
            };
 
-    private string UniquenessRule(bool sameTable) => (sameTable, IndexNameScope) switch
+    private NameKeyComparer NameKeys => new(IndexNameComparer);
+
+    private string UniquenessRule(bool sameTable, bool ignoringCase)
+        => (sameTable, IndexNameScope) switch
+           {
+               (true, _)                  => "Index names must be unique per table",
+               (_, IndexNameScope.Schema) => "Index names must be unique per schema here, not just per table",
+               _                          => "Index names must be unique across the database here, not just per table or schema"
+           }
+         + (ignoringCase ? ", whatever their case" : "");
+
+    private sealed class NameKeyComparer(StringComparer names) : IEqualityComparer<(string? Schema, string? Table, string Name)>
     {
-        (true, _)                     => "Index names must be unique per table",
-        (_, IndexNameScope.Schema)    => "Index names must be unique per schema here, not just per table",
-        _                             => "Index names must be unique across the database here, not just per table or schema"
-    };
+        public bool Equals((string? Schema, string? Table, string Name) x, (string? Schema, string? Table, string Name) y)
+            => x.Schema == y.Schema && x.Table == y.Table && names.Equals(x.Name, y.Name);
+
+        public int GetHashCode((string? Schema, string? Table, string Name) key)
+            => HashCode.Combine(key.Schema, key.Table, names.GetHashCode(key.Name));
+    }
 
     /// <summary>
     /// Fails when a non-unique index leads with a JSON member that had to fall back to text.

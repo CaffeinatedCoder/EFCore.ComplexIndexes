@@ -790,6 +790,39 @@ public partial class PostgresIntegrationTests
         Assert.AreEqual(1L, cmd.ExecuteScalar());
     }
 
+    // ── Index names that differ only in case are two names: EF Core quotes every identifier ──
+
+    private class CaseOnlyNames
+    {
+        public int    Id    { get; set; }
+        public string Code  { get; set; } = "";
+        public string Label { get; set; } = "";
+    }
+
+    private class CaseOnlyNamesContext(DbContextOptions<CaseOnlyNamesContext> options) : DbContext(options)
+    {
+        protected override void OnModelCreating(ModelBuilder modelBuilder) =>
+            modelBuilder.Entity<CaseOnlyNames>(b =>
+            {
+                b.ToTable("ig_case_only");
+                b.HasKey(x => x.Id);
+                b.HasComplexIndex(x => x.Code, indexName: "ix_ig_case");
+                b.HasComplexIndex(x => x.Label, indexName: "IX_IG_CASE");
+            });
+    }
+
+    [TestMethod(DisplayName = "Two index names that differ only in case both apply")]
+    public void Index_names_differing_in_case_both_apply()
+    {
+        Migrate<CaseOnlyNamesContext>();
+
+        using var connection = new NpgsqlConnection(ConnectionString);
+        connection.Open();
+        using var cmd = new NpgsqlCommand(
+            "SELECT count(*) FROM pg_indexes WHERE tablename = 'ig_case_only' AND indexname IN ('ix_ig_case', 'IX_IG_CASE')", connection);
+        Assert.AreEqual(2L, cmd.ExecuteScalar());
+    }
+
     // ── EnsureCreated: the runtime differ registration, end to end ──
 
     private class EnsureCreatedContext(DbContextOptions<EnsureCreatedContext> options) : DbContext(options)

@@ -160,7 +160,9 @@ column, which share a default name, or a complex and a native index on two SQLit
 during `dotnet ef migrations add`. So does a name longer than the provider's
 identifier limit: PostgreSQL would otherwise truncate it to 63 bytes with a NOTICE and apply the
 migration cleanly, leaving the index under a name that no declaration and no constraint-violation
-error ever reports. Default names are checked too, since this package never truncates them.
+error ever reports. Default names are checked too, since this package never truncates them. Names
+are compared as the database compares them: without regard to case on SQLite and SQL Server, so
+`ix_code` and `IX_CODE` are one name there, and as written on PostgreSQL.
 
 On SQLite, a migration that alters or drops a column, or changes a key, foreign key, unique or check
 constraint, runs as a table rebuild, and EF Core re-creates only its own indexes afterwards. A

@@ -90,6 +90,12 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
     protected override IndexNameScope IndexNameScope => IndexNameScope.Schema;
 
     /// <summary>
+    /// EF Core quotes every identifier, and PostgreSQL keeps the case of a quoted one, so
+    /// <c>ix_code</c> and <c>IX_CODE</c> are two names.
+    /// </summary>
+    protected override StringComparer IndexNameComparer => StringComparer.Ordinal;
+
+    /// <summary>
     /// PostgreSQL's identifier limit (<c>NAMEDATALEN - 1</c>, 63) is a byte count: a name made of
     /// non-ASCII characters hits it well before its 63rd character.
     /// </summary>
