@@ -344,6 +344,67 @@ public class PostgresIntegrationTests
         AssertRejected("INSERT INTO ig_people (\"Id\", email) VALUES (2, 'a@EXAMPLE.com')");
     }
 
+    // ── Typed Trim(): the characters EF Core's queries trim ──
+
+    private class Tag
+    {
+        public int    Id    { get; set; }
+        public string Value { get; set; } = "";
+    }
+
+    private class TagContext(DbContextOptions<TagContext> options) : DbContext(options)
+    {
+        protected override void OnModelCreating(ModelBuilder modelBuilder) =>
+            modelBuilder.Entity<Tag>(b =>
+            {
+                b.ToTable("ig_tags");
+                b.HasKey(x => x.Id);
+                b.HasExpressionIndex(x => x.Value.Trim(), isUnique: true, indexName: "ux_ig_tags_value_trimmed");
+            });
+    }
+
+    [TestMethod(DisplayName = "A unique typed Trim() index treats a trailing tab as Trim() does")]
+    public void Typed_trim_index_trims_what_trim_trims()
+    {
+        Migrate<TagContext>();
+
+        // btrim(x) alone trims spaces only, so 'Y' and 'Y<tab>' both went in.
+        Sql("INSERT INTO ig_tags (\"Id\", \"Value\") VALUES (1, 'Y')");
+        AssertRejected("INSERT INTO ig_tags (\"Id\", \"Value\") VALUES (2, E'Y\\t')");
+    }
+
+    // ── Typed filter over a nullable column: C# semantics, not SQL's ──
+
+    private class Login
+    {
+        public int     Id    { get; set; }
+        public string  Email { get; set; } = "";
+        public string? Kind  { get; set; }
+    }
+
+    private class LoginContext(DbContextOptions<LoginContext> options) : DbContext(options)
+    {
+        protected override void OnModelCreating(ModelBuilder modelBuilder) =>
+            modelBuilder.Entity<Login>(b =>
+            {
+                b.ToTable("ig_logins");
+                b.HasKey(x => x.Id);
+                b.HasComplexIndex(x => x.Email, x => x.Kind != "federated", isUnique: true, indexName: "ux_ig_logins_email");
+            });
+    }
+
+    [TestMethod(DisplayName = "A unique index filtered on a nullable column enforces on rows where it is null")]
+    public void Typed_filter_on_nullable_column_enforces_on_null_rows()
+    {
+        Migrate<LoginContext>();
+
+        // The lambda is true for a null Kind, so the two rows collide; with `"Kind" <> 'federated'`
+        // both were left out of the index and accepted.
+        Sql("INSERT INTO ig_logins (\"Id\", \"Email\", \"Kind\") VALUES (1, 'a@example.com', NULL)");
+        AssertRejected("INSERT INTO ig_logins (\"Id\", \"Email\", \"Kind\") VALUES (2, 'a@example.com', NULL)");
+        Sql("INSERT INTO ig_logins (\"Id\", \"Email\", \"Kind\") VALUES (3, 'a@example.com', 'federated')");
+    }
+
     // ── JSON-member index: unique index on a ToJson complex member ──
 
     private class CompanyName

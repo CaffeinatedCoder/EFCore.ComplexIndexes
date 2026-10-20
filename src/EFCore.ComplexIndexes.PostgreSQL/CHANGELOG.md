@@ -6,11 +6,20 @@ covers all three packages.
 
 ## 5.5.0
 
+### Changed answers
+
+- [#70](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/issues/70): a brace in a string literal of a typed filter is compared as written. `x => x.Code != "{draft}"` scaffolded `"Code" <> '{{draft}}'`, a different value, so rows whose code is `{draft}` were indexed (and constrained, if unique) although the filter excludes them; it is now `"Code" <> '{draft}'`. Typed expression indexes were not affected. **Upgrading:** the first `migrations add` re-creates each index and exclusion constraint whose typed filter has a brace in a string literal.
+- [#72](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/issues/72): typed expression indexes render `Substring`, `Trim`, `TrimStart` and `TrimEnd` as EF Core's queries render them, so a query over the same lambda can use the index. `x.Code.Substring(1, 3)` was `substr("Code", 2, 3)` and is now `substring("Code", 2, 3)`; `x.Code.Trim()` was `btrim("Code")`, which trims spaces only, and is now `btrim("Code", E' \t\n\r')`. PostgreSQL treats `substr` and `substring` as different functions, so those indexes applied and served no query, and a unique index on `Trim()` accepted values that differ only in a trailing tab or line break. **Upgrading:** the first `migrations add` re-creates each typed expression index over these methods. A unique trimmed index may then refuse rows that differ only in tabs or line breaks at the ends, which are the duplicates it was declared to refuse.
+- [#68](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/issues/68): a typed filter whose comparison has an operand that can be null now keeps C#'s answer for the rows where it is null, written the way EF Core writes the same lambda in a query. `x => x.Kind != "federated"` on a `string?` scaffolded `"Kind" <> 'federated'`, which is NULL for a null `Kind`, so those rows fell out of the partial index and a unique index did not enforce on them; it is now `("Kind" <> 'federated' OR "Kind" IS NULL)`. A negation over such a comparison is pushed down to it (`!(x.Maybe > 5)` is `("Maybe" <= 5 OR "Maybe" IS NULL)`), and a captured variable holding null compares with `IS [NOT] NULL` instead of `= NULL`, which matched no row. This covers every typed filter: `HasComplexIndex`, `HasComplexCompositeIndex` and `HasExpressionIndex` with a predicate, `HasFilter<T>`, `AddComplexIndexFilter<T>`, and exclusion-constraint filters. Operands that cannot be null (a non-nullable value type, or a reference type annotated non-nullable) translate as before. **Upgrading:** the first `migrations add` drops and re-creates each index and exclusion constraint whose typed filter changed. A unique index now covers rows it left out, so re-creating it fails if those rows hold duplicates; those are duplicates it should have refused.
+
+### Changed
+
 - **Changed:** `UseNpgsqlComplexIndexes()`, `AddNpgsqlComplexIndexes()` and the
   design-time registration throw `InvalidOperationException` when the EF Core
   they run on is not version 10, naming `CodoMetis.EFCore.SchemaKit` as the package for EF Core 11.
-  The `[10.0.0, 11.0.0)` dependency ranges did not keep EF Core 11 out: a direct reference to it
-  overrides them with NU1608, a warning. The check reads EF Core's version, not the runtime's, so
+  The `[10.0.0, 11.0.0)` dependency ranges did not keep EF Core 11 out: an EF Core 11 prerelease
+  sorts below 11.0.0 and falls inside them, and a direct reference to a release overrides them with
+  only warning NU1608. The check reads EF Core's version, not the runtime's, so
   EF Core 10 on .NET 11 keeps working.
 
 ## 5.4.0

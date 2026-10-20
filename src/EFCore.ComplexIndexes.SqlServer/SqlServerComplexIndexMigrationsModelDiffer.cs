@@ -54,6 +54,42 @@ public class SqlServerComplexIndexMigrationsModelDiffer(
     protected override bool CanRenameIndexes => true;
 
     /// <summary>
+    /// An <c>ALTER COLUMN</c> on a column the index reads: SQL Server refuses it while the index
+    /// exists (Msg 5074), and EF drops only its own indexes around it.
+    /// </summary>
+    protected override bool RequiresIndexRecreation(MigrationOperation operation, IReadOnlySet<string> columns)
+        => operation is AlterColumnOperation alter && columns.Contains(alter.Name);
+
+    /// <summary>
+    /// <c>[c] IS NOT NULL AND …</c> over the nullable key columns of a unique, nonclustered index
+    /// declared without a filter: what EF Core's <c>SqlServerIndexConvention</c> gives its own unique
+    /// indexes. SQL Server, unlike the SQL standard, treats NULLs as equal in a unique index, so
+    /// without it an optional complex property admitted one row without a value and refused the
+    /// second. Models declared before rendering version 3 keep the old answer, so that the change
+    /// reaches existing databases as one rebuild per index instead of never.
+    /// </summary>
+    protected override string? ImplicitFilter(
+        IEntityType                           entityType,
+        StoreObjectIdentifier                 storeObject,
+        IReadOnlyList<string>                 columns,
+        bool                                  isUnique,
+        IReadOnlyDictionary<string, object?>  providerAnnotations
+    )
+    {
+        if (!isUnique
+         || providerAnnotations.TryGetValue(SqlServerAnnotations.Clustered, out var clustered) && clustered is true
+         || ComplexIndexStorage.GetRenderingVersion(entityType.Model) < 3)
+            return null;
+
+        var table    = entityType.Model.GetRelationalModel().FindTable(storeObject.Name, storeObject.Schema);
+        var nullable = columns.Where(column => table?.FindColumn(column)?.IsNullable == true).ToList();
+
+        return nullable.Count == 0
+                   ? null
+                   : string.Join(" AND ", nullable.Select(column => $"{QuoteIdentifier(column)} IS NOT NULL"));
+    }
+
+    /// <summary>
     /// SQL Server keeps index names unique per table, so two tables may each carry an index of the
     /// same name.
     /// </summary>

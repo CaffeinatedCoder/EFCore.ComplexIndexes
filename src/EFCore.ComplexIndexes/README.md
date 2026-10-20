@@ -1,7 +1,9 @@
 # EFCore.ComplexIndexes
 
-> **On EF Core 11 or later?** Use `CodoMetis.EFCore.SchemaKit`, the successor to this package,
-> which serves EF Core 10 only and from 5.5.0 refuses to register on another major.
+> **On EF Core 11 or later?** This package serves EF Core 10 only, and from 5.5.0 it refuses to
+> register on another major. Its successor for EF Core 11 is a new package,
+> `CodoMetis.EFCore.SchemaKit`, tracked in
+> [#37](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/issues/37).
 
 Index support for **complex type properties** in EF Core migrations — the missing piece for value
 object-driven architectures.
@@ -62,6 +64,10 @@ Index names must be unique wherever the provider requires (across the database o
 schema on PostgreSQL, per table on SQL Server) and within the provider's identifier limit (63 bytes
 on PostgreSQL, which would otherwise truncate silently), and the package enforces both at
 `dotnet ef migrations add` rather than letting the database reject — or quietly shorten — the name.
+
+On SQLite, a migration that rebuilds a table (altering or dropping a column, a key or constraint
+change, or a table rename) would drop the table's complex indexes with no way to re-create them in
+the same migration; `dotnet ef migrations add` refuses it and says how to split it.
 
 ### Composite index across scalar and nested properties
 

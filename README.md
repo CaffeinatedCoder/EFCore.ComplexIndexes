@@ -8,8 +8,10 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![.NET 10](https://img.shields.io/badge/.NET-10-512BD4)](https://dotnet.microsoft.com)
 
-> **On EF Core 11 or later?** Use `CodoMetis.EFCore.SchemaKit`, the successor to this package,
-> which serves EF Core 10 only and from 5.5.0 refuses to register on another major.
+> **On EF Core 11 or later?** This package serves EF Core 10 only, and from 5.5.0 it refuses to
+> register on another major. Its successor for EF Core 11 is a new package,
+> `CodoMetis.EFCore.SchemaKit`, tracked in
+> [#37](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/issues/37).
 
 ## Index support for complex type properties in EF Core migrations — the missing piece for value object-driven architectures.
 EF Core 8.0 introduced complex properties, but migration tooling doesn't automatically generate indexes for these nested value objects. This NuGet package bridges that gap with a clean, fluent API for defining single-column, composite, unique, and filtered indexes directly on complex type properties — and, on PostgreSQL, **expression (functional) indexes**.
@@ -158,6 +160,14 @@ during `dotnet ef migrations add`. So does a name longer than the provider's
 identifier limit: PostgreSQL would otherwise truncate it to 63 bytes with a NOTICE and apply the
 migration cleanly, leaving the index under a name that no declaration and no constraint-violation
 error ever reports. Default names are checked too, since this package never truncates them.
+
+On SQLite, a migration that alters or drops a column, or changes a key, foreign key, unique or check
+constraint, runs as a table rebuild, and EF Core re-creates only its own indexes afterwards. A
+complex index on that table would be dropped with no way for the same migration to create it again,
+since the rebuild runs after every other operation. `dotnet ef migrations add` therefore refuses
+such a migration and names the indexes. Split it into three: remove the complex index declarations
+on the table, make the change, declare them again. A table rename counts: EF renames its primary key
+along with it.
 
 ### Composite index across scalar and nested properties
 
