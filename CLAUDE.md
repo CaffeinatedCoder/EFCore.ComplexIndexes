@@ -349,7 +349,11 @@ the old name, since they run before the rename). The exclusion/temporal differs 
 rules: renamed-table normalization, and name-only changes → `ALTER TABLE … RENAME CONSTRAINT`
 (placed *after* the base ops — the rename references the new table name). A constraint rename
 keeps its dependents, so `DependsOnChangedTemporalConstraint` compares principal constraints
-name-insensitively and the temporal FK doesn't churn. Indexes that need the custom generator
+name-insensitively and the temporal FK doesn't churn. Because renames run after the base operations, a pair stays a
+rename only when nothing before it needs the old object gone: not a base operation it is in the way of
+(`RequiresIndexRecreation`, #141), and not a name the target model gives to anything else in its namespace
+(`CustomMigrationsModelDiffer.IsIndexNameInUse`, the Npgsql `TargetNames` inventory for constraints, #143). Otherwise it
+falls back to drop-first, create-last, and a temporal constraint takes its temporal FKs with it (2BP01). Indexes that need the custom generator
 (`RequiresPartsAnnotation`) get `CustomMigrationsModelDiffer.RuntimeWiringSentinel` appended to
 `Columns`: the custom generator renders from the parts annotation and ignores `Columns`, while the
 stock generator fails loudly at apply time — deliberate, because a column-only NULLS-ordered index

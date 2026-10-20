@@ -99,4 +99,68 @@ public class AlterColumnUnderIndexTests
         Assert.IsTrue(operations.Any(o => o is AlterColumnOperation));
         Assert.IsFalse(operations.Any(o => o is DropIndexOperation or CreateIndexOperation));
     }
+
+    // ── A renamed index in the way (#141) ──
+
+    // A rename pair is neither a kept index nor a drop, and renames run after the base operations,
+    // so the column under a renamed index was altered while the index still held it.
+    private abstract class RenamingContext(DbContextOptions options, string table, string? indexName, int length) : DbContext(options)
+    {
+        protected override void OnModelCreating(ModelBuilder modelBuilder) =>
+            modelBuilder.Entity<Member>(b =>
+            {
+                b.ToTable(table);
+                b.Ignore(x => x.Nickname);
+                b.Ignore(x => x.Note);
+                b.ComplexProperty(x => x.Email, c => c.Property(x => x.Value).HasMaxLength(length));
+                b.HasComplexIndex(x => x.Email.Value, isUnique: true, indexName: indexName);
+            });
+    }
+
+    private class DefaultNameV1Context(DbContextOptions<DefaultNameV1Context> options) : RenamingContext(options, "members", null, 200);
+
+    // The table is renamed, so the default name changes with it, and the column shrinks.
+    private class DefaultNameV2Context(DbContextOptions<DefaultNameV2Context> options) : RenamingContext(options, "users", null, 100);
+
+    private class ExplicitNameV1Context(DbContextOptions<ExplicitNameV1Context> options) : RenamingContext(options, "members", "ux_members_email", 200);
+
+    private class ExplicitNameV2Context(DbContextOptions<ExplicitNameV2Context> options) : RenamingContext(options, "members", "ux_members_mail", 100);
+
+    [TestMethod(DisplayName = "SQL Server: a default-named index on a renamed table is moved out of the way of ALTER COLUMN (#141)")]
+    public void SqlServer_renamed_table_alter_column_under_renamed_index()
+        => AssertRenamedIndexOutOfTheWay(
+            MigrationHarness.SqlServerDiff(
+                MigrationHarness.SqlServerModel<DefaultNameV1Context>(), MigrationHarness.SqlServerModel<DefaultNameV2Context>()),
+            "IX_members_Email_Value", "IX_users_Email_Value");
+
+    [TestMethod(DisplayName = "SQL Server: an explicitly renamed index is moved out of the way of ALTER COLUMN (#141)")]
+    public void SqlServer_alter_column_under_renamed_index()
+        => AssertRenamedIndexOutOfTheWay(
+            MigrationHarness.SqlServerDiff(
+                MigrationHarness.SqlServerModel<ExplicitNameV1Context>(), MigrationHarness.SqlServerModel<ExplicitNameV2Context>()),
+            "ux_members_email", "ux_members_mail");
+
+    [TestMethod(DisplayName = "PostgreSQL: a renamed index under ALTER COLUMN stays a rename")]
+    public void Npgsql_alter_column_under_renamed_index_stays_rename()
+    {
+        var operations = MigrationHarness.NpgsqlDiff(
+            MigrationHarness.NpgsqlModel<ExplicitNameV1Context>(), MigrationHarness.NpgsqlModel<ExplicitNameV2Context>());
+
+        Assert.IsTrue(operations.Any(o => o is RenameIndexOperation { Name: "ux_members_email", NewName: "ux_members_mail" }));
+        Assert.IsFalse(operations.Any(o => o is DropIndexOperation or CreateIndexOperation));
+    }
+
+    private static void AssertRenamedIndexOutOfTheWay(IReadOnlyList<MigrationOperation> operations, string oldName, string newName)
+    {
+        var list    = operations.ToList();
+        var summary = string.Join(", ", list.Select(o => o.GetType().Name));
+
+        var drop   = list.FindIndex(o => o is DropIndexOperation { Name: var name } && name == oldName);
+        var alter  = list.FindIndex(o => o is AlterColumnOperation { Name: "Email_Value" });
+        var create = list.FindIndex(o => o is CreateIndexOperation { Name: var name } && name == newName);
+
+        // A rename after the ALTER COLUMN leaves the index in its way: Msg 5074 at apply.
+        Assert.IsFalse(list.OfType<RenameIndexOperation>().Any(), summary);
+        Assert.IsTrue(drop >= 0 && drop < alter && alter < create, summary);
+    }
 }
