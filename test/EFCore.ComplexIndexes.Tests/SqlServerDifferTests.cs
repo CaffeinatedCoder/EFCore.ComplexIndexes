@@ -290,4 +290,221 @@ public class SqlServerDifferTests
         Assert.AreEqual(true, createIndex["SqlServer:Clustered"]);
         StringAssert.Contains(GenerateSql(operations), "CREATE CLUSTERED INDEX [ix_clustered]");
     }
+
+    // ── The target table as a whole (#90) ──
+
+    // One clustered complex index; the next context adds a second in a later migration.
+    private class OneClusteredContext(DbContextOptions<OneClusteredContext> options) : DbContext(options)
+    {
+        public DbSet<Person> People => Set<Person>();
+
+        protected override void OnModelCreating(ModelBuilder modelBuilder) =>
+            modelBuilder.Entity<Person>(b =>
+            {
+                MapPerson(b);
+                b.HasKey(x => x.Id).IsClustered(false);
+                b.HasComplexIndex(x => x.Email.Value, ix => ix.HasName("cx_one").IsClustered());
+            });
+    }
+
+    private class SecondClusteredLaterContext(DbContextOptions<SecondClusteredLaterContext> options) : DbContext(options)
+    {
+        public DbSet<Person> People => Set<Person>();
+
+        protected override void OnModelCreating(ModelBuilder modelBuilder) =>
+            modelBuilder.Entity<Person>(b =>
+            {
+                MapPerson(b);
+                b.HasKey(x => x.Id).IsClustered(false);
+                b.HasComplexIndex(x => x.Email.Value, ix => ix.HasName("cx_one").IsClustered());
+                b.HasComplexIndex(x => x.Name,        ix => ix.HasName("cx_two").IsClustered());
+            });
+    }
+
+    // The clustered slot moves from cx_one to cx_two within one migration: the drop runs first.
+    private class ClusteredMovedContext(DbContextOptions<ClusteredMovedContext> options) : DbContext(options)
+    {
+        public DbSet<Person> People => Set<Person>();
+
+        protected override void OnModelCreating(ModelBuilder modelBuilder) =>
+            modelBuilder.Entity<Person>(b =>
+            {
+                MapPerson(b);
+                b.HasKey(x => x.Id).IsClustered(false);
+                b.HasComplexIndex(x => x.Email.Value, ix => ix.HasName("cx_one"));
+                b.HasComplexIndex(x => x.Name,        ix => ix.HasName("cx_two").IsClustered());
+            });
+    }
+
+    // What a snapshot scaffolded before 5.0.2 can hold: a clustered key and a clustered complex
+    // index. The next context is the model that resolves it.
+    private class ClusteredNonclusteredFixContext(DbContextOptions<ClusteredNonclusteredFixContext> options) : DbContext(options)
+    {
+        public DbSet<Person> People => Set<Person>();
+
+        protected override void OnModelCreating(ModelBuilder modelBuilder) =>
+            modelBuilder.Entity<Person>(b =>
+            {
+                MapPerson(b);
+                b.HasComplexIndex(x => x.Email.Value, ix => ix.HasName("ix_clustered"));
+            });
+    }
+
+    private class ClusteredWithClusteredNativeIndexContext(DbContextOptions<ClusteredWithClusteredNativeIndexContext> options) : DbContext(options)
+    {
+        public DbSet<Person> People => Set<Person>();
+
+        protected override void OnModelCreating(ModelBuilder modelBuilder) =>
+            modelBuilder.Entity<Person>(b =>
+            {
+                MapPerson(b);
+                b.HasKey(x => x.Id).IsClustered(false);
+                b.HasIndex(x => x.Name).IsClustered();
+                b.HasComplexIndex(x => x.Email.Value, ix => ix.HasName("ix_clustered").IsClustered());
+            });
+    }
+
+    private class ClusteredWithClusteredAlternateKeyContext(DbContextOptions<ClusteredWithClusteredAlternateKeyContext> options) : DbContext(options)
+    {
+        public DbSet<Person> People => Set<Person>();
+
+        protected override void OnModelCreating(ModelBuilder modelBuilder) =>
+            modelBuilder.Entity<Person>(b =>
+            {
+                MapPerson(b);
+                b.HasKey(x => x.Id).IsClustered(false);
+                b.HasAlternateKey(x => x.Name).HasName("AK_person_name").IsClustered();
+                b.HasComplexIndex(x => x.Email.Value, ix => ix.HasName("ix_clustered").IsClustered());
+            });
+    }
+
+    private class NamedLikeKeyContext(DbContextOptions<NamedLikeKeyContext> options) : DbContext(options)
+    {
+        public DbSet<Person> People => Set<Person>();
+
+        protected override void OnModelCreating(ModelBuilder modelBuilder) =>
+            modelBuilder.Entity<Person>(b =>
+            {
+                MapPerson(b);
+                b.HasComplexIndex(x => x.Email.Value, indexName: "pk_person");
+            });
+    }
+
+    private class NamedLikeAlternateKeyContext(DbContextOptions<NamedLikeAlternateKeyContext> options) : DbContext(options)
+    {
+        public DbSet<Person> People => Set<Person>();
+
+        protected override void OnModelCreating(ModelBuilder modelBuilder) =>
+            modelBuilder.Entity<Person>(b =>
+            {
+                MapPerson(b);
+                b.HasAlternateKey(x => x.Name).HasName("AK_person_name");
+                b.HasComplexIndex(x => x.Email.Value, indexName: "AK_person_name");
+            });
+    }
+
+    // Index names are per table on SQL Server: another table's key name is free here.
+    private class Pet
+    {
+        public Guid   Id   { get; set; }
+        public string Name { get; set; } = "";
+    }
+
+    private class NamedLikeOtherTablesKeyContext(DbContextOptions<NamedLikeOtherTablesKeyContext> options) : DbContext(options)
+    {
+        public DbSet<Person> People => Set<Person>();
+        public DbSet<Pet>    Pets   => Set<Pet>();
+
+        protected override void OnModelCreating(ModelBuilder modelBuilder)
+        {
+            modelBuilder.Entity<Pet>(b => b.ToTable("pet"));
+            modelBuilder.Entity<Person>(b =>
+            {
+                MapPerson(b);
+                b.HasComplexIndex(x => x.Email.Value, indexName: "PK_pet");
+            });
+        }
+    }
+
+    [TestMethod(DisplayName = "A second clustered complex index added in a later migration is rejected")]
+    public void Second_clustered_index_in_later_migration_is_rejected()
+    {
+        // cx_one already exists, so the migration creates only cx_two: counting the creates alone
+        // scaffolded CREATE CLUSTERED INDEX [cx_two], which failed at apply.
+        var ex = Assert.ThrowsExactly<InvalidOperationException>(
+            () => GetDifferences(BuildRelationalModel<OneClusteredContext>(), BuildRelationalModel<SecondClusteredLaterContext>()));
+
+        StringAssert.Contains(ex.Message, "at most one clustered index per table");
+        StringAssert.Contains(ex.Message, "'cx_one'");
+        StringAssert.Contains(ex.Message, "'cx_two'");
+    }
+
+    [TestMethod(DisplayName = "Moving the clustered slot between complex indexes in one migration is allowed")]
+    public void Clustered_slot_moving_between_complex_indexes_is_allowed()
+    {
+        var operations = GetDifferences(BuildRelationalModel<OneClusteredContext>(), BuildRelationalModel<ClusteredMovedContext>());
+
+        var drops = operations.OfType<DropIndexOperation>().Select(o => o.Name).ToList();
+        CollectionAssert.AreEquivalent(new[] { "cx_one" }, drops);
+        var create = operations.OfType<CreateIndexOperation>().Single(o => o.Name == "cx_two");
+        Assert.AreEqual(true, create["SqlServer:Clustered"]);
+    }
+
+    [TestMethod(DisplayName = "A snapshot holding a clustered-slot conflict stays diffable")]
+    public void Clustered_conflict_in_the_source_model_is_not_validated()
+    {
+        // The source carries a clustered key and a clustered complex index, which only a snapshot
+        // scaffolded before 5.0.2 can hold. The migration that makes the index nonclustered was
+        // refused, because the check ran on the source too.
+        var operations = GetDifferences(BuildRelationalModel<ClusteredWithClusteredKeyContext>(),
+                                        BuildRelationalModel<ClusteredNonclusteredFixContext>());
+
+        Assert.AreEqual("ix_clustered", Assert.ContainsSingle(operations.OfType<DropIndexOperation>()).Name);
+        var create = Assert.ContainsSingle(operations.OfType<CreateIndexOperation>());
+        Assert.IsNull(create.FindAnnotation("SqlServer:Clustered"));
+    }
+
+    [TestMethod(DisplayName = "A clustered index is rejected when a native index already holds the clustered slot")]
+    public void Clustered_index_against_clustered_native_index_is_rejected()
+    {
+        var ex = Assert.ThrowsExactly<InvalidOperationException>(
+            () => GetDifferences(source: null, target: BuildRelationalModel<ClusteredWithClusteredNativeIndexContext>()));
+
+        StringAssert.Contains(ex.Message, "the native index on (name) is already clustered");
+    }
+
+    [TestMethod(DisplayName = "A clustered index is rejected when a unique constraint already holds the clustered slot")]
+    public void Clustered_index_against_clustered_alternate_key_is_rejected()
+    {
+        var ex = Assert.ThrowsExactly<InvalidOperationException>(
+            () => GetDifferences(source: null, target: BuildRelationalModel<ClusteredWithClusteredAlternateKeyContext>()));
+
+        StringAssert.Contains(ex.Message, "unique constraint 'AK_person_name' is already clustered");
+    }
+
+    [TestMethod(DisplayName = "A complex index named like its table's primary key is rejected, whatever the case")]
+    public void Index_named_like_primary_key_is_rejected()
+    {
+        var ex = Assert.ThrowsExactly<InvalidOperationException>(
+            () => GetDifferences(source: null, target: BuildRelationalModel<NamedLikeKeyContext>()));
+
+        StringAssert.Contains(ex.Message, "'pk_person' on table 'person' has the same name as the table's primary key 'PK_person'");
+    }
+
+    [TestMethod(DisplayName = "A complex index named like a unique constraint of its table is rejected")]
+    public void Index_named_like_alternate_key_is_rejected()
+    {
+        var ex = Assert.ThrowsExactly<InvalidOperationException>(
+            () => GetDifferences(source: null, target: BuildRelationalModel<NamedLikeAlternateKeyContext>()));
+
+        StringAssert.Contains(ex.Message, "same name as the table's unique constraint on (name) 'AK_person_name'");
+    }
+
+    [TestMethod(DisplayName = "A complex index may share its name with another table's key")]
+    public void Index_named_like_another_tables_key_is_allowed()
+    {
+        var operations = GetDifferences(source: null, target: BuildRelationalModel<NamedLikeOtherTablesKeyContext>());
+
+        Assert.AreEqual("PK_pet", Assert.ContainsSingle(operations.OfType<CreateIndexOperation>()).Name);
+    }
 }

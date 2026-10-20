@@ -49,6 +49,10 @@ rather than producing DDL that cannot apply:
 - **Clustered index with `INCLUDE` columns** — included columns are a nonclustered-index feature; a
   clustered index already stores every column.
 - **Clustered filtered index** — filtered indexes must be nonclustered.
-- **A second clustered index on a table** — including the usual case, where the primary key already
-  holds the clustered slot. SQL Server clusters the primary key unless you declare
+- **A second clustered index on a table** — whether the other one is a complex index declared in the
+  same migration or an earlier one, a native index, a unique constraint, or, the usual case, the
+  primary key. SQL Server clusters the primary key unless you declare
   `HasKey(...).IsClustered(false)`, so that is normally what a clustered complex index collides with.
+- **A complex index named like its table's primary key or one of its unique constraints** — SQL
+  Server creates an index under each of those names. The comparison ignores case, as the default
+  collation does.

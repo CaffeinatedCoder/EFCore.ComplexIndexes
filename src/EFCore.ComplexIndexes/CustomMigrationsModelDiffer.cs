@@ -86,6 +86,8 @@ public class CustomMigrationsModelDiffer(
         ValidateNoNativeIndexNameCollision(target, targetIndexes);
         ValidateIndexNameLengths(target, targetIndexes);
         ValidateQueryUsableLeadingParts(targetIndexes);
+        if (target is not null)
+            ValidateTargetIndexes(target, targetIndexes);
 
         if (sourceIndexes.Count == 0 && targetIndexes.Count == 0)
             return operations;
@@ -355,6 +357,19 @@ public class CustomMigrationsModelDiffer(
     /// <c>HasIndex</c> declarations are not this package's to police.
     /// </remarks>
     protected virtual void ValidateCreatedIndexes(IReadOnlyList<CreateIndexOperation> operations) { }
+
+    /// <summary>
+    /// Called once with every complex index the <em>target</em> model declares, changed or not, for
+    /// the checks that depend on what the table holds after the migration rather than on what the
+    /// migration creates.
+    /// </summary>
+    /// <remarks>
+    /// The SQL Server satellite counts clustered indexes here: a second clustered index added in a
+    /// later migration is not among that migration's creates, and checking the source model as
+    /// well would refuse the very migration that fixes a snapshot holding a conflict. Internal
+    /// because the descriptor is; the satellites see it through <c>InternalsVisibleTo</c>.
+    /// </remarks>
+    internal virtual void ValidateTargetIndexes(IRelationalModel target, IReadOnlyCollection<IndexDescriptor> indexes) { }
 
     /// <summary>
     /// Whether a base operation on an index's table cannot run while the index exists, so that an
