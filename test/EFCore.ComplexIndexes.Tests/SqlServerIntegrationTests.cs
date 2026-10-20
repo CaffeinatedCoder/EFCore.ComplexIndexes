@@ -390,6 +390,42 @@ public class SqlServerIntegrationTests
         AssertDuplicateRefused("INSERT INTO cars (Registration_Vin) VALUES (N'WVW00000000000001')");
     }
 
+    /// <summary>
+    /// With <c>UseComplexIndexes()</c> in place of <c>UseSqlServerComplexIndexes()</c>, the core
+    /// differ ran, left out #88's filter, and <c>EnsureCreated()</c> applied cleanly: the index
+    /// admitted one row without a value and refused the second (#150). It now refuses before
+    /// anything is created.
+    /// </summary>
+    [TestMethod(DisplayName = "UseComplexIndexes() refuses a unique index over nullable columns at EnsureCreated, where it applied without the filter")]
+    public void Core_registration_refuses_a_unique_index_over_nullable_columns()
+    {
+        var options = new DbContextOptionsBuilder<OptionalComplexContext>()
+                     .UseSqlServer(ConnectionString)
+                     .UseComplexIndexes()
+                     .Options;
+
+        InvalidOperationException? refusal = null;
+        using (var context = new OptionalComplexContext(options))
+        {
+            try { context.Database.EnsureCreated(); }
+            catch (InvalidOperationException e) { refusal = e; }
+        }
+
+        if (refusal is null)
+        {
+            var filter = AssertIndex("cars", "ux_vin").Filter ?? "none";
+            Sql("INSERT INTO cars (Registration_Vin) VALUES (NULL)");
+            var second = "admitted";
+            try { Sql("INSERT INTO cars (Registration_Vin) VALUES (NULL)"); }
+            catch (SqlException e) { second = $"refused it with {e.Number}"; }
+
+            Assert.Fail($"EnsureCreated() applied cleanly under UseComplexIndexes(): ux_vin has filter {filter}, and a second row without a VIN was {second}.");
+        }
+
+        StringAssert.Contains(refusal.Message, "call UseSqlServerComplexIndexes() instead of UseComplexIndexes()");
+        Assert.IsNull(ReadIndex("cars", "ux_vin"), "The refusal came after the index was created.");
+    }
+
     // ── TPC: a declaration on a concrete base holds on every table of the hierarchy (#93) ──
 
     private class Voucher

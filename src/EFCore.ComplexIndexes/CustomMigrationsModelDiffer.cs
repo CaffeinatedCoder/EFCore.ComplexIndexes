@@ -100,27 +100,41 @@ public class CustomMigrationsModelDiffer(
         Satellites.FirstOrDefault(s => typeMappingSource.GetType().Namespace?.StartsWith(s.ProviderNamespace, StringComparison.Ordinal) == true);
 
     /// <summary>
-    /// The index options each satellite forwards — its <c>IsForwardedIndexAnnotation</c> whitelist —
-    /// and the registration that selects its differ. <c>SatelliteOptionCoverageTests</c> holds these
-    /// lists to the satellites' builders, so an option added there cannot be missing here.
+    /// What only each satellite's differ renders — the index options it forwards (its
+    /// <c>IsForwardedIndexAnnotation</c> whitelist), the entity-type annotations that declare its
+    /// constraints, and whether it filters a unique index's nullable columns — and the registration
+    /// that selects that differ. <c>CoreDifferSatelliteOptionTests</c> holds the options to the
+    /// satellites' builders and the annotation names to the satellites' own constants, so a
+    /// declaration added there cannot be missing here.
     /// </summary>
     internal static readonly Satellite[] Satellites =
     [
         new("Microsoft.EntityFrameworkCore.SqlServer", "SQL Server", "EFCore.ComplexIndexes.SqlServer", "UseSqlServerComplexIndexes()",
             ["SqlServer:Clustered", "SqlServer:Include", "SqlServer:Online", "SqlServer:FillFactor", "SqlServer:SortInTempDb", "SqlServer:DataCompression"],
-            OptionPrefix: null),
+            OptionPrefix: null,
+            Declarations: [],
+            FiltersNullableUniqueIndexes: true),
         new("Npgsql.EntityFrameworkCore.PostgreSQL", "PostgreSQL", "EFCore.ComplexIndexes.PostgreSQL", "UseNpgsqlComplexIndexes()",
             ["Npgsql:IndexMethod", "Npgsql:IndexOperators", "Npgsql:IndexInclude", "Npgsql:CreatedConcurrently", "Npgsql:NullsDistinct", "Npgsql:IndexCollation"],
-            OptionPrefix: "Npgsql:StorageParameter:"),
+            OptionPrefix: "Npgsql:StorageParameter:",
+            Declarations:
+            [
+                ("CustomExclusion:Constraints", "exclusion constraint"),
+                ("CustomTemporal:Constraints",  "temporal constraint"),
+                ("CustomTemporal:ForeignKeys",  "temporal foreign key"),
+            ],
+            FiltersNullableUniqueIndexes: false),
     ];
 
     internal sealed record Satellite(
-        string                ProviderNamespace,
-        string                Provider,
-        string                Package,
-        string                Registration,
-        HashSet<string>       Options,
-        string?               OptionPrefix)
+        string                                          ProviderNamespace,
+        string                                          Provider,
+        string                                          Package,
+        string                                          Registration,
+        HashSet<string>                                 Options,
+        string?                                         OptionPrefix,
+        IReadOnlyList<(string Annotation, string Kind)> Declarations,
+        bool                                            FiltersNullableUniqueIndexes)
     {
         public bool IsOption(string annotationName)
             => Options.Contains(annotationName)
@@ -156,7 +170,7 @@ public class CustomMigrationsModelDiffer(
         ValidateQueryUsableLeadingParts(targetIndexes);
         ValidateFilterComparisons(targetIndexes);
         ValidateRenderableParts(targetIndexes);
-        ValidateNoSatelliteOptions(target);
+        ValidateNothingOnlyTheSatelliteRenders(target, targetIndexes);
         ValidateIncludedColumns(target, targetIndexes);
         if (target is not null)
             ValidateTargetIndexes(target, targetIndexes);
@@ -1010,22 +1024,32 @@ public class CustomMigrationsModelDiffer(
     }
 
     /// <summary>
-    /// Fails when a declaration carries an index option of the provider's satellite that this
-    /// differ does not forward: the model is being diffed by the core differ where the satellite's
-    /// should run.
+    /// True in the satellites' differs, which render what <see cref="Satellites"/> lists for their
+    /// provider; false in the core differ, which does not.
+    /// </summary>
+    internal virtual bool IsSatelliteDiffer => false;
+
+    /// <summary>
+    /// Fails, on a provider a satellite serves, when the target model declares something only the
+    /// satellite's differ renders and the core differ is the one running: one of the satellite's
+    /// index options, one of its constraints, or, on SQL Server, a unique index whose nullable
+    /// columns the satellite filters.
     /// </summary>
     /// <remarks>
     /// That happens with <c>UseComplexIndexes()</c> instead of the satellite's registration at
     /// runtime, or without the satellite's <c>.targets</c> at design time. The core forwards no
-    /// property-level option, so <c>INCLUDE</c>, <c>FILLFACTOR</c>, a clustered index or a GIN
-    /// method vanished from the DDL and <c>EnsureCreated()</c> applied the rest cleanly; entity-level
-    /// options went through unchecked and unresolved. Only the provider the differ serves is
-    /// checked: a model shared between PostgreSQL and SQLite tests carries Npgsql options that
-    /// SQLite rightly ignores. Target only, like every check here.
+    /// property-level option and has never heard of the satellites' constraints, so <c>INCLUDE</c>,
+    /// <c>FILLFACTOR</c>, a GIN method, an exclusion or temporal constraint, a temporal foreign key
+    /// and SQL Server's <c>IS NOT NULL</c> filter vanished from the DDL, and <c>EnsureCreated()</c>
+    /// applied the rest cleanly (#92, #150); entity-level options went through unchecked and
+    /// unresolved. Only the provider the differ serves is checked: a model shared between
+    /// PostgreSQL and SQLite tests carries Npgsql declarations that SQLite rightly ignores. A
+    /// provider no satellite serves is <see cref="ValidateRenderableParts"/>'s. Target only, like
+    /// every check here, so that a snapshot holding such declarations stays diffable.
     /// </remarks>
-    private void ValidateNoSatelliteOptions(IRelationalModel? target)
+    private void ValidateNothingOnlyTheSatelliteRenders(IRelationalModel? target, HashSet<IndexDescriptor> descriptors)
     {
-        if (target is null || _satellite is null)
+        if (target is null || _satellite is null || IsSatelliteDiffer)
             return;
 
         foreach (var declaration in target.Model.GetComplexIndexes())
@@ -1043,10 +1067,69 @@ public class CustomMigrationsModelDiffer(
             throw new InvalidOperationException(
                 $"The complex index {index} on '{declaration.EntityType.DisplayName()}' declares the {_satellite.Provider} index option "
               + $"'{option}', but the model is diffed by the provider-agnostic core differ, which does not render it: the "
-              + $"index would be created without it. Use the {_satellite.Package} satellite's differ: call {_satellite.Registration} "
-              + "instead of UseComplexIndexes() at runtime, and for `dotnet ef`, reference the satellite package so its .targets "
-              + "selects its differ.");
+              + $"index would be created without it. {SatelliteRemedy(_satellite)}");
         }
+
+        foreach (var entityType in target.Model.GetEntityTypes())
+        {
+            if (DeclarationTables(entityType).Count == 0)
+                continue;
+
+            foreach (var (annotation, kind) in _satellite.Declarations)
+            {
+                if (entityType.FindAnnotation(annotation)?.Value is not string json
+                 || DeclaredNames(json) is not { } names)
+                    continue;
+
+                var which = names.Count == 0 ? "" : $" ({string.Join(", ", names.Select(n => $"'{n}'"))})";
+
+                throw new InvalidOperationException(
+                    $"'{entityType.DisplayName()}' declares a {_satellite.Provider} {kind}{which}, but the model is diffed by the "
+                  + $"provider-agnostic core differ, which does not render it: the table would be created without the "
+                  + $"{kind}, and nothing would enforce it. {SatelliteRemedy(_satellite)}");
+            }
+        }
+
+        if (!_satellite.FiltersNullableUniqueIndexes || ComplexIndexStorage.GetRenderingVersion(target.Model) < 3)
+            return;
+
+        foreach (var descriptor in descriptors.Where(d => d.IsUnique && d.Filter is null))
+        {
+            var table    = target.FindTable(descriptor.TableName, descriptor.Schema);
+            var nullable = descriptor.ColumnNames.Where(c => table?.FindColumn(c)?.IsNullable == true).ToList();
+            if (nullable.Count == 0)
+                continue;
+
+            throw new InvalidOperationException(
+                $"The unique complex index '{descriptor.IndexName}' on table '{descriptor.TableName}' covers the nullable "
+              + $"column(s) {string.Join(", ", nullable.Select(c => $"'{c}'"))}, which the {_satellite.Provider} satellite "
+              + "filters with IS NOT NULL, as EF Core does for its own unique indexes. The model is diffed by the "
+              + "provider-agnostic core differ, which does not add that filter: the index would admit one row without "
+              + $"a value and refuse the second. {SatelliteRemedy(_satellite)}");
+        }
+    }
+
+    private static string SatelliteRemedy(Satellite satellite)
+        => $"Use the {satellite.Package} satellite's differ: call {satellite.Registration} instead of UseComplexIndexes() "
+         + "at runtime, and for `dotnet ef`, reference the satellite package so its .targets selects its differ.";
+
+    // The names in a satellite's JSON-stored list of declarations, or null when the list is empty.
+    private static List<string>? DeclaredNames(string json)
+    {
+        using var document = System.Text.Json.JsonDocument.Parse(json);
+        if (document.RootElement.ValueKind != System.Text.Json.JsonValueKind.Array || document.RootElement.GetArrayLength() == 0)
+            return null;
+
+        return
+        [
+            .. document.RootElement.EnumerateArray()
+                       .Select(e => e.ValueKind == System.Text.Json.JsonValueKind.Object
+                                 && e.TryGetProperty("name", out var n)
+                                 && n.ValueKind == System.Text.Json.JsonValueKind.String
+                                        ? n.GetString()
+                                        : null)
+                       .OfType<string>()
+        ];
     }
 
     /// <summary>
@@ -1245,7 +1328,7 @@ public class CustomMigrationsModelDiffer(
     /// the same text, no index operation is emitted, and the migration is a bare <c>DROP COLUMN</c>:
     /// PostgreSQL drops the index with the column and applies cleanly, SQL Server refuses the drop
     /// (Msg 5074). Names compare by <see cref="IndexNameComparer"/>, the provider's identifier rule.
-    /// Only the list of the provider being diffed is checked, after <see cref="ValidateNoSatelliteOptions"/>
+    /// Only the list of the provider being diffed is checked, after <see cref="ValidateNothingOnlyTheSatelliteRenders"/>
     /// has made sure its satellite resolved it: a model shared with SQLite tests carries options SQLite
     /// ignores. Target model only, so that a snapshot holding such an entry stays diffable and the
     /// declaration can be fixed.
@@ -1284,7 +1367,7 @@ public class CustomMigrationsModelDiffer(
             return;
 
         foreach (var descriptor in descriptors)
-            ThrowIfIdentifierTooLong(target.Model, descriptor.IndexName, "complex index", descriptor.TableName, "indexName");
+            ThrowIfIdentifierTooLong(target.Model, descriptor.IndexName, "complex index", descriptor.TableName, "indexName", descriptor.Origin);
     }
 
     /// <summary>
@@ -1293,7 +1376,8 @@ public class CustomMigrationsModelDiffer(
     /// names of the constraints they emit; the core calls it for every complex index name.
     /// </summary>
     /// <remarks>
-    /// The names this package derives are never truncated, unlike EF's own default names. PostgreSQL
+    /// The names this package derives are not truncated, unlike EF's own default names, but for the
+    /// default names of a TPC declaration's copies (<see cref="IsLongDefaultCopyName"/>). PostgreSQL
     /// cuts a longer identifier down to 63 bytes with a NOTICE and applies the migration cleanly, so
     /// the index exists under a name that neither the declaration nor a later constraint-violation
     /// error ever matches — a slice that dispatches on the constraint name falls through in silence.
@@ -1307,6 +1391,12 @@ public class CustomMigrationsModelDiffer(
     /// <param name="table">The table the declaration targets, for the message.</param>
     /// <param name="parameter">The declaration parameter that sets an explicit name, for the message.</param>
     protected void ThrowIfIdentifierTooLong(IReadOnlyModel model, string name, string kind, string table, string parameter)
+        => ThrowIfIdentifierTooLong(model, name, kind, table, parameter, origin: null);
+
+    // A declaration on a TPC type with derived tables gets other advice: a default name is shortened
+    // to fit there, so only an explicit one reaches this, and a shorter explicit name would still
+    // repeat on every table, which TpcDeclaration.RepeatedName refuses where names are per schema.
+    internal void ThrowIfIdentifierTooLong(IReadOnlyModel model, string name, string kind, string table, string parameter, TpcDeclaration? origin)
     {
         var limit            = model.GetMaxIdentifierLength();
         var (length, unit)   = MeasureIdentifier(name);
@@ -1318,7 +1408,10 @@ public class CustomMigrationsModelDiffer(
             $"The {kind} name '{name}' on table '{table}' is {length} {unit} long, but the provider allows at most {limit}. "
           + $"A longer name is truncated or rejected when the migration is applied, so the {kind} would exist under a "
           + "name that neither this declaration nor a constraint-violation error ever reports. "
-          + $"Give the declaration an explicit, shorter name ({parameter}).");
+          + (origin is null
+                 ? $"Give the declaration an explicit, shorter name ({parameter})."
+                 : $"Leave the name out: declared on a TPC type, the {kind} is created on the table of every type derived "
+                 + "from it, and each table's copy then takes a default name, shortened to fit as EF Core shortens its own."));
     }
 
     /// <summary>
@@ -1338,6 +1431,8 @@ public class CustomMigrationsModelDiffer(
     {
         var result = new HashSet<IndexDescriptor>();
         if (relationalModel is null) return result;
+
+        var longCopies = new HashSet<IndexDescriptor>();
 
         foreach (var entityType in relationalModel.Model.GetEntityTypes())
         {
@@ -1364,12 +1459,109 @@ public class CustomMigrationsModelDiffer(
                                          ? ResolvePropertyLevelIndex(tableType, declaration, property, storeObject.Name, storeObject.Schema, storeObject)
                                          : ResolveEntityLevelIndex(tableType, declaration, storeObject.Name, storeObject.Schema, storeObject);
 
-                    result.Add(descriptor with { Origin = origin });
+                    if (IsLongDefaultCopyName(relationalModel.Model, origin, declaration.Name, descriptor.IndexName))
+                        longCopies.Add(descriptor with { Origin = origin });
+                    else
+                        result.Add(descriptor with { Origin = origin });
                 }
             }
         }
 
+        if (longCopies.Count > 0)
+            ShortenIndexCopyNames(relationalModel, longCopies, result);
+
         return result;
+    }
+
+    /// <summary>
+    /// True when <paramref name="name"/> is the default name of one table's copy of a declaration
+    /// on a TPC type and runs past the provider's identifier limit: the one name
+    /// <see cref="ShortenIdentifier"/> shortens.
+    /// </summary>
+    /// <remarks>
+    /// A derived table's name is often longer than its base's, and no explicit name helps there: one
+    /// would repeat on every table, which <see cref="TpcDeclaration.RepeatedName"/> refuses where
+    /// names are unique per schema or database. Every other default name keeps the refusal of
+    /// <see cref="ThrowIfIdentifierTooLong(IReadOnlyModel, string, string, string, string)"/>,
+    /// since an explicit name fixes it.
+    /// </remarks>
+    internal bool IsLongDefaultCopyName(IReadOnlyModel model, TpcDeclaration? origin, string? explicitName, string name)
+        => origin is not null && explicitName is null && MeasureIdentifier(name).Length > model.GetMaxIdentifierLength();
+
+    // Copies sharing a full name in one scope share the shortened name, so the name checks still
+    // report two declarations that resolve alike. Sorted, so both sides of a diff assign alike.
+    private void ShortenIndexCopyNames(IRelationalModel model, HashSet<IndexDescriptor> copies, HashSet<IndexDescriptor> result)
+    {
+        var taken = new HashSet<(string? Schema, string? Table, string Name)>(NameKeys);
+        foreach (var descriptor in result)
+            taken.Add(NameKey(descriptor.TableName, descriptor.Schema, descriptor.IndexName));
+
+        // EF Core's own names, which it shortened the same way: a native index over the same
+        // columns of the derived table ends in the same '~'.
+        foreach (var table in model.Tables)
+        {
+            foreach (var index in table.Indexes)
+                taken.Add(NameKey(table.Name, table.Schema, index.Name));
+
+            foreach (var key in table.UniqueConstraints)
+                taken.Add(NameKey(table.Name, table.Schema, key.Name));
+        }
+
+        var limit    = model.Model.GetMaxIdentifierLength();
+        var assigned = new Dictionary<(string? Schema, string? Table, string Name), string>(NameKeys);
+
+        foreach (var copy in copies.OrderBy(c => c.Schema, StringComparer.Ordinal)
+                                   .ThenBy(c => c.TableName, StringComparer.Ordinal)
+                                   .ThenBy(c => c.IndexName, StringComparer.Ordinal))
+        {
+            var full = NameKey(copy.TableName, copy.Schema, copy.IndexName);
+            if (!assigned.TryGetValue(full, out var name))
+            {
+                name = ShortenIdentifier(copy.IndexName, limit, candidate => taken.Contains(NameKey(copy.TableName, copy.Schema, candidate)));
+                assigned[full] = name;
+                taken.Add(NameKey(copy.TableName, copy.Schema, name));
+            }
+
+            result.Add(copy with { IndexName = name });
+        }
+    }
+
+    /// <summary>
+    /// Shortens <paramref name="name"/> to <paramref name="limit"/> as EF Core 10's
+    /// <c>Uniquifier.Uniquify</c> shortens its own default names: cut and marked <c>~</c>, then
+    /// <c>~1</c>, <c>~2</c>, … in place of the last characters until <paramref name="isTaken"/>
+    /// says no to it.
+    /// </summary>
+    /// <remarks>
+    /// EF Core counts characters; this counts as <see cref="MeasureIdentifier"/> does, so on
+    /// PostgreSQL a name with non-ASCII characters is cut to 63 bytes, at a whole character. For an
+    /// ASCII name both give the same result.
+    /// </remarks>
+    internal string ShortenIdentifier(string name, int limit, Func<string, bool> isTaken)
+    {
+        var shortened = Truncate(null);
+        for (var uniquifier = 1; isTaken(shortened); uniquifier++)
+            shortened = Truncate(uniquifier);
+
+        return shortened;
+
+        string Truncate(int? uniquifier)
+        {
+            var suffix = uniquifier?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "";
+            if (MeasureIdentifier(name + suffix).Length <= limit)
+                return name + suffix;
+
+            var prefix = new StringBuilder();
+            foreach (var rune in name.EnumerateRunes())
+            {
+                if (MeasureIdentifier($"{prefix}{rune}~{suffix}").Length > limit)
+                    break;
+
+                prefix.Append(rune.ToString());
+            }
+
+            return $"{prefix}~{suffix}";
+        }
     }
 
     // Every property path a declaration reads: its parts, the placeholders of its templates and
@@ -1535,7 +1727,8 @@ public class CustomMigrationsModelDiffer(
         public string RepeatedName(string kind, string name, string rule)
             => $"The {kind} '{name}' is declared on '{_declaredOn.DisplayName()}', a TPC type, so it is created on the table of every "
              + $"type derived from it too ({string.Join(", ", _tables.Select(t => $"'{t.Name}'"))}), each time under the same explicit "
-             + $"name. {rule} Leave the name out: each table's copy then takes a default name that includes its table.";
+             + $"name. {rule} Leave the name out: each table's copy then takes a default name that includes its table, "
+             + "shortened to fit as EF Core shortens its own where the table's name is long.";
     }
 
     /// <summary>

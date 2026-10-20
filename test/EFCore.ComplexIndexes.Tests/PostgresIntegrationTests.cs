@@ -470,6 +470,61 @@ public partial class PostgresIntegrationTests
         Sql("INSERT INTO ig_tpc_long_stays (\"Id\", \"RoomId\", \"Code\", \"During\", \"Nights\") VALUES (7, 9, 'f', '[2024-01-01,2024-02-01)', 31)");
     }
 
+    // #145: on a derived table whose name puts each copy's default name past 63 bytes, the copies
+    // take names shortened as EF Core shortens its own, which PostgreSQL keeps as they are.
+    // Types of their own: TPC keys come from one sequence named after the base type.
+    private class TpcShortStay : TpcStay;
+
+    private class TpcCorporateStay : TpcShortStay
+    {
+        public int Nights { get; set; }
+    }
+
+    private class TpcLongTableStayContext(DbContextOptions<TpcLongTableStayContext> options) : DbContext(options)
+    {
+        public const string LongTable = "ig_tpc_long_stays_for_corporate_customer_accounts_xyz_123";
+
+        protected override void OnModelCreating(ModelBuilder modelBuilder)
+        {
+            modelBuilder.Entity<TpcShortStay>(b =>
+            {
+                b.UseTpcMappingStrategy();
+                b.ToTable("ig_tpc_short_stays");
+                b.HasComplexIndex(x => x.Code, isUnique: true);
+                b.HasExclusionConstraint(x => x.RoomId, x => x.During);
+            });
+            modelBuilder.Entity<TpcCorporateStay>().ToTable(LongTable);
+        }
+    }
+
+    [TestMethod(DisplayName = "On a TPC base with a long derived table, the copies apply under their shortened names and enforce under them")]
+    public void Tpc_long_derived_table_applies_shortened_names()
+    {
+        const string table = TpcLongTableStayContext.LongTable;
+        Migrate<TpcLongTableStayContext>();
+
+        using (var connection = new NpgsqlConnection(ConnectionString))
+        {
+            connection.Open();
+            using var cmd = new NpgsqlCommand(
+                "SELECT string_agg(c.relname, ',' ORDER BY c.relname) FROM pg_index i "
+              + "JOIN pg_class c ON c.oid = i.indexrelid JOIN pg_class t ON t.oid = i.indrelid "
+              + "WHERE t.relname = @table AND NOT i.indisprimary", connection);
+            cmd.Parameters.AddWithValue("table", table);
+
+            // The names the migration scaffolded, unchanged by PostgreSQL: each is 63 bytes.
+            Assert.AreEqual($"EX_{table}_R~,IX_{table}_C~", (string)cmd.ExecuteScalar()!);
+        }
+
+        Sql($"INSERT INTO {table} (\"Id\", \"RoomId\", \"Code\", \"During\", \"Nights\") VALUES (1, 7, 'a', '[2024-01-01,2024-02-01)', 31)");
+
+        var duplicate = AssertRejected($"INSERT INTO {table} (\"Id\", \"RoomId\", \"Code\", \"During\", \"Nights\") VALUES (2, 8, 'a', '[2025-01-01,2025-02-01)', 31)");
+        Assert.AreEqual($"IX_{table}_C~", duplicate.ConstraintName);
+
+        var overlap = AssertRejected($"INSERT INTO {table} (\"Id\", \"RoomId\", \"Code\", \"During\", \"Nights\") VALUES (3, 7, 'b', '[2024-01-15,2024-02-15)', 31)");
+        Assert.AreEqual($"EX_{table}_R~", overlap.ConstraintName);
+    }
+
     // ── Implicit sequences: an identity column's sequence takes its name among the schema's relations ──
 
     private class Ticket

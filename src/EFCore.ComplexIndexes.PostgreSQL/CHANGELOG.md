@@ -21,13 +21,14 @@ The last 5.x minor with a change of its own: the line refuses EF Core 11, whose 
 
 - Registration: `UseNpgsqlComplexIndexes()`, `AddNpgsqlComplexIndexes()` and the design-time registration `dotnet ef` runs throw `InvalidOperationException` on an EF Core major other than 10, naming `CodoMetis.EFCore.SchemaKit` for EF Core 11. EF Core 10 on .NET 11 keeps working ([Upgrading](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/docs/upgrading.md#ef-core-11-is-refused-at-registration)).
 - Indexes: a complex index, exclusion constraint or temporal constraint on a TPC type with derived types fails at `migrations add` when it reads a member of a complex property, which EF Core 10 maps to no column in a derived table; map the member as a regular property ([Upgrading](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/docs/upgrading.md#declarations-on-a-tpc-type-cover-every-table-of-the-hierarchy)).
-- Indexes: an explicit name on a complex index, exclusion constraint or temporal constraint of a TPC type with derived types fails at `migrations add`, since it would repeat within one schema; leave the name out ([Upgrading](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/docs/upgrading.md#declarations-on-a-tpc-type-cover-every-table-of-the-hierarchy)).
+- Indexes: an explicit name on a complex index, exclusion constraint or temporal constraint of a TPC type with derived types fails at `migrations add`, since it would repeat within one schema. Leave it out: a default name too long for a derived table is shortened as EF Core shortens its own ([#145](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/issues/145), [Upgrading](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/docs/upgrading.md#declarations-on-a-tpc-type-cover-every-table-of-the-hierarchy)).
 - Constraints: a temporal foreign key to a TPC type with derived types fails at `migrations add`, since its rows live in several tables; reference a type with no derived types ([Upgrading](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/docs/upgrading.md#declarations-on-a-tpc-type-cover-every-table-of-the-hierarchy)).
 
 ### Changed
 
 - Indexes: a complex index, exclusion constraint or temporal constraint declared on the abstract base of a TPC hierarchy is created on every concrete table, as EF Core's own indexes are, where it failed at `migrations add` ([Upgrading](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/docs/upgrading.md#declarations-on-a-tpc-type-cover-every-table-of-the-hierarchy)).
 - Packaging: each package carries the version's section of its changelog as its NuGet release notes, which nuget.org's Release Notes tab and Visual Studio's Updates tab show.
+- Packaging: the release notes, the README on nuget.org and the GitHub release link the documentation at the version's tag, so they keep describing the version they shipped with after `main` moves on to the next line.
 
 ### Fixed
 

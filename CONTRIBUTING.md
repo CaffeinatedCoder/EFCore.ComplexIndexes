@@ -223,6 +223,8 @@ to read well without them. A missing or empty section fails the pack.
 - **End with a link** to the guide that explains it, where one does. Links are absolute
   (`https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/docs/…`), because the
   release page can't resolve a relative one; `DocumentationLinkTests` checks that they resolve.
+  The pack and the release job rewrite `blob/main` to the version's tag, in the release notes and
+  in the packed READMEs, so a published version keeps linking its own documentation.
 - **Leave out** the reasoning, the measurements and the history of how it was found, test names,
   internal refactoring with no effect you can observe, and fixes to something new in the same
   release. What the first `migrations add` after upgrading does goes in
