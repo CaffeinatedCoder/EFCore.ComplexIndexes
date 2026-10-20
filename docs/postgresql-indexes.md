@@ -232,7 +232,9 @@ queries cast them to `timestamp with time zone`, `date` or `time`, and PostgreSQ
 casts (the conversion from text is not `IMMUTABLE`), so no index can match the query. The member
 stays text, a **unique** index over it still enforces uniqueness, and a **non-unique** index that
 starts with it is rejected at `migrations add`, since no query would ever use it. Put another part
-first, or map the member to a regular column.
+first, or map the member to a regular column. In a filter, of an index or an exclusion constraint,
+the member can be tested with `IS NULL` or compared with a string literal; compared with a column it
+is rejected at `migrations add`, because text against a timestamp fails when the migration applies.
 
 > **Upgrading from 5.3 or earlier:** before 5.4.0 every member was extracted as text with `->`
 > segments, which only matched the query for a top-level string. Such indexes enforced uniqueness

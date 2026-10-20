@@ -586,7 +586,7 @@ public class CustomMigrationsModelDiffer(
                 if (end < 0)
                     throw new InvalidOperationException($"Malformed index expression template '{template}' on entity '{entityType.Name}'.");
 
-                var (placeholderSql, placeholderToken) =
+                var (placeholderSql, placeholderToken, _) =
                     ResolvePlaceholder(entityType, template[(i + 1)..end], storeObject, "an index expression", renderingVersion: null);
                 sql.Append(placeholderSql);
                 token.Append(placeholderToken);
@@ -649,8 +649,10 @@ public class CustomMigrationsModelDiffer(
         if (filter is null || !filter.Contains('{'))
             return filter;
 
-        var sql       = new StringBuilder(filter.Length);
-        var inLiteral = false;
+        var sql        = new StringBuilder(filter.Length);
+        var inLiteral  = false;
+        var fallbacks  = new List<(int Start, int End, string Path, string StoreType)>();
+        var typedSpans = new List<(int Start, int End)>();
 
         for (var i = 0; i < filter.Length; i++)
         {
@@ -665,7 +667,15 @@ public class CustomMigrationsModelDiffer(
                 var end = filter.IndexOf('}', i + 1);
                 if (end > i + 1 && IsPropertyPath(filter.AsSpan(i + 1, end - i - 1)))
                 {
-                    sql.Append(ResolvePlaceholder(entityType, filter[(i + 1)..end], storeObject, "a filter", renderingVersion).Sql);
+                    var (placeholderSql, _, fallback) = ResolvePlaceholder(entityType, filter[(i + 1)..end], storeObject, "a filter", renderingVersion);
+                    var start = sql.Length;
+                    sql.Append(placeholderSql);
+
+                    if (fallback is { } member)
+                        fallbacks.Add((start, sql.Length, member.Path, member.StoreType));
+                    else
+                        typedSpans.Add((start, sql.Length));
+
                     i = end;
                     continue;
                 }
@@ -674,8 +684,48 @@ public class CustomMigrationsModelDiffer(
             sql.Append(ch);
         }
 
-        return sql.ToString();
+        var resolved = sql.ToString();
+        ThrowIfFallbackComparedWithColumn(entityType, resolved, fallbacks, typedSpans);
+        return resolved;
     }
+
+    // A JSON member whose type has no IMMUTABLE cast from text (a date or time on PostgreSQL)
+    // resolves to its text. Compared with a column, which has its own type, the predicate is
+    // refused at apply ("operator does not exist: text < timestamp with time zone"), and the cast
+    // EF Core's queries use cannot appear in an index or constraint. The comparison is refused here,
+    // at migrations add. A null test and a comparison with a string literal still apply, as before.
+    private static void ThrowIfFallbackComparedWithColumn(
+        IEntityType                                                      entityType,
+        string                                                           sql,
+        IReadOnlyList<(int Start, int End, string Path, string StoreType)> fallbacks,
+        IReadOnlyList<(int Start, int End)>                              typedSpans)
+    {
+        foreach (var fallback in fallbacks)
+        {
+            var after  = FilterComparisonAfter.Match(sql, fallback.End);
+            var before = FilterComparisonBefore.Match(sql[..fallback.Start]);
+
+            var withColumn = after.Success && (sql[(fallback.End + after.Length)..].StartsWith('"') || StartsTypedSpan(fallback.End + after.Length))
+                          || before.Success && (sql[..before.Index].EndsWith('"') || EndsTypedSpan(before.Index));
+
+            if (withColumn)
+                throw new InvalidOperationException(
+                    $"A filter on entity '{entityType.DisplayName()}' compares the JSON member '{fallback.Path}' with a column. "
+                  + $"The member is {fallback.StoreType} stored as text in its document, and PostgreSQL can neither compare that text "
+                  + "with a typed column nor index the cast EF Core's queries use (it is not IMMUTABLE), so the migration would fail "
+                  + "at apply. Test the member with IS NULL or compare it with a string literal in the string filter overload, or "
+                  + "map it to a regular column.");
+        }
+
+        bool StartsTypedSpan(int index) => typedSpans.Any(span => span.Start == index);
+        bool EndsTypedSpan(int index) => typedSpans.Any(span => span.End == index);
+    }
+
+    private static readonly System.Text.RegularExpressions.Regex FilterComparisonAfter =
+        new(@"\G\)*\s*(?:=|<>|!=|<=|>=|<|>)\s*\(*", System.Text.RegularExpressions.RegexOptions.Compiled);
+
+    private static readonly System.Text.RegularExpressions.Regex FilterComparisonBefore =
+        new(@"\)*\s*(?:=|<>|!=|<=|>=|<|>)\s*\(*$", System.Text.RegularExpressions.RegexOptions.Compiled);
 
     // Dotted identifier segments: letters, digits and underscores, each starting with a letter or
     // an underscore. Anything else between braces is SQL text, not a placeholder.
@@ -702,7 +752,7 @@ public class CustomMigrationsModelDiffer(
     }
 
     // Returns the SQL for the placeholder and the token it contributes to a default index name.
-    private (string Sql, string Token) ResolvePlaceholder(
+    private (string Sql, string Token, (string Path, string StoreType)? TextFallback) ResolvePlaceholder(
         IEntityType           entityType,
         string                path,
         StoreObjectIdentifier storeObject,
@@ -712,13 +762,14 @@ public class CustomMigrationsModelDiffer(
     {
         var column = ResolveColumnName(entityType, path, storeObject);
         if (column is not null)
-            return (QuoteIdentifier(column), column);
+            return (QuoteIdentifier(column), column, null);
 
         var part     = new IndexPartDefinition { PropertyPath = path, RenderingVersion = renderingVersion };
         var unmapped = ResolveUnmappedPart(entityType, part, storeObject);
         if (unmapped is not null)
             return (unmapped.IsExpression ? $"({unmapped.Value})" : QuoteIdentifier(unmapped.Value),
-                    unmapped.NameToken ?? unmapped.Value);
+                    unmapped.NameToken ?? unmapped.Value,
+                    unmapped.TextFallback);
 
         throw new InvalidOperationException(
             $"Could not resolve property path '{path}' referenced by {usage} on entity '{entityType.Name}'.");

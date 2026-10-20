@@ -443,7 +443,9 @@ differ let satellites resolve what the core cannot:
   (`NpgsqlJsonMemberRenderingTests` asserts each rendering against EF's own `ToQueryString()`).
   Date and time members stay text — their casts are not IMMUTABLE and cannot appear in an index —
   and the part records a `TextFallback`; `ValidateQueryUsableLeadingParts` rejects a non-unique
-  index that starts with one (target model only). A path that *ends* at the JSON-mapped complex
+  index that starts with one (target model only), and `ResolveFilter` rejects a filter that compares
+  one with a column, which would fail at apply as text against a timestamp (exclusion filters flag
+  their rendering-1 members the same way). A path that *ends* at the JSON-mapped complex
   property — or at a complex collection, which is always JSON — resolves to the container column
   as a plain **column** part (so a whole-document GIN needs no runtime wiring); a complex property
   nested inside the document resolves to a `jsonb` extraction. A table-split complex property
