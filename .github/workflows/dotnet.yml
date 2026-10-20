@@ -6,6 +6,14 @@
 # Split into jobs on purpose: the unit suite and one integration job per database, which need
 # Docker for their PostgreSQL and SQL Server containers.
 #
+# Also a reusable workflow (#111). release.yml calls it before it packs anything, so a release runs
+# every lane this file has, and the `CI` gate decides for it exactly as it does for a PR; nightly.yml
+# calls it on the default branch, so inputs that change without a diff (the floating container
+# images, nuget.org, the SDK's patch level) are caught within a day rather than by the next PR.
+#
+# The SDK comes from global.json: the 10.0.4xx band, latest patch. A new feature band changes the
+# compiler and NuGet under every job, so it arrives as a PR that edits global.json, not overnight.
+#
 # Actions are pinned to commit SHAs, not tags. A tag can be moved to a different commit — that is
 # how the tj-actions/changed-files compromise (March 2025) reached every workflow that trusted
 # `@v45` — a SHA cannot. The trailing `# vX.Y.Z` is what Dependabot reads to propose an update,
@@ -22,6 +30,7 @@ on:
   pull_request:
     branches: [ "main", "release/**", "net11" ]
   workflow_dispatch:
+  workflow_call:
 
 permissions:
   contents: read
@@ -31,8 +40,12 @@ defaults:
     shell: bash
 
 # A new push to a PR makes the in-flight run pointless; main is never cancelled.
+#
+# The `dotnet-` prefix keeps this group apart from a caller's. Called from another workflow,
+# `github.workflow` is the caller's name, so without it the group could equal the caller's own,
+# and each would wait for the other to finish.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: dotnet-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
@@ -58,7 +71,7 @@ jobs:
       - name: Setup .NET
         uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5.4.0
         with:
-          dotnet-version: 10.0.x
+          global-json-file: global.json
 
       - name: Restore dependencies
         run: dotnet restore
@@ -96,7 +109,7 @@ jobs:
       - name: Setup .NET
         uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5.4.0
         with:
-          dotnet-version: 10.0.x
+          global-json-file: global.json
 
       - name: Restore dependencies
         run: dotnet restore
@@ -114,6 +127,18 @@ jobs:
           --filter "TestCategory=Integration&TestCategory!=SqlServer"
           --logger "trx;LogFileName=integration.trx"
           --results-directory TestResults
+
+      # postgres:18 and postgres:16 float within their major, as a consumer's server does. The
+      # nightly run is what notices a new minor; this records which image each run used, so a run
+      # that fails with no diff can be compared with the last green one.
+      - name: Record the container images
+        if: always()
+        run: |
+          {
+            echo "### Container images"
+            echo
+            docker image ls --digests --format '- `{{.Repository}}:{{.Tag}}` `{{.Digest}}`'
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload test results
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
@@ -138,7 +163,7 @@ jobs:
       - name: Setup .NET
         uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5.4.0
         with:
-          dotnet-version: 10.0.x
+          global-json-file: global.json
 
       - name: Restore dependencies
         run: dotnet restore
@@ -155,6 +180,16 @@ jobs:
           --filter "TestCategory=Integration&TestCategory=SqlServer"
           --logger "trx;LogFileName=integration-sqlserver.trx"
           --results-directory TestResults
+
+      # mssql/server:2022-latest floats across cumulative updates; recorded as in the PostgreSQL lane.
+      - name: Record the container images
+        if: always()
+        run: |
+          {
+            echo "### Container images"
+            echo
+            docker image ls --digests --format '- `{{.Repository}}:{{.Tag}}` `{{.Digest}}`'
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload test results
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
@@ -179,7 +214,7 @@ jobs:
       - name: Setup .NET
         uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5.4.0
         with:
-          dotnet-version: 10.0.x
+          global-json-file: global.json
 
       - name: Scaffold a migration from a throwaway consumer project
         run: ./test/consumer-smoke-test.sh
@@ -195,7 +230,7 @@ jobs:
       - name: Setup .NET
         uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5.4.0
         with:
-          dotnet-version: 10.0.x
+          global-json-file: global.json
 
       # Packing is itself a check: a package that declares PackageReadmeFile without packing the
       # file fails here with NU5019, and satellites that lose their .targets ship silently broken.

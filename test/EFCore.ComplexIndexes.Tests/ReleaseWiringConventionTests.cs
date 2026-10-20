@@ -20,6 +20,13 @@ public class ReleaseWiringConventionTests
     /// <summary>The workflow file name the nuget.org trusted-publishing policy names.</summary>
     private const string ReleaseWorkflowFileName = "release.yml";
 
+    /// <summary>The build workflow, which the release workflow calls for its lanes.</summary>
+    private const string BuildWorkflowFileName = "dotnet.yml";
+
+    // The functions that, in a job's `if:`, replace the implicit success() check on its needs.
+    private static readonly Regex StatusFunction =
+        new(@"\b(always|failure|cancelled)\s*\(\s*\)", RegexOptions.Compiled);
+
     /// <summary>The GitHub environment the policy expects, and the approval gate.</summary>
     private const string PublishEnvironment = "nuget";
 
@@ -129,6 +136,62 @@ public class ReleaseWiringConventionTests
             $"{string.Join(", ", both)} holds both id-token: write and contents: write. The release "
           + "path is split so that the job that can publish cannot write to the repository and the "
           + "job that can write to the repository cannot publish — keep them apart.");
+    }
+
+    /// <summary>
+    /// <c>publish</c> runs only after every lane of <c>dotnet.yml</c> passed on the tagged commit.
+    /// </summary>
+    /// <remarks>
+    /// Before #111 the release trusted that the tagged commit had passed its PR checks, which a tag
+    /// on a commit whose push run failed never had, and <c>verify</c> ran a test step of its own
+    /// that no lane added to <c>dotnet.yml</c> reached. Now a job calls <c>dotnet.yml</c>, whose
+    /// <c>CI</c> gate fails on any lane that did not succeed (<see cref="WorkflowGateConventionTests"/>),
+    /// and <c>publish</c> depends on that job through <c>needs</c>. A status function in an
+    /// <c>if:</c> on that path (<c>always()</c>, <c>failure()</c>, <c>cancelled()</c>) would replace
+    /// the implicit <c>success()</c> and let <c>publish</c> run after a failed lane, so none may
+    /// appear there.
+    /// </remarks>
+    [TestMethod(DisplayName = "The release workflow cannot publish without the full CI")]
+    public void Release_cannot_publish_without_the_full_ci()
+    {
+        var build = WorkflowFile.Load(BuildWorkflowFileName);
+
+        Assert.IsTrue(
+            Regex.IsMatch(build.Text[..build.Text.IndexOf("\njobs:", StringComparison.Ordinal)], @"(?m)^  workflow_call:"),
+            $"{BuildWorkflowFileName} has no `workflow_call` trigger, so the release workflow cannot run its lanes.");
+
+        var release = WorkflowFile.Load(ReleaseWorkflowFileName);
+        var ciJobs  = release.Jobs.Keys.Where(job => release.Key(job, "uses") == $"./.github/workflows/{BuildWorkflowFileName}").ToList();
+
+        Assert.IsNotEmpty(
+            ciJobs,
+            $"No job in {ReleaseWorkflowFileName} calls ./.github/workflows/{BuildWorkflowFileName}, so a release "
+          + "runs none of the lanes a PR runs and nothing stops a tag on a commit whose CI failed.");
+
+        Assert.IsTrue(release.Jobs.ContainsKey(PublishJob), $"The release workflow has no `{PublishJob}` job.");
+
+        var path    = new HashSet<string>(StringComparer.Ordinal) { PublishJob };
+        var pending = new Queue<string>(release.Needs(PublishJob));
+
+        while (pending.TryDequeue(out var job))
+            if (path.Add(job) && release.Jobs.ContainsKey(job))
+                foreach (var need in release.Needs(job))
+                    pending.Enqueue(need);
+
+        Assert.IsTrue(
+            ciJobs.Any(path.Contains),
+            $"`{PublishJob}` does not depend on {string.Join(", ", ciJobs)} through `needs`, so it can publish "
+          + "before, or without, every lane passing.");
+
+        var overriding = path.Where(job => release.Jobs.ContainsKey(job)
+                                        && release.Key(job, "if") is { } condition
+                                        && StatusFunction.IsMatch(condition))
+                             .ToList();
+
+        Assert.IsEmpty(
+            overriding,
+            $"{string.Join(", ", overriding)} has a status function in its `if:`, which replaces the implicit "
+          + $"success() and lets `{PublishJob}` run after a lane failed.");
     }
 
     [TestMethod(DisplayName = "The release workflow checks the tag against the version property")]
