@@ -292,6 +292,7 @@ public class SnapshotRoundTripTests
         var adds = created.OfType<SqlOperation>().Select(o => o.Sql).Where(s => s.Contains("ADD CONSTRAINT")).ToList();
         Assert.IsTrue(adds.Any(s => s.Contains($"\"EX_{RoundTripLongTpcContext.LongTable}_R~\"")), string.Join("\n", adds));
         Assert.IsTrue(adds.Any(s => s.Contains($"\"AK_{RoundTripLongTpcContext.LongTable}_C~\"")), string.Join("\n", adds));
+        Assert.IsTrue(adds.Any(s => s.Contains($"\"{$"FK_{RoundTripLongTpcContext.LongTable}_rt_rooms_RoomId_During"[..62]}~\"")), string.Join("\n", adds));
 
         var operations = GetDifferences(BuildModelViaSnapshot<RoundTripLongTpcContext>(), target);
         Assert.IsEmpty(operations, string.Join("\n", operations.Select(o => o.GetType().Name)));
@@ -315,6 +316,67 @@ public class SnapshotRoundTripTests
         var adds = operations.OfType<SqlOperation>().Select(o => o.Sql).Where(s => s.Contains("ADD CONSTRAINT")).ToList();
         Assert.HasCount(6, adds);
         Assert.IsTrue(adds.All(s => !s.Contains("ALTER TABLE \"rt_bookings\"")), string.Join("\n", adds));
+    }
+
+    // #167: named partial siblings on a TPC base; each table's copy takes a name of its own, which
+    // the snapshot side must resolve alike.
+    [TestMethod(DisplayName = "Named partial siblings on a TPC base survive the snapshot round trip without churn (#167)")]
+    public void Tpc_named_partial_siblings_roundtrip_is_noop()
+    {
+        var target = BuildLiveModel<RoundTripNamedTpcContext>();
+
+        // Not vacuous: six indexes and six exclusion constraints, each under a name of its own.
+        var created = GetDifferences(null, target);
+        var indexes = created.OfType<CreateIndexOperation>().Select(o => o.Name).ToList();
+        Assert.HasCount(6, indexes);
+        Assert.HasCount(6, indexes.Distinct());
+        Assert.Contains("ix_rt_code_active_rt_special_bookings", indexes);
+        var adds = created.OfType<SqlOperation>().Select(o => o.Sql).Where(s => s.Contains("EXCLUDE")).ToList();
+        Assert.HasCount(6, adds);
+        Assert.IsTrue(adds.Any(s => s.Contains("\"ex_rt_revoked_rt_vip_bookings\"")), string.Join("\n", adds));
+
+        var operations = GetDifferences(BuildModelViaSnapshot<RoundTripNamedTpcContext>(), target);
+        Assert.IsEmpty(operations, string.Join("\n", operations.Select(o => o.GetType().Name)));
+    }
+
+    // A 5.4.1 snapshot of the same model: the base's table keeps its names, the copies are created.
+    [TestMethod(DisplayName = "Named partial siblings from a snapshot scaffolded before 5.5.0 keep their names and gain the copies (#167)")]
+    public void Pre_55_snapshot_named_partial_siblings_create_only_the_copies()
+    {
+        var source = BuildModelViaSnapshot<RoundTripNamedTpcContext>(code => System.Text.RegularExpressions.Regex.Replace(
+            code, $@"\s*\.HasAnnotation\(""{ComplexIndexAnnotations.RenderingVersion}"", {ComplexIndexStorage.CurrentRenderingVersion}\)", ""));
+
+        var operations = GetDifferences(source, BuildLiveModel<RoundTripNamedTpcContext>());
+
+        Assert.IsFalse(operations.Any(o => o is DropIndexOperation or RenameIndexOperation or DropTableOperation or DropUniqueConstraintOperation));
+        Assert.IsFalse(operations.OfType<SqlOperation>().Any(o => o.Sql.Contains("ALTER TABLE \"rt_bookings\"")),
+                       string.Join("\n", operations.OfType<SqlOperation>().Select(o => o.Sql)));
+        CollectionAssert.AreEquivalent(
+            new[]
+            {
+                "ix_rt_code_active_rt_special_bookings", "ix_rt_code_archived_rt_special_bookings",
+                "ix_rt_code_active_rt_vip_bookings", "ix_rt_code_archived_rt_vip_bookings"
+            },
+            operations.OfType<CreateIndexOperation>().Select(o => o.Name).ToArray());
+        Assert.HasCount(4, operations.OfType<SqlOperation>().Where(o => o.Sql.Contains("EXCLUDE")));
+    }
+
+    // #168: a 5.4.1 snapshot of a temporal foreign key on a TPC base with a long derived table. The
+    // first migration after upgrading adds the copies, the long table's under a shortened name.
+    [TestMethod(DisplayName = "A temporal foreign key's long copy name from a snapshot scaffolded before 5.5.0 is shortened (#168)")]
+    public void Pre_55_snapshot_long_foreign_key_copy_is_shortened()
+    {
+        var source = BuildModelViaSnapshot<RoundTripLongTpcContext>(code => System.Text.RegularExpressions.Regex.Replace(
+            code, $@"\s*\.HasAnnotation\(""{ComplexIndexAnnotations.RenderingVersion}"", {ComplexIndexStorage.CurrentRenderingVersion}\)", ""));
+
+        var operations = GetDifferences(source, BuildLiveModel<RoundTripLongTpcContext>());
+
+        Assert.IsFalse(operations.Any(o => o is DropForeignKeyOperation or DropTableOperation or DropUniqueConstraintOperation));
+        var foreignKeys = operations.OfType<SqlOperation>().Select(o => o.Sql).Where(s => s.Contains("FOREIGN KEY")).ToList();
+        Assert.HasCount(2, foreignKeys);
+        var full = $"FK_{RoundTripLongTpcContext.LongTable}_rt_rooms_RoomId_During";
+        Assert.IsTrue(foreignKeys.Any(s => s.Contains($"ALTER TABLE \"{RoundTripLongTpcContext.LongTable}\" ADD CONSTRAINT \"{full[..62]}~\"")),
+                      string.Join("\n", foreignKeys));
     }
 
     [TestMethod(DisplayName = "A filter change against the snapshot model is still detected")]
@@ -620,7 +682,7 @@ internal class RoundTripTpcContext(DbContextOptions<RoundTripTpcContext> options
 }
 
 // The TPC base of RoundTripTpcContext with a derived table whose name puts each copy's default name
-// past PostgreSQL's 63 bytes (#145).
+// past PostgreSQL's 63 bytes (#145), the temporal foreign key's included (#168).
 internal class RoundTripLongTpcContext(DbContextOptions<RoundTripLongTpcContext> options) : DbContext(options)
 {
     public const string LongTable = "rt_special_bookings_for_corporate_customer_accounts_xyz12";
@@ -634,9 +696,38 @@ internal class RoundTripLongTpcContext(DbContextOptions<RoundTripLongTpcContext>
             b.HasComplexIndex(x => x.Code, isUnique: true);
             b.HasExclusionConstraint(x => x.RoomId, x => x.During);
             b.HasTemporalConstraint(x => x.Code, x => x.During);
+            b.HasTemporalForeignKey<RoundTripBooking, RoundTripRoom>(x => x.RoomId, x => x.During, r => r.RoomId, r => r.Available);
+        });
+
+        modelBuilder.Entity<RoundTripRoom>(b =>
+        {
+            b.ToTable("rt_rooms");
+            b.HasTemporalConstraint(x => x.RoomId, x => x.Available);
         });
 
         modelBuilder.Entity<RoundTripSpecialBooking>().ToTable(LongTable);
+        modelBuilder.Entity<RoundTripVipBooking>().ToTable("rt_vip_bookings");
+    }
+}
+
+// #167: two partial indexes and two exclusion constraints over the same parts on a TPC base, which
+// must be named, plus a named temporal constraint.
+internal class RoundTripNamedTpcContext(DbContextOptions<RoundTripNamedTpcContext> options) : DbContext(options)
+{
+    protected override void OnModelCreating(ModelBuilder modelBuilder)
+    {
+        modelBuilder.Entity<RoundTripBooking>(b =>
+        {
+            b.UseTpcMappingStrategy();
+            b.ToTable("rt_bookings");
+            b.HasComplexIndex(x => x.Code, isUnique: true, filter: "{RoomId} > 0", indexName: "ix_rt_code_active");
+            b.HasComplexIndex(x => x.Code, isUnique: true, filter: "{RoomId} <= 0", indexName: "ix_rt_code_archived");
+            b.HasExclusionConstraint(x => x.RoomId, x => x.During, filter: "{Code} <> 'revoked'", name: "ex_rt_active");
+            b.HasExclusionConstraint(x => x.RoomId, x => x.During, filter: "{Code} = 'revoked'", name: "ex_rt_revoked");
+            b.HasTemporalConstraint(x => x.Code, x => x.During, name: "ak_rt_code_during");
+        });
+
+        modelBuilder.Entity<RoundTripSpecialBooking>().ToTable("rt_special_bookings");
         modelBuilder.Entity<RoundTripVipBooking>().ToTable("rt_vip_bookings");
     }
 }

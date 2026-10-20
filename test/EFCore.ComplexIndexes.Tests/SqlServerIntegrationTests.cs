@@ -531,6 +531,49 @@ public class SqlServerIntegrationTests
         AssertDuplicateRefused("INSERT INTO gift_vouchers (Id, Code, Recipient) VALUES (5, N'B', N'z')");
     }
 
+    // #167: two partial indexes over the same column on a TPC base, which must both be named. SQL
+    // Server keeps index names per table, so each table takes both names, as EF names its own.
+    private class Pass
+    {
+        public int    Id     { get; set; }
+        public int    ZoneId { get; set; }
+        public string Code   { get; set; } = "";
+    }
+
+    private class SeasonPass : Pass;
+
+    private class PassContext(DbContextOptions<PassContext> options) : DbContext(options)
+    {
+        protected override void OnModelCreating(ModelBuilder modelBuilder)
+        {
+            modelBuilder.Entity<Pass>(b =>
+            {
+                b.UseTpcMappingStrategy();
+                b.ToTable("passes");
+                b.Property(x => x.Code).HasMaxLength(32);
+                b.HasComplexIndex(x => x.Code, isUnique: true, filter: "{ZoneId} > 0", indexName: "ux_pass_active");
+                b.HasComplexIndex(x => x.Code, isUnique: true, filter: "{ZoneId} <= 0", indexName: "ux_pass_archived");
+            });
+            modelBuilder.Entity<SeasonPass>().ToTable("season_passes");
+        }
+    }
+
+    [TestMethod(DisplayName = "Two named partial indexes on a TPC base apply under their names on every table and enforce there (#167)")]
+    public void Tpc_named_partial_siblings_apply_on_every_table()
+    {
+        Migrate(null, Model<PassContext>());
+
+        foreach (var table in new[] { "passes", "season_passes" })
+        {
+            Assert.AreEqual("([ZoneId]>(0))", AssertIndex(table, "ux_pass_active").Filter, table);
+            Assert.AreEqual("([ZoneId]<=(0))", AssertIndex(table, "ux_pass_archived").Filter, table);
+        }
+
+        Sql("INSERT INTO season_passes (Id, ZoneId, Code) VALUES (1, 5, N'A'), (2, -1, N'B'), (3, -2, N'A')");
+        AssertDuplicateRefused("INSERT INTO season_passes (Id, ZoneId, Code) VALUES (4, 6, N'A')");
+        AssertDuplicateRefused("INSERT INTO season_passes (Id, ZoneId, Code) VALUES (5, -3, N'B')");
+    }
+
     // ── Changes under an existing index ──
 
     private class RenameV1Context(DbContextOptions<RenameV1Context> options) : CustomerContext(options)

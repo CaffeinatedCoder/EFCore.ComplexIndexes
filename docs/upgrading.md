@@ -145,24 +145,37 @@ type's. PostgreSQL 18 rejected an overlapping booking in `bookings` and accepted
 `special_bookings`. Each table enforces its own rows, as EF Core's indexes do; nothing spans the
 tables.
 
-The first `migrations add` creates the copies on the derived tables, each under the default name
-for its table, such as `IX_special_bookings_Code`, and changes nothing on the declaring type's
-table. Where a derived table's long name puts that default name past the provider's identifier
-limit (63 bytes on PostgreSQL), the copy's name is shortened as EF Core shortens its own: cut and
-ended with `~`, or with `~1`, `~2`, … where the shortened name is already taken
-([#145](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/issues/145)). A table of 57
-characters gives `IX_special_bookings_for_corporate_customer_accounts_xyz_1234_C~`. Only the
-copies are shortened: a default name too long elsewhere still fails at `migrations add`, and an
-explicit name fixes it. Before you apply it, remove the rows in the derived tables that violate a unique index or
+The first `migrations add` creates the copies on the derived tables and changes nothing on the
+declaring type's table. Each copy is named for its table:
+
+- **Without a name,** a copy takes the default name for its table, such as
+  `IX_special_bookings_Code`.
+- **With a name,** the declaring type's table keeps it. On PostgreSQL and SQLite, where an index
+  name must be unique in the schema or database, each derived table's copy takes your name followed
+  by its table: `ix_code_active` on `bookings` becomes `ix_code_active_special_bookings` on
+  `special_bookings`. EF Core repeats the name of its own `HasIndex` on every table there, and the
+  migration fails when it runs (42P07; SQLite "index … already exists"). Two partial indexes or
+  exclusion constraints over the same columns need a name each, and this keeps them apart on every
+  table ([#167](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/issues/167)).
+- **On SQL Server, and for a temporal foreign key,** a name repeats on every table, as EF Core
+  repeats its own. SQL Server keeps index names per table, and PostgreSQL keeps a foreign key's
+  name per table.
+
+Where a derived table's long name puts a copy's name past the provider's identifier limit (63 bytes
+on PostgreSQL), the name is shortened as EF Core shortens its own: cut and ended with `~`, or with
+`~1`, `~2`, … where the shortened name is already taken
+([#145](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/issues/145), and for a temporal
+foreign key [#168](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/issues/168)). A table
+of 57 characters gives `IX_special_bookings_for_corporate_customer_accounts_xyz_1234_C~`. Only
+these names are shortened. A name you wrote that is too long, or a default name too long off a TPC
+hierarchy, still fails at `migrations add`, and a shorter explicit name fixes it.
+
+Before you apply the migration, remove the rows in the derived tables that violate a unique index or
 an exclusion constraint. The migration fails on them, with 23505 or 23P01 on PostgreSQL and
 Msg 1505 on SQL Server. The migration runs in a transaction, so nothing of it is applied.
 
 Some of these declarations fail at `migrations add` now:
 
-- One with an explicit name, where index names are unique per schema or database: on PostgreSQL
-  for every kind but the temporal foreign key, and on SQLite. The name would repeat on each table.
-  Leave it out, also where the default name is too long: it is then shortened, as above. SQL
-  Server keeps index names per table and takes the name on each, as EF Core does.
 - One that reads a member of a complex property. EF Core 10 keeps a TPC type's complex properties
   in that type's own table, so a derived table has no column for it. Map the member as a regular
   property, or remove the declaration.
@@ -171,7 +184,9 @@ Some of these declarations fail at `migrations add` now:
   foreign key for such a relationship either. Reference a type with no derived types.
 
 A declaration on the abstract base of a TPC hierarchy, rejected since 5.1.0, is created on every
-concrete table now, unless it reads a member of a complex property.
+concrete table now, unless it reads a member of a complex property. The abstract base has no table
+to keep an explicit name on, so on PostgreSQL and SQLite every copy takes the name followed by its
+table.
 
 ### Substring and Trim render as EF Core's queries
 
