@@ -552,6 +552,7 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
         }
 
         var normalizedForeignKeys = new Dictionary<TemporalForeignKeyDescriptor, (string Table, string? Schema)>();
+        var principalDropped      = new HashSet<TemporalForeignKeyDescriptor>();
         foreach (var src in sourceForeignKeys)
         {
             var normalized = src;
@@ -559,11 +560,18 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
                 normalized = normalized with { DependentTable = dependent.Name, DependentSchema = dependent.Schema };
             if (renamedTables.TryGetValue((src.PrincipalTable, src.PrincipalSchema), out var principal))
                 normalized = normalized with { PrincipalTable = principal.Name, PrincipalSchema = principal.Schema };
-            normalizedForeignKeys.TryAdd(normalized, (src.DependentTable, src.DependentSchema));
+            if (normalizedForeignKeys.TryAdd(normalized, (src.DependentTable, src.DependentSchema))
+             && droppedTables.Contains((src.PrincipalTable, src.PrincipalSchema)))
+                principalDropped.Add(normalized);
         }
 
+        // A foreign key whose dependent table is dropped goes with it — unless its principal table is
+        // dropped too. EF orders the DropTable operations without knowing about the temporal foreign
+        // key, so when the principal's comes first it fails with 2BP01; dropping the key before the
+        // base operations makes the order irrelevant. Down() of the migration that created both
+        // tables has exactly this shape.
         var pendingForeignKeyDrops = normalizedForeignKeys.Keys
-            .Where(src => !droppedTables.Contains(normalizedForeignKeys[src])
+            .Where(src => (!droppedTables.Contains(normalizedForeignKeys[src]) || principalDropped.Contains(src))
                        && (!targetForeignKeys.Contains(src)
                         || DependsOnChangedTemporalConstraint(src, normalizedConstraints.Keys, targetConstraints)))
             .ToList();
