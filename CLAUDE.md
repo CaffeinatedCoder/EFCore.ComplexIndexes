@@ -42,7 +42,7 @@ the build reports green.
 
 ## CI
 
-`.github/workflows/dotnet.yml` runs on pushes and PRs to `main`, `release/**` and `net11`: the
+`.github/workflows/dotnet.yml` runs on pushes and PRs to `main` and `release/**`: the
 unit suite, the integration suites (Docker; `Integration (PostgreSQL 18)` and
 `Integration (SQL Server 2022)`, one job each), then a pack job whose value is partly that packing
 *is* a check — a package declaring `PackageReadmeFile` without packing the file fails with

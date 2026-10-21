@@ -8,8 +8,8 @@
 #
 # Two parts. `default-branch` calls dotnet.yml here, on the default branch, which is the only one a
 # schedule runs on. `release-lines` dispatches dotnet.yml on each release branch that exists, so
-# that branch is tested by its own workflow and its own SDK (after the v5.5.0 cut, main is .NET 11
-# and release/5.x is .NET 10), and waits for the result.
+# that branch is tested by its own workflow and its own SDK (release/5.x stays on .NET 10 when main
+# moves to .NET 11, #38), and waits for the result.
 #
 # A failure opens an issue, or comments on the one already open, rather than relying on GitHub's
 # emails. Those reach only the user who last edited the cron line, and only under their personal
@@ -41,7 +41,7 @@ concurrency:
 
 env:
   # The branches besides the default one that ship a supported line. A branch that does not exist
-  # yet is skipped with a notice, so release/5.x is covered from the night after it is cut.
+  # yet is skipped with a notice, so a new line is covered from the night after it is cut.
   RELEASE_LINES: release/5.x
 
 jobs:

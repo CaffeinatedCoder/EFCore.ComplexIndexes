@@ -361,7 +361,7 @@ jobs:
 
           # "Latest" is decided here rather than left to the API's default, which marks every new
           # release Latest. Two lines are supported from 11.0.0 on (CONTRIBUTING.md, "Branches and
-          # releases"), so this is the normal case, not an accident: a 10.x tag pushed once 11.0.0
+          # releases"), so this is the normal case, not an accident: a 5.x tag pushed once 11.0.0
           # exists is older than Latest and must not take it, or the repository's front page would
           # point every visitor at the LTS line. A preview (`11.0.0-preview.N`) is a prerelease and
           # never Latest. With no tag, `gh release view` shows the current Latest release, which is

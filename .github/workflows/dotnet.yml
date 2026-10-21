@@ -1,7 +1,7 @@
-# Build and test on every push to main, a release branch or net11, and every PR into any of them.
-# Two lines are supported from 11.0.0 on (CONTRIBUTING.md#branches-and-releases), and each branch
-# that ships one needs the same checks as main's: release/10.x holds the LTS line once the v10.0.0
-# tag exists, and net11 holds the .NET 11 retarget and ships 11.0.0-preview.N until then.
+# Build and test on every push to main or a release branch, and every PR into either.
+# Two lines are supported (CONTRIBUTING.md#branches-and-releases), and each branch that ships one
+# needs the same checks: release/5.x holds the 5.x LTS line, cut from the v5.5.0 tag, and main the
+# SchemaKit line, which tags its 11.0.0-preview.N releases on main.
 #
 # Split into jobs on purpose: the unit suite and one integration job per database, which need
 # Docker for their PostgreSQL and SQL Server containers.
@@ -26,9 +26,9 @@ name: .NET
 
 on:
   push:
-    branches: [ "main", "release/**", "net11" ]
+    branches: [ "main", "release/**" ]
   pull_request:
-    branches: [ "main", "release/**", "net11" ]
+    branches: [ "main", "release/**" ]
   workflow_dispatch:
   workflow_call:
 
@@ -387,7 +387,7 @@ jobs:
 
   # The one required build check. Branch protection names this job and nothing else in this
   # workflow, so a new lane is a line in `needs` below rather than an edit to the protection of
-  # every protected branch (main, and release/5.x once it is cut).
+  # every protected branch (main and release/5.x).
   #
   # Required checks cannot do this themselves: GitHub reports a skipped job as Success, even on a
   # required check, whether it was skipped by its own condition or because a job it needs failed.
