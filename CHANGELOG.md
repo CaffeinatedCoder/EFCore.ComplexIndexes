@@ -25,6 +25,10 @@ Migrations keep the indexes and constraints a column change used to drop or rebu
 - Migrations: moving a table into the default schema keeps the complex indexes and constraints on it. They were dropped and created again, and on PostgreSQL, where Npgsql leaves such a table in its schema, the migration failed (42P01) ([#185](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/issues/185), [Upgrading](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/docs/upgrading.md#a-move-into-the-default-schema-keeps-what-is-on-the-table)).
 - Migrations: renaming a column keeps the complex indexes, exclusion constraints and temporal constraints that read it, and renames a default name that includes the column. They were dropped and created again around the rename. SQL Server still re-creates an index whose filter reads the column ([#182](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/issues/182), [Upgrading](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/docs/upgrading.md#a-column-rename-keeps-what-reads-the-column)).
 
+### Fixed
+
+- Indexes: on SQL Server, a complex index whose filter or INCLUDE entry names a column in another case, `[note]` for `Note`, is dropped before an `ALTER COLUMN` or rename of that column and created after it, where the migration failed at apply, since SQL Server rejects either while the index exists (Msg 5074 for `ALTER COLUMN`) ([#189](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/issues/189)).
+
 ## [5.5.0] — 2026-10-20
 
 The last 5.x minor with a change of its own: the line refuses EF Core 11, whose successor is `CodoMetis.EFCore.SchemaKit`. Some fixes change what an existing model scaffolds or applies: [Changed answers in 5.5.0](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/docs/upgrading.md#changed-answers-in-550).

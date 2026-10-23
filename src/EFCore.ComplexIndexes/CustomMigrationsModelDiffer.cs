@@ -303,7 +303,7 @@ public class CustomMigrationsModelDiffer(
         bool InTheWay(IndexDescriptor current)
         {
             var columns       = ColumnsReadBy(target!, current);
-            var filterColumns = ColumnsNamedIn(target!, current.TableName, current.Schema, current.Filter ?? "");
+            var filterColumns = ColumnsNamedIn(target!, current.TableName, current.Schema, current.Filter ?? "", IndexNameComparer);
             return operations.Any(o => o is ITableMigrationOperation table
                                     && table.Table  == current.TableName
                                     && table.Schema == current.Schema
@@ -650,27 +650,37 @@ public class CustomMigrationsModelDiffer(
 
     // Key columns, every included column (an array-valued provider option), and the table's
     // columns that the filter or an expression part names. The text match over-approximates, which
-    // costs at most a needless rebuild.
-    private static HashSet<string> ColumnsReadBy(IRelationalModel target, IndexDescriptor index)
+    // costs at most a needless rebuild. Names compare as the provider compares identifiers
+    // (IndexNameComparer): SQL Server reads a filter's [note] or an INCLUDE entry "note" as the
+    // column Note, and ValidateIncludedColumns accepts that spelling, so an ordinal match missed
+    // what the index reads and left it in the way of ALTER COLUMN (Msg 5074, #189).
+    private HashSet<string> ColumnsReadBy(IRelationalModel target, IndexDescriptor index)
     {
-        var columns = index.ColumnNames.ToHashSet(StringComparer.Ordinal);
+        var columns = index.ColumnNames.ToHashSet(IndexNameComparer);
 
         foreach (var value in index.ProviderAnnotations.Values)
             if (value is string[] names)
                 columns.UnionWith(names);
 
         var text = string.Join(" ", index.Parts.Where(p => p.IsExpression).Select(p => p.Value).Append(index.Filter ?? ""));
-        columns.UnionWith(ColumnsNamedIn(target, index.TableName, index.Schema, text));
+        columns.UnionWith(ColumnsNamedIn(target, index.TableName, index.Schema, text, IndexNameComparer));
 
         return columns;
     }
 
-    // The table's columns whose names occur in the text: an over-approximation, like ColumnsReadBy.
-    // Internal for the PostgreSQL differ's constraints, which read columns the same way (#184).
-    internal static HashSet<string> ColumnsNamedIn(IRelationalModel target, string tableName, string? schema, string text)
-        => text.Length > 0 && target.FindTable(tableName, schema) is { } table
-               ? table.Columns.Select(c => c.Name).Where(name => text.Contains(name, StringComparison.Ordinal)).ToHashSet(StringComparer.Ordinal)
-               : [];
+    // The table's columns whose names occur in the text: an over-approximation, like ColumnsReadBy,
+    // under the provider's identifier comparison (ordinal unless given). Internal for the
+    // PostgreSQL differ's constraints, which read columns the same way (#184).
+    internal static HashSet<string> ColumnsNamedIn(
+        IRelationalModel target, string tableName, string? schema, string text, StringComparer? comparer = null)
+    {
+        comparer ??= StringComparer.Ordinal;
+        var comparison = comparer.Equals("a", "A") ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+
+        return text.Length > 0 && target.FindTable(tableName, schema) is { } table
+                   ? table.Columns.Select(c => c.Name).Where(name => text.Contains(name, comparison)).ToHashSet(comparer)
+                   : new HashSet<string>(comparer);
+    }
 
     /// <summary>
     /// Whether name-only index changes are emitted as <see cref="RenameIndexOperation"/> instead of
