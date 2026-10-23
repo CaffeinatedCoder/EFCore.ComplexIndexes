@@ -889,7 +889,14 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
             if (renamed is null)
                 continue;
 
-            if (target is not null
+            // A rename runs after the base operations, so the pair stays a drop and an add when
+            // anything before them needs the key gone, as the other rename paths ask (#196): a key
+            // column retyped or recreated, a principal constraint rebuilt or changed, or the old
+            // name taken by the target model (#143).
+            if (ForeignKeyInTheWay(renamed)
+             || DependsOnRebuiltConstraint(renamed)
+             || DependsOnChangedTemporalConstraint(renamed, normalizedConstraints.Keys, targetConstraints)
+             || target is not null
              && IsNameInUse(names ??= TargetNames(target), DefaultSchema(target), dropped.Name, renamed.DependentTable, renamed.DependentSchema, indexBacked: false))
                 continue;
 
