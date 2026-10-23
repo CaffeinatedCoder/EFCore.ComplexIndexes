@@ -15,7 +15,13 @@ to do about it, and a link to the guide with the detail. What the first `migrati
 upgrade does is in [docs/upgrading.md](docs/upgrading.md), and
 [CONTRIBUTING.md](CONTRIBUTING.md#changelog) has the rules.
 
-## [5.5.1] — 2026-10-20
+## [5.6.0] — 2026-10-23
+
+A column rename keeps what reads the column: [Changed answers in 5.6.0](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/docs/upgrading.md#changed-answers-in-560).
+
+### Changed answers
+
+- Migrations: renaming a column keeps the complex indexes, exclusion constraints and temporal constraints that read it, and renames a default name that includes the column. They were dropped and created again around the rename. SQL Server still re-creates an index whose filter reads the column ([#182](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/issues/182), [Upgrading](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/docs/upgrading.md#a-column-rename-keeps-what-reads-the-column)).
 
 ## [5.5.0] — 2026-10-20
 
@@ -231,7 +237,7 @@ Eleven fixes from a review of 5.0.1. The first three were migrations that scaffo
 - Expression indexes: descending parts render `DESC`, declared with `ExpressionIndexBuilder.Descending()`.
 - Migrations: the drops of complex indexes run before the base operations, so moving an index between `HasIndex` and a complex declaration under one name applies.
 
-[5.5.1]: https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/releases/tag/v5.5.1
+[5.6.0]: https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/releases/tag/v5.6.0
 [5.5.0]: https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/releases/tag/v5.5.0
 [5.4.1]: https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/releases/tag/v5.4.1
 [5.4.0]: https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/releases/tag/v5.4.0

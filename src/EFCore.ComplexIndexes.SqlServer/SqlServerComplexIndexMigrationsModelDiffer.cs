@@ -67,6 +67,15 @@ public class SqlServerComplexIndexMigrationsModelDiffer(
         => operation is AlterColumnOperation alter && columns.Contains(alter.Name);
 
     /// <summary>
+    /// Also a rename of a column the index's filter reads, its implicit <c>IS NOT NULL</c> filter
+    /// included: <c>sp_rename</c> rejects it while the index exists ("The index … is dependent on
+    /// column …"). A key or included column is renamed under the index (#182).
+    /// </summary>
+    internal override bool RequiresIndexRecreation(MigrationOperation operation, IReadOnlySet<string> columns, IReadOnlySet<string> filterColumns)
+        => operation is RenameColumnOperation rename && filterColumns.Contains(rename.NewName)
+        || base.RequiresIndexRecreation(operation, columns, filterColumns);
+
+    /// <summary>
     /// <c>[c] IS NOT NULL AND …</c> over the nullable key columns of a unique, nonclustered index
     /// declared without a filter: what EF Core's <c>SqlServerIndexConvention</c> gives its own unique
     /// indexes. SQL Server, unlike the SQL standard, treats NULLs as equal in a unique index, so
@@ -123,7 +132,7 @@ public class SqlServerComplexIndexMigrationsModelDiffer(
     )
         => annotationName switch
                {
-                   SqlServerAnnotations.Include         => ResolveIncludeList(entityType, value, storeObject),
+                   SqlServerAnnotations.Include         => ResolveIncludeColumns(entityType, value, storeObject),
                    SqlServerAnnotations.DataCompression => CoerceDataCompression(value),
                    _                                    => base.TransformIndexAnnotation(entityType, annotationName, value, storeObject)
                };

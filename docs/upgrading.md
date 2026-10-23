@@ -435,3 +435,35 @@ in the model fails too: map the column, as a shadow property if nothing reads it
 holds such an entry still works, since the check covers your current model only. On PostgreSQL, check a database that a migration of that shape
 reached with `SELECT indexname FROM pg_indexes WHERE tablename = '<table>'`. The migrations do not
 know the index is missing, so re-create it by hand with `migrationBuilder.Sql(…)`.
+
+## Changed answers in 5.6.0
+
+This changes only migrations that rename a column. A model you have not changed writes no
+migration, and the snapshot stays as it is.
+
+### A column rename keeps what reads the column
+
+When you rename a column, the migration now renames the column and keeps the complex indexes,
+exclusion constraints and temporal constraints that read it. PostgreSQL and SQLite keep them through
+the rename, and so does SQL Server unless the index has a filter. Before, `migrations add` dropped
+each of them before the rename and created it again after. On a large table, that rebuild locked the
+table until the migration finished.
+
+A default name includes the column, so it changes with it. The migration renames that index or
+constraint, `IX_members_email` to `IX_members_email_address` for example. On SQLite, which cannot
+rename these indexes, the migration drops and re-creates it.
+
+Good to know:
+
+- **On SQL Server, an index whose filter reads the column is still re-created.** SQL Server rejects
+  the rename while such an index exists ("The index … is dependent on column …"), so the migration
+  drops it before the rename and creates it after. That includes the `IS NOT NULL` filter a unique
+  index over a nullable column gets. EF Core does the same for its own filtered indexes.
+- **SQL you wrote as a string is compared as written.** If you change `lower(code)` to
+  `lower(member_code)` in an expression index or a filter along with the rename, the migration
+  drops and re-creates that index. A `{Code}` placeholder or a typed lambda follows the rename
+  without a rebuild.
+- **An `IncludeProperties(…)` entry written as a column name** has to take the new name too.
+  Otherwise `migrations add` fails and names the entry ([INCLUDE entries must name a column](#include-entries-must-name-a-column)).
+- **Anything else that changed** in the same migration still drops and re-creates the index. The
+  drop runs before the rename and the create after it.
