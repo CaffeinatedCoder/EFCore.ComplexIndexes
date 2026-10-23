@@ -4,9 +4,13 @@ The changes that affect the core package, newest first. The
 [root changelog](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/CHANGELOG.md)
 covers all three packages, which share one version number and release together.
 
-## [5.5.1] — 2026-10-20
+## [5.6.0] — 2026-10-23
 
-No change in this package.
+A column rename keeps what reads the column: [Changed answers in 5.6.0](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/docs/upgrading.md#changed-answers-in-560).
+
+### Changed answers
+
+- Migrations: renaming a column keeps the complex indexes, exclusion constraints and temporal constraints that read it, and renames a default name that includes the column. `migrations add` dropped each of them before the rename and created it again after it, a rebuild that locked the table ([#182](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/issues/182), [Upgrading](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/docs/upgrading.md#a-column-rename-keeps-what-reads-the-column)).
 
 ## [5.5.0] — 2026-10-20
 

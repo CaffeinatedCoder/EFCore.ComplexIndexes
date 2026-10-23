@@ -123,7 +123,7 @@ public class SqlServerComplexIndexMigrationsModelDiffer(
     )
         => annotationName switch
                {
-                   SqlServerAnnotations.Include         => ResolveIncludeList(entityType, value, storeObject),
+                   SqlServerAnnotations.Include         => ResolveIncludeColumns(entityType, value, storeObject),
                    SqlServerAnnotations.DataCompression => CoerceDataCompression(value),
                    _                                    => base.TransformIndexAnnotation(entityType, annotationName, value, storeObject)
                };

@@ -725,6 +725,61 @@ public class SqlServerIntegrationTests
         AssertDuplicateRefused("INSERT INTO customers (Id, name, email, phone) VALUES (NEWID(), N'b', N'a@x', N'2')");
     }
 
+    // ── A column rename keeps the indexes on the column (#182) ──
+
+    private class OptionalContact
+    {
+        public string? Email { get; set; }
+    }
+
+    private class Subscriber
+    {
+        public Guid            Id        { get; set; }
+        public string          Name      { get; set; } = "";
+        public DateTime?       RevokedAt { get; set; }
+        public OptionalContact Contact   { get; set; } = new();
+    }
+
+    private abstract class ColumnRenameContext(DbContextOptions options, string suffix) : DbContext(options)
+    {
+        protected override void OnModelCreating(ModelBuilder modelBuilder)
+            => modelBuilder.Entity<Subscriber>(b =>
+            {
+                b.ToTable("subscribers");
+                b.HasKey(x => x.Id).IsClustered(false);
+                b.Property(x => x.Name).HasColumnName("name" + suffix).HasMaxLength(100);
+                b.Property(x => x.RevokedAt).HasColumnName("revoked_at" + suffix);
+
+                // Unique over a nullable column: its implicit filter names the column too.
+                b.ComplexProperty(x => x.Contact, c => c.Property(x => x.Email).HasColumnName("email" + suffix).HasMaxLength(256).HasComplexIndex(isUnique: true));
+
+                b.HasComplexCompositeIndex(x => new { x.Name, x.Contact.Email }, filter: "{RevokedAt} IS NULL", indexName: "ix_name_email_active");
+                b.HasComplexIndex(x => x.Name, ix => ix.HasName("ix_name_covering").IncludeProperties("Contact.Email"));
+            });
+    }
+
+    private class ColumnRenameV1Context(DbContextOptions<ColumnRenameV1Context> options) : ColumnRenameContext(options, "");
+
+    private class ColumnRenameV2Context(DbContextOptions<ColumnRenameV2Context> options) : ColumnRenameContext(options, "_v2");
+
+    [TestMethod(DisplayName = "A column rename keeps the indexes on the column, filtered ones included (#182)")]
+    public void Column_rename_keeps_the_indexes()
+    {
+        var v1 = Model<ColumnRenameV1Context>();
+        Migrate(null, v1);
+
+        var operations = MigrationHarness.SqlServerDiff(v1, Model<ColumnRenameV2Context>());
+        Assert.IsFalse(operations.Any(o => o is DropIndexOperation or CreateIndexOperation));
+
+        // sp_rename renames a column a filtered index reads, and rewrites the filter.
+        Migrate(v1, Model<ColumnRenameV2Context>());
+
+        Assert.AreEqual("([email_v2] IS NOT NULL)", AssertIndex("subscribers", "IX_subscribers_email_v2").Filter);
+        Assert.AreEqual("([revoked_at_v2] IS NULL)", AssertIndex("subscribers", "ix_name_email_active").Filter);
+        CollectionAssert.AreEqual(new[] { "name_v2", "email_v2" }, AssertIndex("subscribers", "ix_name_email_active").Keys);
+        CollectionAssert.AreEqual(new[] { "email_v2" }, AssertIndex("subscribers", "ix_name_covering").Included);
+    }
+
     // ── The clustered slot and key names (#90) ──
 
     private class OneClusteredContext(DbContextOptions options) : CustomerContext(options)

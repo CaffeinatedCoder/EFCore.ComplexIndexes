@@ -99,6 +99,64 @@ public class CustomMigrationsModelDiffer(
     private readonly Satellite? _satellite =
         Satellites.FirstOrDefault(s => typeMappingSource.GetType().Namespace?.StartsWith(s.ProviderNamespace, StringComparison.Ordinal) == true);
 
+    // The columns the base operations rename, by source table and source column name. Set only
+    // while ResolveSource runs, so that RenderedColumn is the identity for the target model.
+    private Dictionary<(string Table, string? Schema, string Column), string>? _sourceColumnRenames;
+
+    /// <summary>
+    /// Resolves the source model under the column names the base operations rename its columns to.
+    /// </summary>
+    /// <remarks>
+    /// PostgreSQL, SQL Server and SQLite keep an index or constraint when a column it reads is
+    /// renamed, and EF Core emits only the <c>RenameColumnOperation</c> for its own indexes. The
+    /// descriptors compare the SQL they would render, so a source resolved under its own column
+    /// names never matched the target, and every declaration on a renamed column was dropped and
+    /// created again: a full rebuild under an exclusive lock (#182). Only what this package renders
+    /// from a column takes the new name (column parts, placeholders, JSON extractions, INCLUDE
+    /// entries, implicit filters). Names keep the source's own columns, so a default name that
+    /// follows the column is a rename, as EF Core's are, and verbatim SQL is compared as written.
+    /// </remarks>
+    private protected T ResolveSource<T>(IReadOnlyList<MigrationOperation> operations, Func<T> resolve)
+    {
+        _sourceColumnRenames = SourceColumnRenames(operations);
+        try
+        {
+            return resolve();
+        }
+        finally
+        {
+            _sourceColumnRenames = null;
+        }
+    }
+
+    // EF Core names the table of a RenameColumnOperation as the target has it, and renames a
+    // table before its columns; the key is the source's name for the table.
+    private static Dictionary<(string Table, string? Schema, string Column), string>? SourceColumnRenames(
+        IReadOnlyList<MigrationOperation> operations)
+    {
+        var sourceTables = new Dictionary<(string Name, string? Schema), (string Name, string? Schema)>();
+        foreach (var rename in operations.OfType<RenameTableOperation>())
+            sourceTables[(rename.NewName ?? rename.Name, rename.NewSchema ?? rename.Schema)] = (rename.Name, rename.Schema);
+
+        Dictionary<(string Table, string? Schema, string Column), string>? renames = null;
+        foreach (var rename in operations.OfType<RenameColumnOperation>())
+        {
+            var (table, schema) = sourceTables.GetValueOrDefault((rename.Table, rename.Schema), (rename.Table, rename.Schema));
+            (renames ??= [])[(table, schema, rename.Name)] = rename.NewName;
+        }
+
+        return renames;
+    }
+
+    /// <summary>
+    /// The name a column of <paramref name="storeObject"/> has after the base operations: renamed
+    /// while the source model is resolved, unchanged otherwise.
+    /// </summary>
+    private protected string RenderedColumn(string column, StoreObjectIdentifier storeObject)
+        => _sourceColumnRenames is { } renames && renames.TryGetValue((storeObject.Name, storeObject.Schema, column), out var renamed)
+               ? renamed
+               : column;
+
     /// <summary>
     /// What only each satellite's differ renders — the index options it forwards (its
     /// <c>IsForwardedIndexAnnotation</c> whitelist), the entity-type annotations that declare its
@@ -164,7 +222,7 @@ public class CustomMigrationsModelDiffer(
 
         var operations = base.GetDifferences(source, target);
 
-        var sourceIndexes = ExtractAllIndexDescriptors(source);
+        var sourceIndexes = ResolveSource(operations, () => ExtractAllIndexDescriptors(source));
         var targetIndexes = ExtractAllIndexDescriptors(target);
 
         // Target only: the source is history. A snapshot that already contains a collision must
@@ -714,6 +772,14 @@ public class CustomMigrationsModelDiffer(
                          .ToArray();
     }
 
+    // ResolveIncludeList under the source's column renames (ResolveSource). A verbatim entry is a
+    // column name too, so it takes the new name as well; one the target model still spells the old
+    // way is refused by ValidateIncludedColumns.
+    private protected object? ResolveIncludeColumns(IEntityType entityType, object? value, StoreObjectIdentifier storeObject)
+        => ResolveIncludeList(entityType, value, storeObject) is string[] columns
+               ? Array.ConvertAll(columns, column => RenderedColumn(column, storeObject))
+               : value;
+
     /// <summary>
     /// Called for an index part whose property path does not resolve to a table column — typically
     /// a member of a complex property mapped to JSON via <c>ToJson()</c>. Provider satellites can
@@ -955,7 +1021,7 @@ public class CustomMigrationsModelDiffer(
     {
         var column = ResolveColumnName(entityType, path, storeObject);
         if (column is not null)
-            return (QuoteIdentifier(column), column, null);
+            return (QuoteIdentifier(RenderedColumn(column, storeObject)), column, null);
 
         var part     = new IndexPartDefinition { PropertyPath = path, RenderingVersion = renderingVersion };
         var unmapped = ResolveUnmappedPart(entityType, part, storeObject);
@@ -1831,7 +1897,7 @@ public class CustomMigrationsModelDiffer(
         // No table column — a JSON-mapped complex member, for example. Give the provider
         // satellite a chance to resolve it to an expression part before giving up.
         var part = columnName is not null
-                       ? new ResolvedIndexPart(false, columnName)
+                       ? new ResolvedIndexPart(false, RenderedColumn(columnName, storeObject)) { NameToken = columnName }
                        : ResolveUnmappedPart(entityType, declaration.Parts[0], storeObject)
                       ?? throw new InvalidOperationException(
                              $"The property '{property.Name}' on '{property.DeclaringType.Name}' is marked with " +
@@ -1851,7 +1917,7 @@ public class CustomMigrationsModelDiffer(
         }
 
         var filter = ResolveFilter(entityType, declaration.Filter, storeObject, renderingVersion: null, out var filterRefusal)
-                  ?? ImplicitFilter(entityType, storeObject, part.IsExpression ? [] : [part.Value], declaration.IsUnique, providerAnnotations);
+                  ?? RenderedImplicitFilter(entityType, storeObject, [part], declaration.IsUnique, providerAnnotations);
 
         return new IndexDescriptor(tableName, schema, [part], indexName, declaration.IsUnique, filter, providerAnnotations)
         {
@@ -1886,7 +1952,7 @@ public class CustomMigrationsModelDiffer(
             var col = ResolveColumnName(entityType, part.PropertyPath!, storeObject);
             if (col is not null)
             {
-                parts.Add(new ResolvedIndexPart(false, col, part.Descending, part.NullSort));
+                parts.Add(new ResolvedIndexPart(false, RenderedColumn(col, storeObject), part.Descending, part.NullSort) { NameToken = col });
                 continue;
             }
 
@@ -1906,7 +1972,7 @@ public class CustomMigrationsModelDiffer(
             providerAnnotations[key] = TransformIndexAnnotation(entityType, key, value, storeObject);
 
         var filter = ResolveFilter(entityType, declaration.Filter, storeObject, renderingVersion: null, out var filterRefusal)
-                  ?? ImplicitFilter(entityType, storeObject, [.. parts.Where(p => !p.IsExpression).Select(p => p.Value)], declaration.IsUnique, providerAnnotations);
+                  ?? RenderedImplicitFilter(entityType, storeObject, parts, declaration.IsUnique, providerAnnotations);
 
         return new IndexDescriptor(tableName, schema, parts, indexName, declaration.IsUnique, filter, providerAnnotations)
         {
@@ -1914,13 +1980,40 @@ public class CustomMigrationsModelDiffer(
         };
     }
 
-    // Builds a default index-name token for a part: column names pass through; expressions are
-    // reduced to their alphanumeric characters (e.g. lower("Email") -> "lowerEmail"), starting from
-    // the part's name token where it has one, so a rendering change never renames the index.
+    // ImplicitFilter over the key columns as the declaring model has them, since a provider reads
+    // their facets from that model, with each column it names renamed as the base operations
+    // rename it (ResolveSource). The filter is this package's own SQL, built by QuoteIdentifier, so
+    // a quoted name in it is a column.
+    private string? RenderedImplicitFilter(
+        IEntityType                          entityType,
+        StoreObjectIdentifier                storeObject,
+        IReadOnlyList<ResolvedIndexPart>     parts,
+        bool                                 isUnique,
+        IReadOnlyDictionary<string, object?> providerAnnotations)
+    {
+        var columns = parts.Where(p => !p.IsExpression).Select(p => p.NameToken ?? p.Value).ToList();
+        var filter  = ImplicitFilter(entityType, storeObject, columns, isUnique, providerAnnotations);
+
+        var renamed = columns.Distinct()
+                             .Where(column => RenderedColumn(column, storeObject) != column)
+                             .ToDictionary(QuoteIdentifier, column => QuoteIdentifier(RenderedColumn(column, storeObject)));
+        if (filter is null || renamed.Count == 0)
+            return filter;
+
+        // One pass, so that two columns swapping names do not rename each other twice.
+        var quoted = string.Join("|", renamed.Keys.Select(System.Text.RegularExpressions.Regex.Escape));
+        return System.Text.RegularExpressions.Regex.Replace(filter, quoted, match => renamed[match.Value]);
+    }
+
+    // Builds a default index-name token for a part: column names pass through, as the declaring
+    // model has them (the name token; the value is renamed while the source is resolved);
+    // expressions are reduced to their alphanumeric characters (e.g. lower("Email") -> "lowerEmail"),
+    // starting from the part's name token where it has one, so a rendering change never renames the
+    // index.
     private static string BuildPartToken(ResolvedIndexPart part)
     {
         if (!part.IsExpression)
-            return part.Value;
+            return part.NameToken ?? part.Value;
 
         var token = new string([.. (part.NameToken ?? part.Value).Where(char.IsLetterOrDigit)]);
         return token.Length > 0 ? token : "expr";

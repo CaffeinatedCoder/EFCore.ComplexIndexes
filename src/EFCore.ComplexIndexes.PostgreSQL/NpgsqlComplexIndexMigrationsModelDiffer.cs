@@ -162,7 +162,7 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
         object?               value,
         StoreObjectIdentifier storeObject
     ) => annotationName == NpgsqlAnnotations.IndexInclude
-             ? ResolveIncludeList(entityType, value, storeObject)
+             ? ResolveIncludeColumns(entityType, value, storeObject)
              : base.TransformIndexAnnotation(entityType, annotationName, value, storeObject);
 
     /// <summary>
@@ -228,15 +228,17 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
 
         var leaf = current.FindProperty(segments[^1]);
         if (leaf is null)
-            return ResolveComplexLeaf(current, segments[^1], containerColumn, jsonPath, part, queryAligned);
+            return ResolveComplexLeaf(current, segments[^1], containerColumn, jsonPath, part, queryAligned, storeObject);
 
         if (containerColumn is null)
             return null;
 
         jsonPath.Add(leaf.GetJsonPropertyName() ?? leaf.Name);
 
-        // Default index names come from the container and the path, never from the rendered SQL.
+        // Default index names come from the container and the path, never from the rendered SQL,
+        // and from the container as the declaring model names it (RenderedColumn).
         var nameToken = containerColumn + string.Concat(jsonPath);
+        containerColumn = RenderedColumn(containerColumn, storeObject);
 
         // Exclusion constraint filters are pinned to rendering 1, which renders every member as
         // text. A member the current rendering casts — a number, boolean, uuid or enum — compared
@@ -334,13 +336,14 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
     // that is the container column itself, so the index is a plain column index the stock generator
     // renders. Nested inside a document it is an extraction yielding jsonb rather than text.
     // A table-split complex property has no single column to stand for it, so that stays unresolved.
-    private static ResolvedIndexPart? ResolveComplexLeaf(
-        ITypeBase           current,
-        string              name,
-        string?             containerColumn,
-        List<string>        jsonPath,
-        IndexPartDefinition part,
-        bool                queryAligned
+    private ResolvedIndexPart? ResolveComplexLeaf(
+        ITypeBase             current,
+        string                name,
+        string?               containerColumn,
+        List<string>          jsonPath,
+        IndexPartDefinition   part,
+        bool                  queryAligned,
+        StoreObjectIdentifier storeObject
     )
     {
         var complexProperty = current.FindComplexProperty(name);
@@ -352,14 +355,15 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
             var column = complexProperty.ComplexType.GetContainerColumnName();
             return column is null
                        ? null
-                       : new ResolvedIndexPart(false, column, part.Descending, part.NullSort);
+                       : new ResolvedIndexPart(false, RenderedColumn(column, storeObject), part.Descending, part.NullSort) { NameToken = column };
         }
 
         jsonPath.Add(complexProperty.GetJsonPropertyName() ?? complexProperty.Name);
 
+        var rendered = RenderedColumn(containerColumn, storeObject);
         var sql = queryAligned
-                      ? BuildJsonPath(containerColumn, jsonPath, returnsText: false)
-                      : BuildLegacyJsonExtraction(containerColumn, jsonPath, asText: false);
+                      ? BuildJsonPath(rendered, jsonPath, returnsText: false)
+                      : BuildLegacyJsonExtraction(rendered, jsonPath, asText: false);
 
         return new ResolvedIndexPart(true, sql, part.Descending, part.NullSort) { NameToken = containerColumn + string.Concat(jsonPath) };
     }
@@ -676,9 +680,9 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
     {
         needsBtreeGist = false;
 
-        var sourceConstraints = BuildDescriptors(source, typeMappingSource);
+        var sourceConstraints = ResolveSource(operations, () => BuildDescriptors(source, typeMappingSource));
         var targetConstraints = BuildDescriptors(target, typeMappingSource);
-        var sourceForeignKeys = BuildForeignKeyDescriptors(source, typeMappingSource, sourceConstraints);
+        var sourceForeignKeys = ResolveSource(operations, () => BuildForeignKeyDescriptors(source, typeMappingSource, sourceConstraints));
         var targetForeignKeys = BuildForeignKeyDescriptors(target, typeMappingSource, targetConstraints);
 
         // Target only — the source is history.
@@ -898,7 +902,7 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
     {
         needsBtreeGist = false;
 
-        var sourceConstraints = BuildExclusionDescriptors(source);
+        var sourceConstraints = ResolveSource(operations, () => BuildExclusionDescriptors(source));
         var targetConstraints = BuildExclusionDescriptors(target);
 
         // Target only — a snapshot that already contains a collision, or a filter refused since it
@@ -1210,7 +1214,11 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
                       ?? throw new InvalidOperationException(
                              $"Exclusion constraint property '{part.PropertyPath}' on entity '{entityType.Name}' has no column mapping for table '{table}'.");
 
-            parts.Add(new ResolvedExclusionPart(false, column, part.Operator) { StoreType = property.GetColumnType(storeObject) });
+            parts.Add(new ResolvedExclusionPart(false, RenderedColumn(column, storeObject), part.Operator)
+                      {
+                          StoreType = property.GetColumnType(storeObject),
+                          NameToken = column
+                      });
         }
 
         var name = def.Name ?? $"EX_{table}_{string.Join("_", parts.Select(ExclusionPartToken))}";
@@ -1274,7 +1282,7 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
     private static string ExclusionPartToken(ResolvedExclusionPart part)
     {
         if (!part.IsExpression)
-            return part.Value;
+            return part.NameToken ?? part.Value;
 
         var token = new string([.. part.Value.Where(char.IsLetterOrDigit)]);
         return token.Length > 0 ? token : "expr";
@@ -1328,7 +1336,7 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
         return set;
     }
 
-    private static TemporalDescriptor ResolveTemporal(
+    private TemporalDescriptor ResolveTemporal(
         IEntityType                  entityType,
         TemporalConstraintDefinition def,
         StoreObjectIdentifier        storeObject,
@@ -1362,7 +1370,14 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
 
         var name = def.Name ?? $"AK_{table}_{string.Join("_", keyColumns)}_{periodColumn}";
 
-        return new TemporalDescriptor(table, schema, name, keyColumns, periodColumn);
+        // Named from the columns as the declaring model has them, compared as the base operations
+        // leave them (RenderedColumn).
+        return new TemporalDescriptor(
+            table,
+            schema,
+            name,
+            keyColumns.ConvertAll(column => RenderedColumn(column, storeObject)),
+            RenderedColumn(periodColumn, storeObject));
     }
 
     private HashSet<TemporalForeignKeyDescriptor> BuildForeignKeyDescriptors(
@@ -1447,7 +1462,7 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
                };
     }
 
-    private static TemporalForeignKeyDescriptor ResolveForeignKey(
+    private TemporalForeignKeyDescriptor ResolveForeignKey(
         TemporalForeignKeyDefinition def,
         IEntityType                  dependentEntityType,
         StoreObjectIdentifier        dependentStoreObject,
@@ -1489,7 +1504,11 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
                                  ?? throw new InvalidOperationException(
                                         $"Temporal foreign key principal period property '{def.PrincipalPeriodProperty}' on entity '{principalEntityType.Name}' has no column mapping for table '{principalTable}'.");
 
-        if (!HasMatchingPrincipalTemporalConstraint(temporalConstraints, principalTable, principalSchema, principalColumns, principalPeriodColumn))
+        // The principal's constraints are compared as the base operations leave their columns.
+        var renderedPrincipalColumns = principalColumns.ConvertAll(column => RenderedColumn(column, principalStoreObject));
+        var renderedPrincipalPeriod  = RenderedColumn(principalPeriodColumn, principalStoreObject);
+
+        if (!HasMatchingPrincipalTemporalConstraint(temporalConstraints, principalTable, principalSchema, renderedPrincipalColumns, renderedPrincipalPeriod))
         {
             throw new InvalidOperationException(
                 $"Temporal foreign key '{def.Name ?? DefaultForeignKeyName(dependentTable, principalTable, dependentColumns, dependentPeriodColumn)}' " +
@@ -1507,10 +1526,10 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
             principalTable,
             principalSchema,
             name,
-            dependentColumns,
-            dependentPeriodColumn,
-            principalColumns,
-            principalPeriodColumn);
+            dependentColumns.ConvertAll(column => RenderedColumn(column, dependentStoreObject)),
+            RenderedColumn(dependentPeriodColumn, dependentStoreObject),
+            renderedPrincipalColumns,
+            renderedPrincipalPeriod);
     }
 
     private static List<string> ResolveColumns(
@@ -1682,6 +1701,10 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
         // Decides btree_gist only. Kept out of equality: a column type change is the base
         // operations' business, and PostgreSQL rebuilds the constraint's index with the column.
         public string? StoreType { get; init; }
+
+        // The column as the declaring model names it, for a default name: Value is renamed while
+        // the source is resolved (RenderedColumn). Kept out of equality.
+        public string? NameToken { get; init; }
 
         public bool Equals(ResolvedExclusionPart? other) =>
             other is not null
