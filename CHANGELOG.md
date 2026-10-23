@@ -28,6 +28,8 @@ Migrations keep the indexes and constraints a column change used to drop or rebu
 
 ### Fixed
 
+- Constraints: on PostgreSQL, a migration that drops a temporal foreign key's dependent table and drops or changes the principal's temporal constraint applies, where it failed at apply with 2BP01 ([#187](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/issues/187), [Temporal constraints](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/docs/postgresql-constraints.md#change-remove-or-rename-a-constraint)).
+- Constraints: on PostgreSQL, changing a temporal foreign key's key column type on both tables applies, where it failed at apply with 42804 when EF Core altered the dependent table first ([#188](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/issues/188), [Temporal constraints](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/docs/postgresql-constraints.md#change-remove-or-rename-a-constraint)).
 - Indexes: on SQL Server, a complex index whose filter or INCLUDE entry names a column in another case, `[note]` for `Note`, is dropped before an `ALTER COLUMN` or rename of that column and created after it, where the migration failed at apply, since SQL Server rejects either while the index exists (Msg 5074 for `ALTER COLUMN`) ([#189](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/issues/189)).
 
 ## [5.5.0] — 2026-10-20
