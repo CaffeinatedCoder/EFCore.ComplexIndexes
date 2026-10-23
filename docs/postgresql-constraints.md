@@ -106,6 +106,8 @@ only one `CREATE EXTENSION`.
 - **Changing the type of a key column on both tables**, `int` to `long` for example, drops the
   temporal foreign key before the columns change and adds it back after. PostgreSQL can't keep a key
   whose two sides have different types for the moment between the two changes (42804).
+  The same holds when the key's name changes in that migration, for example because you renamed the
+  principal table and the default name follows it.
 
 ## Temporal foreign keys (`PERIOD`) — requires PostgreSQL 18
 
