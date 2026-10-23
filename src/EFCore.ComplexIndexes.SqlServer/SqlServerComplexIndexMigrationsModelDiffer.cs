@@ -61,10 +61,51 @@ public class SqlServerComplexIndexMigrationsModelDiffer(
 
     /// <summary>
     /// An <c>ALTER COLUMN</c> on a column the index reads: SQL Server refuses it while the index
-    /// exists (Msg 5074), and EF drops only its own indexes around it.
+    /// exists (Msg 5074), and EF drops only its own indexes around it. Only an operation EF Core's
+    /// generator renders as one (<see cref="IssuesAlterColumn"/>): a default or a comment alone is
+    /// not, and rebuilt every index on the column for nothing (#186).
     /// </summary>
     protected override bool RequiresIndexRecreation(MigrationOperation operation, IReadOnlySet<string> columns)
-        => operation is AlterColumnOperation alter && columns.Contains(alter.Name);
+        => operation is AlterColumnOperation alter && columns.Contains(alter.Name) && IssuesAlterColumn(alter);
+
+    /// <summary>
+    /// Whether EF Core's SQL Server generator renders the operation as <c>ALTER COLUMN</c>, or as
+    /// <c>DROP COLUMN</c> plus <c>ADD COLUMN</c> for a computed column: its <c>alterStatementNeeded</c>
+    /// and computed-column checks (<c>SqlServerMigrationsSqlGenerator.Generate(AlterColumnOperation, …)</c>,
+    /// EF Core 10), with the column type as the operation carries it. A default is rendered as
+    /// <c>DROP CONSTRAINT</c> plus <c>ADD DEFAULT</c>, a comment as <c>sp_addextendedproperty</c>.
+    /// </summary>
+    private static bool IssuesAlterColumn(AlterColumnOperation alter)
+    {
+        var old = alter.OldColumn;
+
+        return alter.ComputedColumnSql != old.ComputedColumnSql
+            || alter.IsStored          != old.IsStored
+            || alter.ClrType           != old.ClrType
+            || alter.ColumnType        != old.ColumnType
+            || alter.IsUnicode         != old.IsUnicode
+            || alter.IsFixedLength     != old.IsFixedLength
+            || alter.MaxLength         != old.MaxLength
+            || alter.Precision         != old.Precision
+            || alter.Scale             != old.Scale
+            || alter.IsRowVersion      != old.IsRowVersion
+            || alter.IsNullable        != old.IsNullable
+            || alter.Collation         != old.Collation
+            || !AnnotationsEqual(alter, old);
+
+        // Every annotation but the identity seed, which EF Core changes with DBCC CHECKIDENT.
+        static bool AnnotationsEqual(ColumnOperation now, ColumnOperation before)
+        {
+            var current  = now.GetAnnotations().Where(a => a.Name != SqlServerIdentity).ToList();
+            var previous = before.GetAnnotations().Where(a => a.Name != SqlServerIdentity).ToList();
+
+            return current.Count == previous.Count
+                && current.All(a => before.FindAnnotation(a.Name) is { } match && AnnotationValues.ValuesEqual(a.Value, match.Value));
+        }
+    }
+
+    // SqlServerAnnotationNames.Identity, internal API in EF Core's SQL Server provider.
+    private const string SqlServerIdentity = "SqlServer:Identity";
 
     /// <summary>
     /// Also a rename of a column the index's filter reads, its implicit <c>IS NOT NULL</c> filter

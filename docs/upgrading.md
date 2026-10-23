@@ -438,9 +438,9 @@ know the index is missing, so re-create it by hand with `migrationBuilder.Sql(â€
 
 ## Changed answers in 5.6.0
 
-These change only migrations that rename a column, change a generated column or move a table into
-the default schema. A model you have not changed writes no migration, and the snapshot stays as it
-is. One of them, on PostgreSQL, also
+These change only migrations that rename a column, change a generated column, move a table into the
+default schema, or change a column's default or comment on SQL Server. A model you have not changed
+writes no migration, and the snapshot stays as it is. One of them, on PostgreSQL, also
 asks you to check your database for objects an earlier migration dropped.
 
 ### A column rename keeps what reads the column
@@ -513,3 +513,16 @@ On PostgreSQL the migration failed when it ran (42P01). Npgsql 10 writes no stat
 into the default schema, so the table stays where it is, and the indexes were created on a table of
 that name in the default schema, which does not exist. The migration now runs without an error, but
 the table still stays in its old schema. To move it, name the schema: `ToTable("bookings", "public")`.
+
+### A default or comment change keeps the index on SQL Server
+
+On SQL Server, when you change only a column's default (`HasDefaultValue`, `HasDefaultValueSql`) or
+its comment (`HasComment`), the migration now keeps the complex indexes on that column. EF Core
+writes a default as `DROP CONSTRAINT` plus `ADD DEFAULT` and a comment as `sp_addextendedproperty`,
+neither of which touches an index. Before, `migrations add` dropped each complex index on the column
+before the change and created it again after. On every edition but Enterprise that rebuild runs
+offline and locks the table.
+
+A change that EF Core writes as `ALTER COLUMN` still rebuilds the index, because SQL Server rejects
+it while the index exists (Msg 5074): the type, length, precision, nullability, collation, Unicode
+or fixed length, and a computed column's expression.
