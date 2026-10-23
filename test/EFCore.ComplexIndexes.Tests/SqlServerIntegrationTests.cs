@@ -817,6 +817,43 @@ public class SqlServerIntegrationTests
         CollectionAssert.AreEqual(new[] { "Name", "Contact_Email" }, AssertIndex("moved_subscribers", "ix_moved_name_email").Keys);
     }
 
+    // ── A default or comment change keeps the index (#186) ──
+
+    private abstract class FacetContext(DbContextOptions options, bool withDefault) : DbContext(options)
+    {
+        protected override void OnModelCreating(ModelBuilder modelBuilder)
+            => modelBuilder.Entity<Subscriber>(b =>
+            {
+                b.ToTable("facet_subscribers");
+                b.HasKey(x => x.Id).IsClustered(false);
+                var name = b.Property(x => x.Name).HasMaxLength(100);
+                if (withDefault)
+                    name.HasDefaultValue("anonymous").HasComment("shown when nothing else is");
+                b.ComplexProperty(x => x.Contact, c => c.Property(x => x.Email).HasMaxLength(256));
+                b.HasComplexCompositeIndex(x => new { x.Name, x.Contact.Email }, indexName: "ix_facet_name_email");
+            });
+    }
+
+    private class FacetV1Context(DbContextOptions<FacetV1Context> options) : FacetContext(options, withDefault: false);
+
+    private class FacetV2Context(DbContextOptions<FacetV2Context> options) : FacetContext(options, withDefault: true);
+
+    [TestMethod(DisplayName = "A default and comment change applies with the index in place (#186)")]
+    public void Default_and_comment_change_keeps_the_index()
+    {
+        var v1 = Model<FacetV1Context>();
+        Migrate(null, v1);
+
+        // ADD DEFAULT and sp_addextendedproperty, no ALTER COLUMN: the index stays.
+        var operations = MigrationHarness.SqlServerDiff(v1, Model<FacetV2Context>());
+        Assert.IsTrue(operations.OfType<AlterColumnOperation>().Any());
+        Assert.IsFalse(operations.Any(o => o is DropIndexOperation or CreateIndexOperation));
+
+        Migrate(v1, Model<FacetV2Context>());
+
+        CollectionAssert.AreEqual(new[] { "Name", "Contact_Email" }, AssertIndex("facet_subscribers", "ix_facet_name_email").Keys);
+    }
+
     // ── The clustered slot and key names (#90) ──
 
     private class OneClusteredContext(DbContextOptions options) : CustomerContext(options)
