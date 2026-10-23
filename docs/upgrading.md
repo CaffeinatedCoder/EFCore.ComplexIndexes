@@ -438,8 +438,9 @@ know the index is missing, so re-create it by hand with `migrationBuilder.Sql(â€
 
 ## Changed answers in 5.6.0
 
-This changes only migrations that rename a column. A model you have not changed writes no
-migration, and the snapshot stays as it is.
+These change only migrations that rename a column or change a generated column. A model you have
+not changed writes no migration, and the snapshot stays as it is. One of them, on PostgreSQL, also
+asks you to check your database for objects an earlier migration dropped.
 
 ### A column rename keeps what reads the column
 
@@ -467,3 +468,33 @@ Good to know:
   Otherwise `migrations add` fails and names the entry ([INCLUDE entries must name a column](#include-entries-must-name-a-column)).
 - **Anything else that changed** in the same migration still drops and re-creates the index. The
   drop runs before the rename and the create after it.
+
+### A changed generated column keeps what reads it
+
+On PostgreSQL, when you change a generated column's expression (`HasComputedColumnSql`), whether it
+is stored, or a `HasGeneratedTsVectorColumn` configuration, the migration now drops the complex
+indexes, exclusion constraints, temporal constraints and temporal foreign keys on that column before
+the change and adds them again after it. PostgreSQL cannot change a generation expression in place,
+so Npgsql drops the column and adds it again, which takes everything on the column with it. Npgsql
+then re-creates EF Core's own indexes only. Before, the migration ran without an error and left this
+package's indexes and constraints out. The snapshot still listed them, so no later migration added
+them back. A generated range column used as the period of an exclusion or temporal constraint is
+the usual case.
+
+Check a database that ran such a migration. List what the table has:
+
+```sql
+SELECT indexname FROM pg_indexes WHERE tablename = '<table>';
+SELECT conname FROM pg_constraint WHERE conrelid = '<table>'::regclass;
+```
+
+Compare it with what your model declares on the table. To add what is missing, take the statements
+from the script `GenerateCreateScript()` writes with `UseNpgsqlComplexIndexes()`, and put them in a
+new migration with `migrationBuilder.Sql(â€¦)`. An exclusion or temporal constraint fails to add over
+rows that overlap (23P01). Find and fix those rows first.
+
+Good to know:
+
+- **A column that becomes generated, or stops being one,** takes the same path.
+- **A temporal foreign key** goes with the constraint it references when that constraint is rebuilt,
+  and is added back after it.

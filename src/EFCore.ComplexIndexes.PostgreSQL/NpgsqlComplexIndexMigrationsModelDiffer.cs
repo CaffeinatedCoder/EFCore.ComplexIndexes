@@ -88,6 +88,44 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
     protected override bool CanRenameIndexes => true;
 
     /// <summary>
+    /// An <c>ALTER COLUMN</c> that Npgsql renders as <c>DROP COLUMN</c> plus <c>ADD COLUMN</c>
+    /// (<see cref="RecreatesColumn"/>), on a column the index reads: <c>DROP COLUMN</c> takes the
+    /// index with it, and Npgsql re-creates only EF Core's own (#184).
+    /// </summary>
+    protected override bool RequiresIndexRecreation(MigrationOperation operation, IReadOnlySet<string> columns)
+        => operation is AlterColumnOperation alter && columns.Contains(alter.Name) && RecreatesColumn(alter);
+
+    /// <summary>
+    /// Whether Npgsql renders the operation as <c>DROP COLUMN</c> plus <c>ADD COLUMN</c>: PostgreSQL
+    /// cannot change a generated column's expression or storage in place. Npgsql decides on
+    /// <c>ComputedColumnSql</c> and <c>IsStored</c>, after filling them in for a <c>tsvector</c>
+    /// column from its configuration and properties, so those annotations count too
+    /// (<c>NpgsqlMigrationsSqlGenerator.Generate(AlterColumnOperation, …)</c>, Npgsql 10).
+    /// </summary>
+    private static bool RecreatesColumn(AlterColumnOperation alter)
+        => alter.ComputedColumnSql != alter.OldColumn.ComputedColumnSql
+        || alter.IsStored          != alter.OldColumn.IsStored
+        || !AnnotationValues.ValuesEqual(alter[NpgsqlAnnotations.TsVectorConfig],     alter.OldColumn[NpgsqlAnnotations.TsVectorConfig])
+        || !AnnotationValues.ValuesEqual(alter[NpgsqlAnnotations.TsVectorProperties], alter.OldColumn[NpgsqlAnnotations.TsVectorProperties]);
+
+    // The columns the base operations drop and add again, by table as the target names it.
+    private static HashSet<(string Table, string? Schema, string Column)> RecreatedColumns(IReadOnlyList<MigrationOperation> operations)
+        => [.. operations.OfType<AlterColumnOperation>().Where(RecreatesColumn).Select(o => (o.Table, o.Schema, o.Name))];
+
+    // Whether a constraint of the target model reads a column the base operations drop and add
+    // again: one of its columns, or a column its expressions or filter name (ColumnsNamedIn, an
+    // over-approximation that costs at most a needless rebuild).
+    private static bool ReadsRecreatedColumn(
+        IRelationalModel                                         target,
+        HashSet<(string Table, string? Schema, string Column)> recreated,
+        string                                                   table,
+        string?                                                  schema,
+        IEnumerable<string>                                      columns,
+        string                                                   text = "")
+        => recreated.Count > 0
+        && columns.Concat(ColumnsNamedIn(target, table, schema, text)).Any(column => recreated.Contains((table, schema, column)));
+
+    /// <summary>
     /// PostgreSQL keeps index names unique among the relations of a schema, so the core's own checks
     /// already reject two complex indexes, or a complex and a native index, sharing a name anywhere
     /// in one schema. Everything else PostgreSQL shares that namespace with is left to
@@ -738,6 +776,18 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
 
         var pendingConstraintAdds = targetConstraints.Where(tgt => !normalizedConstraints.ContainsKey(tgt)).ToList();
 
+        // A column the base operations drop and add again takes the constraint, or the foreign key,
+        // with it (#184); a principal column that goes fails the drop instead (2BP01) while a
+        // foreign key references the constraint.
+        var recreated = RecreatedColumns(operations);
+        bool ConstraintInTheWay(TemporalDescriptor constraint)
+            => target is not null
+            && ReadsRecreatedColumn(target, recreated, constraint.Table, constraint.Schema, constraint.KeyColumns.Append(constraint.PeriodColumn));
+        bool ForeignKeyInTheWay(TemporalForeignKeyDescriptor foreignKey)
+            => target is not null
+            && ReadsRecreatedColumn(target, recreated, foreignKey.DependentTable, foreignKey.DependentSchema,
+                                    foreignKey.DependentColumns.Append(foreignKey.DependentPeriodColumn));
+
         // Drop/add pairs identical except for the name — typically default-named constraints on a
         // renamed table — become RENAME CONSTRAINT. Dependent foreign keys survive a rename, so
         // they don't churn (DependsOnChangedTemporalConstraint compares names insensitively). A
@@ -757,7 +807,8 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
                 continue;
 
             if (target is not null
-             && IsNameInUse(names ??= TargetNames(target), DefaultSchema(target), dropped.Name, renamed.Table, renamed.Schema, indexBacked: true))
+             && (ConstraintInTheWay(renamed)
+              || IsNameInUse(names ??= TargetNames(target), DefaultSchema(target), dropped.Name, renamed.Table, renamed.Schema, indexBacked: true)))
             {
                 rebuilt.Add(renamed);
                 continue;
@@ -772,6 +823,18 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
             pendingConstraintAdds.Remove(renamed);
         }
 
+        // An unchanged constraint in the way is dropped before the base operations and added after,
+        // and its foreign keys with it.
+        foreach (var (kept, origin) in normalizedConstraints)
+        {
+            if (targetConstraints.TryGetValue(kept, out var current) && !droppedTables.Contains(origin) && ConstraintInTheWay(current))
+            {
+                pendingConstraintDrops.Add(kept);
+                pendingConstraintAdds.Add(current);
+                rebuilt.Add(current);
+            }
+        }
+
         bool DependsOnRebuiltConstraint(TemporalForeignKeyDescriptor foreignKey)
             => rebuilt.Any(c => IsPrincipalConstraintFor(foreignKey, c));
 
@@ -784,13 +847,15 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
             .Where(src => (!droppedTables.Contains(normalizedForeignKeys[src]) || principalDropped.Contains(src))
                        && (!targetForeignKeys.Contains(src)
                         || DependsOnChangedTemporalConstraint(src, normalizedConstraints.Keys, targetConstraints)
-                        || DependsOnRebuiltConstraint(src)))
+                        || DependsOnRebuiltConstraint(src)
+                        || ForeignKeyInTheWay(src)))
             .ToList();
 
         var pendingForeignKeyAdds = targetForeignKeys
             .Where(tgt => !normalizedForeignKeys.ContainsKey(tgt)
                        || DependsOnChangedTemporalConstraint(tgt, normalizedConstraints.Keys, targetConstraints)
-                       || DependsOnRebuiltConstraint(tgt))
+                       || DependsOnRebuiltConstraint(tgt)
+                       || ForeignKeyInTheWay(tgt))
             .ToList();
 
         for (var i = pendingForeignKeyDrops.Count - 1; i >= 0; i--)
@@ -950,6 +1015,14 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
 
         var pendingAdds = targetConstraints.Where(tgt => !normalizedSource.ContainsKey(tgt)).ToList();
 
+        // A column the base operations drop and add again takes the constraint with it (#184).
+        var recreated = RecreatedColumns(operations);
+        bool InTheWay(ExclusionDescriptor constraint)
+            => target is not null
+            && ReadsRecreatedColumn(target, recreated, constraint.Table, constraint.Schema,
+                                    constraint.Parts.Where(p => !p.IsExpression).Select(p => p.Value),
+                                    string.Join(" ", constraint.Parts.Where(p => p.IsExpression).Select(p => p.Value).Append(constraint.Filter ?? "")));
+
         // A drop/add pair identical except for the name — typically a default-named constraint on a
         // renamed table — becomes RENAME CONSTRAINT: a catalog update instead of a gist rebuild.
         // Placed after the base operations, which may themselves rename the table — and may create
@@ -966,7 +1039,8 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
                 continue;
 
             if (target is not null
-             && IsNameInUse(names ??= TargetNames(target), DefaultSchema(target), dropped.Name, renamed.Table, renamed.Schema, indexBacked: true))
+             && (InTheWay(renamed)
+              || IsNameInUse(names ??= TargetNames(target), DefaultSchema(target), dropped.Name, renamed.Table, renamed.Schema, indexBacked: true)))
                 continue;
 
             renames.Add(new SqlOperation
@@ -976,6 +1050,16 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
                         });
             pendingDrops.RemoveAt(i);
             pendingAdds.Remove(renamed);
+        }
+
+        // An unchanged constraint in the way is dropped before the base operations and added after.
+        foreach (var (kept, origin) in normalizedSource)
+        {
+            if (targetConstraints.TryGetValue(kept, out var current) && !droppedTables.Contains(origin) && InTheWay(current))
+            {
+                pendingDrops.Add(kept);
+                pendingAdds.Add(current);
+            }
         }
 
         var drops = new List<MigrationOperation>();

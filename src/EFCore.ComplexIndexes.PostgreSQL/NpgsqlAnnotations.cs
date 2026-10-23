@@ -15,6 +15,16 @@ internal static class NpgsqlAnnotations
     public const string NullsDistinct       = "Npgsql:NullsDistinct";
 
     /// <summary>
+    /// A generated <c>tsvector</c> column's text search configuration and source properties.
+    /// Npgsql's generator turns them into the column's generation expression, so a change to
+    /// either drops and re-adds the column (#184).
+    /// </summary>
+    public const string TsVectorConfig      = "Npgsql:TsVectorConfig";
+
+    /// <inheritdoc cref="TsVectorConfig"/>
+    public const string TsVectorProperties  = "Npgsql:TsVectorProperties";
+
+    /// <summary>
     /// Per-column index collations. Npgsql's model key; on the operation Npgsql's generator reads
     /// <c>Relational:Collation</c> instead, which the differ maps to (see
     /// <c>NpgsqlComplexIndexMigrationsModelDiffer.ToOperationAnnotationName</c>).
