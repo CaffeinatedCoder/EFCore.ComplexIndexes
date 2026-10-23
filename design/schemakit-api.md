@@ -783,6 +783,24 @@ both sides of a diff.
   and never produces a diff.
 - Renamed tables: the source side resolves against the table's new identity, as 5.x does, so a
   table rename does not rebuild its indexes.
+- **Renamed columns (#182).** The source side resolves under the names EF's
+  `RenameColumnOperation`s give its columns, keyed by the source table: EF names the operation's
+  table as the target has it, and renames a table before its columns. Without this, a rename drops
+  and creates everything that reads the column, a rebuild under an exclusive lock, which 5.x did
+  until 5.6.0. Only what the resolver renders from a column takes the new name: key targets,
+  placeholders in `Sql.Raw` and predicates, JSON containers, INCLUDE lists, implicit filters.
+  `Name(declared, prefix, parts)` builds a default name from the source's own columns, so a default
+  name that follows the column is a `Rename`, as EF's own indexes are. Text in `Sql.Raw` outside a
+  placeholder is compared as written.
+- **What a database cannot keep through a base operation.** PostgreSQL and SQLite keep an index
+  through a column rename and an `ALTER COLUMN`. SQL Server rejects `sp_rename` of a column a filtered
+  index's predicate reads ("The index … is dependent on column …", the implicit `IS NOT NULL` filter
+  included), and `ALTER COLUMN` on any column an index reads (Msg 5074, #84, #141). A contributor
+  says so through an optional `ISchemaRebuildAround.RebuildAround(TDescriptor, MigrationOperation)
+  → bool`, and the kernel drops the object before EF's operations and creates it after them, even
+  when it is unchanged or only renamed. The answer does not depend on matching text, as it does in
+  5.x: each `SqlFragment` records the columns it reads, so the SQL Server index contributor checks
+  whether a renamed column is among its filter's.
 
 ### 9.5 Model diffing
 
@@ -1024,7 +1042,8 @@ public interface ISchemaDescriptor { TableRef Table { get; } Identifier Name { g
   [Section 11](#11-codometistypekit) weighs TypeKit's `[Record]` analyzer for it.
 - **Compatibility.** The contract is public under the same promise as the declarations, from 11.0.0.
   New capabilities arrive as optional interfaces a contributor may implement (`ISchemaDependent`,
-  the rewrite hook ROADMAP 7.7 needs, below-table placement beyond `BeforeTables`), never as members
+  `ISchemaRebuildAround` ([9.4](#94-resolution)), the rewrite hook ROADMAP 7.7 needs, below-table
+  placement beyond `BeforeTables`), never as members
   on `ISchemaContributor`, so a contributor compiled against 11.0.0 keeps working on every 11.x.
 
 ## 10. Extending SchemaKit from a CodoMetis package
