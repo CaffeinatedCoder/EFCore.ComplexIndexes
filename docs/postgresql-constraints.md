@@ -101,6 +101,11 @@ only one `CREATE EXTENSION`.
 - **Changing only the name** gives you `ALTER TABLE … RENAME CONSTRAINT`, instead of dropping and
   re-creating the constraint. That's the case when you pass a new `name:`, or rename the table, which
   changes the default name. Temporal foreign keys that depend on the constraint stay as they are.
+- **Removing a constraint along with the table that references it** drops the temporal foreign key
+  first, so the constraint can go.
+- **Changing the type of a key column on both tables**, `int` to `long` for example, drops the
+  temporal foreign key before the columns change and adds it back after. PostgreSQL can't keep a key
+  whose two sides have different types for the moment between the two changes (42804).
 
 ## Temporal foreign keys (`PERIOD`) — requires PostgreSQL 18
 

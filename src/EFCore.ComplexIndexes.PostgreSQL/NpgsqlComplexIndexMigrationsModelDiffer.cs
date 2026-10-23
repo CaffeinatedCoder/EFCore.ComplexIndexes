@@ -112,18 +112,24 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
     private static HashSet<(string Table, string? Schema, string Column)> RecreatedColumns(IReadOnlyList<MigrationOperation> operations)
         => [.. operations.OfType<AlterColumnOperation>().Where(RecreatesColumn).Select(o => (o.Table, o.Schema, o.Name))];
 
-    // Whether a constraint of the target model reads a column the base operations drop and add
-    // again: one of its columns, or a column its expressions or filter name (ColumnsNamedIn, an
-    // over-approximation that costs at most a needless rebuild).
-    private static bool ReadsRecreatedColumn(
+    // The columns whose type the base operations change, by table as the target names it.
+    private static HashSet<(string Table, string? Schema, string Column)> RetypedColumns(IReadOnlyList<MigrationOperation> operations)
+        => [.. operations.OfType<AlterColumnOperation>()
+                         .Where(o => o.ColumnType != o.OldColumn.ColumnType || o.ClrType != o.OldColumn.ClrType)
+                         .Select(o => (o.Table, o.Schema, o.Name))];
+
+    // Whether a constraint of the target model reads one of the given columns: one of its columns,
+    // or a column its expressions or filter name (ColumnsNamedIn, an over-approximation that costs
+    // at most a needless rebuild).
+    private static bool ReadsAnyOf(
         IRelationalModel                                         target,
-        HashSet<(string Table, string? Schema, string Column)> recreated,
+        HashSet<(string Table, string? Schema, string Column)> changed,
         string                                                   table,
         string?                                                  schema,
         IEnumerable<string>                                      columns,
         string                                                   text = "")
-        => recreated.Count > 0
-        && columns.Concat(ColumnsNamedIn(target, table, schema, text)).Any(column => recreated.Contains((table, schema, column)));
+        => changed.Count > 0
+        && columns.Concat(ColumnsNamedIn(target, table, schema, text)).Any(column => changed.Contains((table, schema, column)));
 
     /// <summary>
     /// PostgreSQL keeps index names unique among the relations of a schema, so the core's own checks
@@ -778,15 +784,27 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
 
         // A column the base operations drop and add again takes the constraint, or the foreign key,
         // with it (#184); a principal column that goes fails the drop instead (2BP01) while a
-        // foreign key references the constraint.
+        // foreign key references the constraint. A key column whose type changes is in the way of
+        // the foreign key on either side: PostgreSQL re-checks the key after each ALTER COLUMN,
+        // and a GiST key has no cross-type operator, so a dependent altered before its principal
+        // fails (42804, #188). The constraint's own index follows its column in place.
         var recreated = RecreatedColumns(operations);
+        var retyped   = RetypedColumns(operations);
         bool ConstraintInTheWay(TemporalDescriptor constraint)
             => target is not null
-            && ReadsRecreatedColumn(target, recreated, constraint.Table, constraint.Schema, constraint.KeyColumns.Append(constraint.PeriodColumn));
+            && ReadsAnyOf(target, recreated, constraint.Table, constraint.Schema, constraint.KeyColumns.Append(constraint.PeriodColumn));
         bool ForeignKeyInTheWay(TemporalForeignKeyDescriptor foreignKey)
-            => target is not null
-            && ReadsRecreatedColumn(target, recreated, foreignKey.DependentTable, foreignKey.DependentSchema,
-                                    foreignKey.DependentColumns.Append(foreignKey.DependentPeriodColumn));
+        {
+            if (target is null)
+                return false;
+
+            var dependent = foreignKey.DependentColumns.Append(foreignKey.DependentPeriodColumn).ToList();
+            var principal = foreignKey.PrincipalColumns.Append(foreignKey.PrincipalPeriodColumn).ToList();
+
+            return ReadsAnyOf(target, recreated, foreignKey.DependentTable, foreignKey.DependentSchema, dependent)
+                || ReadsAnyOf(target, retyped,   foreignKey.DependentTable, foreignKey.DependentSchema, dependent)
+                || ReadsAnyOf(target, retyped,   foreignKey.PrincipalTable, foreignKey.PrincipalSchema, principal);
+        }
 
         // Drop/add pairs identical except for the name — typically default-named constraints on a
         // renamed table — become RENAME CONSTRAINT. Dependent foreign keys survive a rename, so
@@ -838,13 +856,18 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
         bool DependsOnRebuiltConstraint(TemporalForeignKeyDescriptor foreignKey)
             => rebuilt.Any(c => IsPrincipalConstraintFor(foreignKey, c));
 
-        // A foreign key whose dependent table is dropped goes with it — unless its principal table is
-        // dropped too. EF orders the DropTable operations without knowing about the temporal foreign
-        // key, so when the principal's comes first it fails with 2BP01; dropping the key before the
-        // base operations makes the order irrelevant. Down() of the migration that created both
-        // tables has exactly this shape.
+        // A foreign key whose dependent table is dropped goes with it — unless something before the
+        // base operations needs it gone first. Its principal table dropped too: EF orders the
+        // DropTable operations without knowing about the temporal foreign key, so when the
+        // principal's comes first it fails with 2BP01 (Down() of the migration that created both
+        // tables has exactly this shape). Its principal constraint dropped, changed or rebuilt:
+        // that drop runs before the base operations, while the key still references it (2BP01,
+        // #187). A table drop does not need the key, so dropping it first is always safe.
         var pendingForeignKeyDrops = normalizedForeignKeys.Keys
-            .Where(src => (!droppedTables.Contains(normalizedForeignKeys[src]) || principalDropped.Contains(src))
+            .Where(src => (!droppedTables.Contains(normalizedForeignKeys[src])
+                        || principalDropped.Contains(src)
+                        || DependsOnChangedTemporalConstraint(src, normalizedConstraints.Keys, targetConstraints)
+                        || DependsOnRebuiltConstraint(src))
                        && (!targetForeignKeys.Contains(src)
                         || DependsOnChangedTemporalConstraint(src, normalizedConstraints.Keys, targetConstraints)
                         || DependsOnRebuiltConstraint(src)
@@ -1019,7 +1042,7 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
         var recreated = RecreatedColumns(operations);
         bool InTheWay(ExclusionDescriptor constraint)
             => target is not null
-            && ReadsRecreatedColumn(target, recreated, constraint.Table, constraint.Schema,
+            && ReadsAnyOf(target, recreated, constraint.Table, constraint.Schema,
                                     constraint.Parts.Where(p => !p.IsExpression).Select(p => p.Value),
                                     string.Join(" ", constraint.Parts.Where(p => p.IsExpression).Select(p => p.Value).Append(constraint.Filter ?? "")));
 
