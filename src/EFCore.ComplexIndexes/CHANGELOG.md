@@ -4,6 +4,10 @@ The changes that affect the core package, newest first. The
 [root changelog](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/CHANGELOG.md)
 covers all three packages, which share one version number and release together.
 
+## [5.6.1] — 2026-10-23
+
+No change in this package.
+
 ## [5.6.0] — 2026-10-23
 
 Migrations keep the indexes and constraints a column change used to drop or rebuild: [Changed answers in 5.6.0](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/docs/upgrading.md#changed-answers-in-560).
