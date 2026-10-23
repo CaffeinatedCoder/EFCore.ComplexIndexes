@@ -299,11 +299,12 @@ public class CustomMigrationsModelDiffer(
         // an index is dropped before the base operations and created after them, like a changed one.
         bool InTheWay(IndexDescriptor current)
         {
-            var columns = ColumnsReadBy(target!, current);
+            var columns       = ColumnsReadBy(target!, current);
+            var filterColumns = ColumnsNamedIn(target!, current, current.Filter ?? "");
             return operations.Any(o => o is ITableMigrationOperation table
                                     && table.Table  == current.TableName
                                     && table.Schema == current.Schema
-                                    && RequiresIndexRecreation(o, columns));
+                                    && RequiresIndexRecreation(o, columns, filterColumns));
         }
 
         if (target is not null)
@@ -638,6 +639,12 @@ public class CustomMigrationsModelDiffer(
     /// <returns><c>true</c> to drop the index before the base operations and create it after them.</returns>
     protected virtual bool RequiresIndexRecreation(MigrationOperation operation, IReadOnlySet<string> columns) => false;
 
+    // RequiresIndexRecreation with the columns the index's filter names, for a provider that treats
+    // those apart: SQL Server renames a key or included column under an index, and rejects renaming
+    // one a filter reads (#182). Internal, since the descriptor's filter is.
+    internal virtual bool RequiresIndexRecreation(MigrationOperation operation, IReadOnlySet<string> columns, IReadOnlySet<string> filterColumns)
+        => RequiresIndexRecreation(operation, columns);
+
     // Key columns, every included column (an array-valued provider option), and the table's
     // columns that the filter or an expression part names. The text match over-approximates, which
     // costs at most a needless rebuild.
@@ -650,11 +657,16 @@ public class CustomMigrationsModelDiffer(
                 columns.UnionWith(names);
 
         var text = string.Join(" ", index.Parts.Where(p => p.IsExpression).Select(p => p.Value).Append(index.Filter ?? ""));
-        if (text.Length > 0 && target.FindTable(index.TableName, index.Schema) is { } table)
-            columns.UnionWith(table.Columns.Select(c => c.Name).Where(name => text.Contains(name, StringComparison.Ordinal)));
+        columns.UnionWith(ColumnsNamedIn(target, index, text));
 
         return columns;
     }
+
+    // The table's columns whose names occur in the text: an over-approximation, like ColumnsReadBy.
+    private static HashSet<string> ColumnsNamedIn(IRelationalModel target, IndexDescriptor index, string text)
+        => text.Length > 0 && target.FindTable(index.TableName, index.Schema) is { } table
+               ? table.Columns.Select(c => c.Name).Where(name => text.Contains(name, StringComparison.Ordinal)).ToHashSet(StringComparer.Ordinal)
+               : [];
 
     /// <summary>
     /// Whether name-only index changes are emitted as <see cref="RenameIndexOperation"/> instead of

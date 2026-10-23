@@ -212,19 +212,31 @@ public class ColumnRenameTests
 
     private class SqlServerAfter(DbContextOptions<SqlServerAfter> options) : SqlServerMemberContext(options, Columns.After);
 
+    // sp_rename renames a key or included column under an index, and rejects a column a filtered
+    // index's predicate reads ("The index … is dependent on column …"). EF Core rebuilds its own
+    // filtered indexes on a rename because their filter text changes; these are rebuilt on purpose.
     [TestMethod]
-    public void SqlServer_renames_the_columns_and_the_default_name_only()
+    public void SqlServer_keeps_an_unfiltered_index_and_rebuilds_a_filtered_one_around_the_rename()
     {
         var operations = MigrationHarness.SqlServerDiff(
-            MigrationHarness.SqlServerModel<SqlServerBefore>(), MigrationHarness.SqlServerModel<SqlServerAfter>());
+            MigrationHarness.SqlServerModel<SqlServerBefore>(), MigrationHarness.SqlServerModel<SqlServerAfter>()).ToList();
 
         Assert.AreEqual(3, operations.OfType<RenameColumnOperation>().Count());
-        Assert.IsFalse(operations.OfType<DropIndexOperation>().Any(), string.Join(", ", operations.OfType<DropIndexOperation>().Select(o => o.Name)));
-        Assert.IsFalse(operations.OfType<CreateIndexOperation>().Any());
+        Assert.IsFalse(operations.OfType<RenameIndexOperation>().Any());
 
-        var rename = operations.OfType<RenameIndexOperation>().Single();
-        Assert.AreEqual("IX_members_email", rename.Name);
-        Assert.AreEqual("IX_members_email_address", rename.NewName);
+        // The implicit IS NOT NULL filter reads email, the declared filter deleted_at.
+        CollectionAssert.AreEquivalent(
+            new[] { "IX_members_email", "ix_members_code_email" },
+            operations.OfType<DropIndexOperation>().Select(o => o.Name).ToArray());
+        CollectionAssert.AreEquivalent(
+            new[] { "IX_members_email_address", "ix_members_code_email" },
+            operations.OfType<CreateIndexOperation>().Select(o => o.Name).ToArray());
+
+        Assert.IsTrue(operations.FindLastIndex(o => o is DropIndexOperation) < operations.FindIndex(o => o is RenameColumnOperation),
+                      "The filtered indexes are dropped before the columns are renamed.");
+        Assert.IsTrue(operations.FindIndex(o => o is CreateIndexOperation) > operations.FindLastIndex(o => o is RenameColumnOperation),
+                      "And created after.");
+        Assert.AreEqual("[deleted_on] IS NULL", operations.OfType<CreateIndexOperation>().Single(o => o.Name == "ix_members_code_email").Filter);
     }
 
     // ── SQLite (the core differ) ──────────────────────────────────────────────────────────────────

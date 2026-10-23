@@ -372,7 +372,7 @@ names the operation's table as the target has it), so a renamed column no longer
 everything that reads it. Only SQL this package renders from a column takes the new name — column
 parts, placeholders, JSON extractions, INCLUDE entries, the implicit filter — while names are built
 from the source's own columns (`ResolvedIndexPart.NameToken`), which turns a default name that
-follows the column into a rename. Verbatim SQL is compared as written. Because renames run after the base operations, a pair stays a
+follows the column into a rename. Verbatim SQL is compared as written. SQL Server is the exception for filters: `sp_rename` rejects a column a filtered index reads, so the SQL Server differ's internal `RequiresIndexRecreation` overload, which also gets the filter's columns, rebuilds such an index around the rename (the implicit `IS NOT NULL` filter included). Because renames run after the base operations, a pair stays a
 rename only when nothing before it needs the old object gone: not a base operation it is in the way of
 (`RequiresIndexRecreation`, #141), and not a name the target model gives to anything else in its namespace
 (`CustomMigrationsModelDiffer.IsIndexNameInUse`, the Npgsql `TargetNames` inventory for constraints, #143). Otherwise it

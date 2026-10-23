@@ -762,16 +762,19 @@ public class SqlServerIntegrationTests
 
     private class ColumnRenameV2Context(DbContextOptions<ColumnRenameV2Context> options) : ColumnRenameContext(options, "_v2");
 
-    [TestMethod(DisplayName = "A column rename keeps the indexes on the column, filtered ones included (#182)")]
+    [TestMethod(DisplayName = "A column rename keeps an unfiltered index and rebuilds a filtered one around it (#182)")]
     public void Column_rename_keeps_the_indexes()
     {
         var v1 = Model<ColumnRenameV1Context>();
         Migrate(null, v1);
 
+        // sp_rename rejects a column a filtered index reads ("The index … is dependent on column
+        // …"), the implicit IS NOT NULL filter included; a key or included column it renames.
         var operations = MigrationHarness.SqlServerDiff(v1, Model<ColumnRenameV2Context>());
-        Assert.IsFalse(operations.Any(o => o is DropIndexOperation or CreateIndexOperation));
+        CollectionAssert.AreEquivalent(
+            new[] { "IX_subscribers_email", "ix_name_email_active" },
+            operations.OfType<DropIndexOperation>().Select(o => o.Name).ToArray());
 
-        // sp_rename renames a column a filtered index reads, and rewrites the filter.
         Migrate(v1, Model<ColumnRenameV2Context>());
 
         Assert.AreEqual("([email_v2] IS NOT NULL)", AssertIndex("subscribers", "IX_subscribers_email_v2").Filter);
