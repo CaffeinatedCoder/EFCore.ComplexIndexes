@@ -783,6 +783,40 @@ public class SqlServerIntegrationTests
         CollectionAssert.AreEqual(new[] { "email_v2" }, AssertIndex("subscribers", "ix_name_covering").Included);
     }
 
+    // ── A move into the default schema keeps the indexes (#185) ──
+
+    private abstract class SchemaMoveContext(DbContextOptions options, string? schema) : DbContext(options)
+    {
+        protected override void OnModelCreating(ModelBuilder modelBuilder)
+            => modelBuilder.Entity<Subscriber>(b =>
+            {
+                b.ToTable("moved_subscribers", schema);
+                b.HasKey(x => x.Id).IsClustered(false);
+                b.Property(x => x.Name).HasMaxLength(100);
+                b.ComplexProperty(x => x.Contact, c => c.Property(x => x.Email).HasMaxLength(256));
+                b.HasComplexCompositeIndex(x => new { x.Name, x.Contact.Email }, indexName: "ix_moved_name_email");
+            });
+    }
+
+    private class SchemaMoveNorthContext(DbContextOptions<SchemaMoveNorthContext> options) : SchemaMoveContext(options, "north");
+
+    private class SchemaMoveDefaultContext(DbContextOptions<SchemaMoveDefaultContext> options) : SchemaMoveContext(options, null);
+
+    [TestMethod(DisplayName = "A move into the default schema keeps the indexes, with no rebuild (#185)")]
+    public void Move_into_default_schema_keeps_the_indexes()
+    {
+        var north = Model<SchemaMoveNorthContext>();
+        Migrate(null, north);
+
+        // ALTER SCHEMA … TRANSFER keeps a table's indexes.
+        var operations = MigrationHarness.SqlServerDiff(north, Model<SchemaMoveDefaultContext>());
+        Assert.IsFalse(operations.Any(o => o is DropIndexOperation or CreateIndexOperation));
+
+        Migrate(north, Model<SchemaMoveDefaultContext>());
+
+        CollectionAssert.AreEqual(new[] { "Name", "Contact_Email" }, AssertIndex("moved_subscribers", "ix_moved_name_email").Keys);
+    }
+
     // ── The clustered slot and key names (#90) ──
 
     private class OneClusteredContext(DbContextOptions options) : CustomerContext(options)

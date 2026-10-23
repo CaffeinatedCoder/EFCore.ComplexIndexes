@@ -1153,13 +1153,14 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
         }
     }
 
-    // Tables the base operations rename, keyed by old identity.
+    // Tables the base operations rename, keyed by old identity. NewSchema is the target's schema,
+    // null for the default one, as EF Core writes it (#185).
     private static Dictionary<(string Name, string? Schema), (string Name, string? Schema)> BuildRenamedTables(
         IReadOnlyList<MigrationOperation> operations)
     {
         var renamed = new Dictionary<(string Name, string? Schema), (string Name, string? Schema)>();
         foreach (var rename in operations.OfType<RenameTableOperation>())
-            renamed[(rename.Name, rename.Schema)] = (rename.NewName ?? rename.Name, rename.NewSchema ?? rename.Schema);
+            renamed[(rename.Name, rename.Schema)] = (rename.NewName ?? rename.Name, rename.NewSchema);
         return renamed;
     }
 

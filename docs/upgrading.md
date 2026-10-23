@@ -438,8 +438,9 @@ know the index is missing, so re-create it by hand with `migrationBuilder.Sql(â€
 
 ## Changed answers in 5.6.0
 
-These change only migrations that rename a column or change a generated column. A model you have
-not changed writes no migration, and the snapshot stays as it is. One of them, on PostgreSQL, also
+These change only migrations that rename a column, change a generated column or move a table into
+the default schema. A model you have not changed writes no migration, and the snapshot stays as it
+is. One of them, on PostgreSQL, also
 asks you to check your database for objects an earlier migration dropped.
 
 ### A column rename keeps what reads the column
@@ -498,3 +499,17 @@ Good to know:
 - **A column that becomes generated, or stops being one,** takes the same path.
 - **A temporal foreign key** goes with the constraint it references when that constraint is rebuilt,
   and is added back after it.
+
+### A move into the default schema keeps what is on the table
+
+When you move a table into the default schema, `ToTable("bookings", "north")` to
+`ToTable("bookings")` for example, the migration now keeps the complex indexes, exclusion
+constraints, temporal constraints and temporal foreign keys on it. Before, `migrations add` dropped
+each of them before the move and created it again after. On SQL Server that rebuilt every index for
+nothing, since `ALTER SCHEMA â€¦ TRANSFER` keeps a table's indexes. Moves between two named schemas,
+or out of the default schema, already kept them.
+
+On PostgreSQL the migration failed when it ran (42P01). Npgsql 10 writes no statement for a move
+into the default schema, so the table stays where it is, and the indexes were created on a table of
+that name in the default schema, which does not exist. The migration now runs without an error, but
+the table still stays in its old schema. To move it, name the schema: `ToTable("bookings", "public")`.
