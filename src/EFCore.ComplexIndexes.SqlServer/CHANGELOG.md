@@ -6,7 +6,7 @@ covers all three packages, which share one version number and release together.
 
 ## [5.6.0] — 2026-10-23
 
-A column rename keeps what reads the column: [Changed answers in 5.6.0](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/docs/upgrading.md#changed-answers-in-560).
+Migrations keep the indexes and constraints a column change used to drop or rebuild: [Changed answers in 5.6.0](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/docs/upgrading.md#changed-answers-in-560).
 
 ### Changed answers
 

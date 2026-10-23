@@ -300,7 +300,7 @@ public class CustomMigrationsModelDiffer(
         bool InTheWay(IndexDescriptor current)
         {
             var columns       = ColumnsReadBy(target!, current);
-            var filterColumns = ColumnsNamedIn(target!, current, current.Filter ?? "");
+            var filterColumns = ColumnsNamedIn(target!, current.TableName, current.Schema, current.Filter ?? "");
             return operations.Any(o => o is ITableMigrationOperation table
                                     && table.Table  == current.TableName
                                     && table.Schema == current.Schema
@@ -657,14 +657,15 @@ public class CustomMigrationsModelDiffer(
                 columns.UnionWith(names);
 
         var text = string.Join(" ", index.Parts.Where(p => p.IsExpression).Select(p => p.Value).Append(index.Filter ?? ""));
-        columns.UnionWith(ColumnsNamedIn(target, index, text));
+        columns.UnionWith(ColumnsNamedIn(target, index.TableName, index.Schema, text));
 
         return columns;
     }
 
     // The table's columns whose names occur in the text: an over-approximation, like ColumnsReadBy.
-    private static HashSet<string> ColumnsNamedIn(IRelationalModel target, IndexDescriptor index, string text)
-        => text.Length > 0 && target.FindTable(index.TableName, index.Schema) is { } table
+    // Internal for the PostgreSQL differ's constraints, which read columns the same way (#184).
+    internal static HashSet<string> ColumnsNamedIn(IRelationalModel target, string tableName, string? schema, string text)
+        => text.Length > 0 && target.FindTable(tableName, schema) is { } table
                ? table.Columns.Select(c => c.Name).Where(name => text.Contains(name, StringComparison.Ordinal)).ToHashSet(StringComparer.Ordinal)
                : [];
 

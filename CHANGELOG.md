@@ -17,10 +17,11 @@ upgrade does is in [docs/upgrading.md](docs/upgrading.md), and
 
 ## [5.6.0] — 2026-10-23
 
-A column rename keeps what reads the column: [Changed answers in 5.6.0](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/docs/upgrading.md#changed-answers-in-560).
+Migrations keep the indexes and constraints a column change used to drop or rebuild: [Changed answers in 5.6.0](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/docs/upgrading.md#changed-answers-in-560).
 
 ### Changed answers
 
+- Migrations: on PostgreSQL, changing a generated column's expression, its storage or a `tsvector` column's configuration drops the complex indexes, exclusion constraints, temporal constraints and temporal foreign keys on the column before the change and adds them after it. The migration dropped them with the column and never added them back ([#184](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/issues/184), [Upgrading](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/docs/upgrading.md#a-changed-generated-column-keeps-what-reads-it)).
 - Migrations: renaming a column keeps the complex indexes, exclusion constraints and temporal constraints that read it, and renames a default name that includes the column. They were dropped and created again around the rename. SQL Server still re-creates an index whose filter reads the column ([#182](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/issues/182), [Upgrading](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/docs/upgrading.md#a-column-rename-keeps-what-reads-the-column)).
 
 ## [5.5.0] — 2026-10-20
