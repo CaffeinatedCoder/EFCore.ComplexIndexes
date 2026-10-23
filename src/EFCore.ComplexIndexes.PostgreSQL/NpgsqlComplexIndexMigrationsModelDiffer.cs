@@ -1705,9 +1705,12 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
 
     private static IEntityType? ResolveEntityType(IModel model, string entityTypeName)
     {
-        var exact = model.GetEntityTypes()
-                         .Where(e => e.Name == entityTypeName || e.ClrType.FullName == entityTypeName)
-                         .ToList();
+        // The stored name is the CLR FullName; a snapshot's property-bag type knows only EF's name,
+        // which differs for a generic type (#197).
+        var efName = EntityTypeNames.FromClrFullName(entityTypeName);
+        var exact  = model.GetEntityTypes()
+                          .Where(e => e.Name == entityTypeName || e.Name == efName || e.ClrType.FullName == entityTypeName)
+                          .ToList();
 
         if (exact.Count > 0)
             return exact[0];

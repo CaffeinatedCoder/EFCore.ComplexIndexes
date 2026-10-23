@@ -600,7 +600,10 @@ the configured model when the snapshot was scaffolded. This matters more than ch
 `migrations add` succeeds because the snapshot does not hold the path yet, and everything that
 diffs the resulting snapshot fails — the next `migrations add`, `has-pending-model-changes`, and
 `Migrate()`, whose pending-changes check throws by default since EF Core 9. `SnapshotRoundTripTests`
-covers every place such a path can appear, at the top level and inside a complex type.
+covers every place such a path can appear, at the top level and inside a complex type. The same
+holds for names: a temporal foreign key stores its principal as the CLR `FullName`, which for a
+generic type is not EF's entity-type name, and a snapshot's property-bag type has no CLR type to
+match it against, so `EntityTypeNames.FromClrFullName` converts it by EF Core's own rule (#197).
 
 Typed filters (`NpgsqlTypedFilterExtensions`, PostgreSQL only) run
 `NpgsqlLinqIndexTranslator.TranslatePredicate` at the declaration and store the resulting
