@@ -130,13 +130,14 @@ public class CustomMigrationsModelDiffer(
     }
 
     // EF Core names the table of a RenameColumnOperation as the target has it, and renames a
-    // table before its columns; the key is the source's name for the table.
+    // table before its columns; the key is the source's name for the table. NewSchema is the
+    // target's schema, null for the default one (#185).
     private static Dictionary<(string Table, string? Schema, string Column), string>? SourceColumnRenames(
         IReadOnlyList<MigrationOperation> operations)
     {
         var sourceTables = new Dictionary<(string Name, string? Schema), (string Name, string? Schema)>();
         foreach (var rename in operations.OfType<RenameTableOperation>())
-            sourceTables[(rename.NewName ?? rename.Name, rename.NewSchema ?? rename.Schema)] = (rename.Name, rename.Schema);
+            sourceTables[(rename.NewName ?? rename.Name, rename.NewSchema)] = (rename.Name, rename.Schema);
 
         Dictionary<(string Table, string? Schema, string Column), string>? renames = null;
         foreach (var rename in operations.OfType<RenameColumnOperation>())
@@ -254,10 +255,12 @@ public class CustomMigrationsModelDiffer(
 
         // Tables the base operations rename: compare source indexes under their *new* table
         // identity so a renamed table doesn't drop and recreate every index it carries. Drops still
-        // execute against the old name — they run before the rename.
+        // execute against the old name — they run before the rename. EF Core writes the target's
+        // schema into NewSchema, null for the default one, so null is a move there, not "unchanged"
+        // (#185).
         var renamedTables = new Dictionary<(string Name, string? Schema), (string Name, string? Schema)>();
         foreach (var rename in operations.OfType<RenameTableOperation>())
-            renamedTables[(rename.Name, rename.Schema)] = (rename.NewName ?? rename.Name, rename.NewSchema ?? rename.Schema);
+            renamedTables[(rename.Name, rename.Schema)] = (rename.NewName ?? rename.Name, rename.NewSchema);
 
         // Normalized descriptor → the original (table, schema) a drop must target.
         var normalizedSource = new Dictionary<IndexDescriptor, (string Table, string? Schema)>();

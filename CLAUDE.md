@@ -361,7 +361,8 @@ The differ recognizes two churn cases: a drop/create pair identical except for t
 `RenameIndexOperation` when `CanRenameIndexes` is true (Npgsql and SqlServer satellites; core
 default false — SQLite's generator can't rename annotation-only indexes), and source indexes on
 tables the base operations rename are compared under their new table identity (drops still target
-the old name, since they run before the rename). The exclusion/temporal differs apply the same two
+the old name, since they run before the rename). EF writes the target's schema into `NewSchema`,
+null for the default one, so null is a move there and never "unchanged" (#185). The exclusion/temporal differs apply the same two
 rules: renamed-table normalization, and name-only changes → `ALTER TABLE … RENAME CONSTRAINT`
 (placed *after* the base ops — the rename references the new table name). A constraint rename
 keeps its dependents, so `DependsOnChangedTemporalConstraint` compares principal constraints
