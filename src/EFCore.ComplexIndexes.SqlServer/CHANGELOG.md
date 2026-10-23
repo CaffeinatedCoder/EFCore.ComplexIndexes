@@ -11,6 +11,7 @@ Migrations keep the indexes and constraints a column change used to drop or rebu
 ### Changed answers
 
 - Migrations: moving a table into the default schema keeps the complex indexes and constraints on it. They were dropped and created again, and on PostgreSQL, where Npgsql leaves such a table in its schema, the migration failed (42P01) ([#185](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/issues/185), [Upgrading](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/docs/upgrading.md#a-move-into-the-default-schema-keeps-what-is-on-the-table)).
+- Migrations: on SQL Server, changing only a column's default value, default SQL or comment keeps the complex indexes on it. Each was dropped and created again around the change, which issues no `ALTER COLUMN` ([#186](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/issues/186), [Upgrading](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/docs/upgrading.md#a-default-or-comment-change-keeps-the-index-on-sql-server)).
 - Migrations: renaming a column keeps the complex indexes, exclusion constraints and temporal constraints that read it, and renames a default name that includes the column. They were dropped and created again around the rename. SQL Server still re-creates an index whose filter reads the column ([#182](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/issues/182), [Upgrading](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/docs/upgrading.md#a-column-rename-keeps-what-reads-the-column)).
 
 ### Fixed
