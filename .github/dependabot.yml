@@ -50,6 +50,10 @@ updates:
     ignore:
       - dependency-name: "Microsoft.EntityFrameworkCore*"
       - dependency-name: "Npgsql.EntityFrameworkCore.PostgreSQL*"
+      # Pinned for a SQLite advisory (#202). 3.x renames the native package, and
+      # Microsoft.Data.Sqlite 10 is built against 2.x.
+      - dependency-name: "SQLitePCLRaw.*"
+        update-types: [ "version-update:semver-major" ]
       - dependency-name: "System.Security.Cryptography.Xml"
       - dependency-name: "System.Security.Cryptography.Pkcs"
 
