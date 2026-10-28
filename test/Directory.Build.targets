@@ -22,6 +22,9 @@
         <PackageReference Update="Microsoft.EntityFrameworkCore.Sqlite" Version="$(EfFloat)" />
         <PackageReference Update="Microsoft.EntityFrameworkCore.SqlServer" Version="$(EfFloat)" />
         <PackageReference Update="Microsoft.EntityFrameworkCore.Design" Version="$(EfFloat)" />
+        <!-- The SQLitePCLRaw pin exists for the floor (#202). A floated patch brings its own, and a
+             later one than the pin would fail the restore as a downgrade (NU1605). -->
+        <PackageReference Remove="SQLitePCLRaw.bundle_e_sqlite3" />
     </ItemGroup>
 
     <ItemGroup Condition="'$(NpgsqlEfFloat)' != ''">

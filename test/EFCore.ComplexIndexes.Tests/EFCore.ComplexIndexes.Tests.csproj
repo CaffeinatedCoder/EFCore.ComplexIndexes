@@ -22,6 +22,11 @@
             <PrivateAssets>none</PrivateAssets>
             <IncludeAssets>all</IncludeAssets>
         </PackageReference>
+        <!-- EF Core Sqlite 10.0.0 brings SQLitePCLRaw 2.1.11, whose native SQLite 3.49.1 has
+             CVE-2025-6965 (#202). 2.1.12 and later ship SQLite 3.53. Only the native library
+             moves: Microsoft.Data.Sqlite stays at the floor, and no package under src/ references
+             SQLite. test/Directory.Build.targets drops the pin when EF Core floats. -->
+        <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" Version="2.1.14" />
         <PackageReference Include="MSTest" Version="4.5.1" />
         <PackageReference Include="Testcontainers.MsSql" Version="4.16.0" />
         <PackageReference Include="Testcontainers.PostgreSql" Version="4.16.0" />
