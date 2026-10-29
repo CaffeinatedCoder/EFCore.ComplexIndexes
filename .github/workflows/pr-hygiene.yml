@@ -15,7 +15,7 @@ name: PR hygiene
 
 on:
   pull_request:
-    branches: [ "main", "release/**", "net11" ]
+    branches: [ "main", "release/**" ]
     types: [ opened, edited, reopened, synchronize, labeled, unlabeled ]
 
 permissions:
