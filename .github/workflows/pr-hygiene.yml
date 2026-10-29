@@ -21,9 +21,17 @@ on:
 permissions:
   contents: read
 
+# Runs one at a time per PR, never cancelling one that has started (#207). Measured on #208 on
+# 2026-10-29, which ran its own copy of this file. With `cancel-in-progress: true`, every run but the
+# last was cancelled: 152 of the 200 before it. With no group, all ran, in parallel and finishing in
+# any order, and a failing run of an older payload that finished after a passing one became the
+# check's result: the PR showed the failure, though its labels were in order by then. Serialized,
+# the run of the last event starts after every other has finished, so it decides the check. A
+# waiting run is still cancelled when a newer one queues; it never started, and the newer one reads
+# a later payload.
 concurrency:
   group: pr-hygiene-${{ github.event.pull_request.number }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   check:
