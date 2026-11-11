@@ -27,7 +27,7 @@
              moves: Microsoft.Data.Sqlite stays at the floor, and no package under src/ references
              SQLite. test/Directory.Build.targets drops the pin when EF Core floats. -->
         <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" Version="2.1.14" />
-        <PackageReference Include="MSTest" Version="4.5.1" />
+        <PackageReference Include="MSTest" Version="4.5.2" />
         <PackageReference Include="Testcontainers.MsSql" Version="4.16.0" />
         <PackageReference Include="Testcontainers.PostgreSql" Version="4.16.0" />
     </ItemGroup>
