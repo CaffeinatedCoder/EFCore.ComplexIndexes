@@ -35,7 +35,8 @@ body:
       description: >-
         This package serves EF Core 10 only, and from 5.5.0 it refuses to register on another
         major. On EF Core 11 or later, use `CodoMetis.EFCore.SchemaKit` instead, its successor
-        for EF Core 11.
+        for EF Core 11, and report its bugs in its own repository:
+        https://github.com/CaffeinatedCoder/CodoMetis.EFCore.SchemaKit
       options:
         - 10.x
     validations:

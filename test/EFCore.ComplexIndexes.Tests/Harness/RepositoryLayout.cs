@@ -53,13 +53,6 @@ internal static class RepositoryLayout
             "Directory.Build.props has no PackageValidationBaselineVersion and CHANGELOG.md documents no "
           + "stable release below the shipped version, so the latest release of this line is unknown.");
 
-    /// <summary>
-    /// The latest release of the other supported line, from <c>CompanionLineRelease</c>, or
-    /// <see langword="null"/> while only one line has a release. No branch can read the other
-    /// branch's props, so this is the one place a branch records what the other line last shipped.
-    /// </summary>
-    public static string? CompanionLineRelease => SharedProperty("CompanionLineRelease");
-
     private static string? SharedProperty(string name)
     {
         var value = XDocument.Load(BuildProps).Descendants(name).FirstOrDefault()?.Value.Trim();

@@ -329,13 +329,13 @@ public partial class PackagingConventionTests
 
         var parsed = ReleaseVersion.Parse(baseline);
 
-        // A preview is never a baseline: the 11 line validates against the latest stable release
-        // (10.0.0) until 11.0.0 ships, and SecurityPolicyConsistencyTests reads the same property
-        // as the latest release of this line, which a preview is not.
+        // A preview is never a baseline: package validation compares against a stable release, and
+        // SecurityPolicyConsistencyTests reads the same property as the latest release, which a
+        // preview is not.
         Assert.IsFalse(
             parsed.IsPrerelease,
             $"PackageValidationBaselineVersion is the preview {parsed}. The baseline is the latest stable "
-          + "release before the version being prepared (CONTRIBUTING.md, Releases on two lines).");
+          + "release before the version being prepared (CONTRIBUTING.md, Releases).");
 
         var allowed = new[] { shipped, previous }.Where(version => version is not null).Distinct().ToList();
 

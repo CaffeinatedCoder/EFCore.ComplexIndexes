@@ -35,7 +35,7 @@
 
         The changelogs and the packed READMEs link this repository at blob/main, which
         DocumentationLinkTests resolves against the checkout. A package can never change once
-        published, while main moves on: after the v5.5.0 tag it is the SchemaKit line and reshapes
+        published, while main moves on: a later release may rename a page or a heading under
         docs/. So the release notes and the packed README link the tag of the version being packed
         instead, the same tag the notes' footer links. On the tagged commit the checkout is the
         tag's tree, so the link test that passed there proves the frozen links resolve.
@@ -94,7 +94,7 @@
         bind to the core's internals through InternalsVisibleTo, so any later core would satisfy
         them while breaking them. Up to 5.4.1 that let a consumer who updated only a direct core
         reference run a 5.4.1 satellite against core 5.5.0 without a warning. The three packages are
-        released together under one version, patches on release/5.x included, so an exact pin never
+        released together under one version, patches included, so an exact pin never
         refuses a pair that was released. A range up to the next minor would admit core 5.5.1 under
         satellite 5.5.0, which is the pair this pin exists to keep out.
 
