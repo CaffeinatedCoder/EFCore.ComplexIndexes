@@ -88,6 +88,50 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
     protected override bool CanRenameIndexes => true;
 
     /// <summary>
+    /// An <c>ALTER COLUMN</c> that Npgsql renders as <c>DROP COLUMN</c> plus <c>ADD COLUMN</c>
+    /// (<see cref="RecreatesColumn"/>), on a column the index reads: <c>DROP COLUMN</c> takes the
+    /// index with it, and Npgsql re-creates only EF Core's own (#184).
+    /// </summary>
+    protected override bool RequiresIndexRecreation(MigrationOperation operation, IReadOnlySet<string> columns)
+        => operation is AlterColumnOperation alter && columns.Contains(alter.Name) && RecreatesColumn(alter);
+
+    /// <summary>
+    /// Whether Npgsql renders the operation as <c>DROP COLUMN</c> plus <c>ADD COLUMN</c>: PostgreSQL
+    /// cannot change a generated column's expression or storage in place. Npgsql decides on
+    /// <c>ComputedColumnSql</c> and <c>IsStored</c>, after filling them in for a <c>tsvector</c>
+    /// column from its configuration and properties, so those annotations count too
+    /// (<c>NpgsqlMigrationsSqlGenerator.Generate(AlterColumnOperation, …)</c>, Npgsql 10).
+    /// </summary>
+    private static bool RecreatesColumn(AlterColumnOperation alter)
+        => alter.ComputedColumnSql != alter.OldColumn.ComputedColumnSql
+        || alter.IsStored          != alter.OldColumn.IsStored
+        || !AnnotationValues.ValuesEqual(alter[NpgsqlAnnotations.TsVectorConfig],     alter.OldColumn[NpgsqlAnnotations.TsVectorConfig])
+        || !AnnotationValues.ValuesEqual(alter[NpgsqlAnnotations.TsVectorProperties], alter.OldColumn[NpgsqlAnnotations.TsVectorProperties]);
+
+    // The columns the base operations drop and add again, by table as the target names it.
+    private static HashSet<(string Table, string? Schema, string Column)> RecreatedColumns(IReadOnlyList<MigrationOperation> operations)
+        => [.. operations.OfType<AlterColumnOperation>().Where(RecreatesColumn).Select(o => (o.Table, o.Schema, o.Name))];
+
+    // The columns whose type the base operations change, by table as the target names it.
+    private static HashSet<(string Table, string? Schema, string Column)> RetypedColumns(IReadOnlyList<MigrationOperation> operations)
+        => [.. operations.OfType<AlterColumnOperation>()
+                         .Where(o => o.ColumnType != o.OldColumn.ColumnType || o.ClrType != o.OldColumn.ClrType)
+                         .Select(o => (o.Table, o.Schema, o.Name))];
+
+    // Whether a constraint of the target model reads one of the given columns: one of its columns,
+    // or a column its expressions or filter name (ColumnsNamedIn, an over-approximation that costs
+    // at most a needless rebuild).
+    private static bool ReadsAnyOf(
+        IRelationalModel                                         target,
+        HashSet<(string Table, string? Schema, string Column)> changed,
+        string                                                   table,
+        string?                                                  schema,
+        IEnumerable<string>                                      columns,
+        string                                                   text = "")
+        => changed.Count > 0
+        && columns.Concat(ColumnsNamedIn(target, table, schema, text)).Any(column => changed.Contains((table, schema, column)));
+
+    /// <summary>
     /// PostgreSQL keeps index names unique among the relations of a schema, so the core's own checks
     /// already reject two complex indexes, or a complex and a native index, sharing a name anywhere
     /// in one schema. Everything else PostgreSQL shares that namespace with is left to
@@ -162,7 +206,7 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
         object?               value,
         StoreObjectIdentifier storeObject
     ) => annotationName == NpgsqlAnnotations.IndexInclude
-             ? ResolveIncludeList(entityType, value, storeObject)
+             ? ResolveIncludeColumns(entityType, value, storeObject)
              : base.TransformIndexAnnotation(entityType, annotationName, value, storeObject);
 
     /// <summary>
@@ -228,15 +272,17 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
 
         var leaf = current.FindProperty(segments[^1]);
         if (leaf is null)
-            return ResolveComplexLeaf(current, segments[^1], containerColumn, jsonPath, part, queryAligned);
+            return ResolveComplexLeaf(current, segments[^1], containerColumn, jsonPath, part, queryAligned, storeObject);
 
         if (containerColumn is null)
             return null;
 
         jsonPath.Add(leaf.GetJsonPropertyName() ?? leaf.Name);
 
-        // Default index names come from the container and the path, never from the rendered SQL.
+        // Default index names come from the container and the path, never from the rendered SQL,
+        // and from the container as the declaring model names it (RenderedColumn).
         var nameToken = containerColumn + string.Concat(jsonPath);
+        containerColumn = RenderedColumn(containerColumn, storeObject);
 
         // Exclusion constraint filters are pinned to rendering 1, which renders every member as
         // text. A member the current rendering casts — a number, boolean, uuid or enum — compared
@@ -334,13 +380,14 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
     // that is the container column itself, so the index is a plain column index the stock generator
     // renders. Nested inside a document it is an extraction yielding jsonb rather than text.
     // A table-split complex property has no single column to stand for it, so that stays unresolved.
-    private static ResolvedIndexPart? ResolveComplexLeaf(
-        ITypeBase           current,
-        string              name,
-        string?             containerColumn,
-        List<string>        jsonPath,
-        IndexPartDefinition part,
-        bool                queryAligned
+    private ResolvedIndexPart? ResolveComplexLeaf(
+        ITypeBase             current,
+        string                name,
+        string?               containerColumn,
+        List<string>          jsonPath,
+        IndexPartDefinition   part,
+        bool                  queryAligned,
+        StoreObjectIdentifier storeObject
     )
     {
         var complexProperty = current.FindComplexProperty(name);
@@ -352,14 +399,15 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
             var column = complexProperty.ComplexType.GetContainerColumnName();
             return column is null
                        ? null
-                       : new ResolvedIndexPart(false, column, part.Descending, part.NullSort);
+                       : new ResolvedIndexPart(false, RenderedColumn(column, storeObject), part.Descending, part.NullSort) { NameToken = column };
         }
 
         jsonPath.Add(complexProperty.GetJsonPropertyName() ?? complexProperty.Name);
 
+        var rendered = RenderedColumn(containerColumn, storeObject);
         var sql = queryAligned
-                      ? BuildJsonPath(containerColumn, jsonPath, returnsText: false)
-                      : BuildLegacyJsonExtraction(containerColumn, jsonPath, asText: false);
+                      ? BuildJsonPath(rendered, jsonPath, returnsText: false)
+                      : BuildLegacyJsonExtraction(rendered, jsonPath, asText: false);
 
         return new ResolvedIndexPart(true, sql, part.Descending, part.NullSort) { NameToken = containerColumn + string.Concat(jsonPath) };
     }
@@ -676,9 +724,9 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
     {
         needsBtreeGist = false;
 
-        var sourceConstraints = BuildDescriptors(source, typeMappingSource);
+        var sourceConstraints = ResolveSource(operations, () => BuildDescriptors(source, typeMappingSource));
         var targetConstraints = BuildDescriptors(target, typeMappingSource);
-        var sourceForeignKeys = BuildForeignKeyDescriptors(source, typeMappingSource, sourceConstraints);
+        var sourceForeignKeys = ResolveSource(operations, () => BuildForeignKeyDescriptors(source, typeMappingSource, sourceConstraints));
         var targetForeignKeys = BuildForeignKeyDescriptors(target, typeMappingSource, targetConstraints);
 
         // Target only — the source is history.
@@ -734,6 +782,30 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
 
         var pendingConstraintAdds = targetConstraints.Where(tgt => !normalizedConstraints.ContainsKey(tgt)).ToList();
 
+        // A column the base operations drop and add again takes the constraint, or the foreign key,
+        // with it (#184); a principal column that goes fails the drop instead (2BP01) while a
+        // foreign key references the constraint. A key column whose type changes is in the way of
+        // the foreign key on either side: PostgreSQL re-checks the key after each ALTER COLUMN,
+        // and a GiST key has no cross-type operator, so a dependent altered before its principal
+        // fails (42804, #188). The constraint's own index follows its column in place.
+        var recreated = RecreatedColumns(operations);
+        var retyped   = RetypedColumns(operations);
+        bool ConstraintInTheWay(TemporalDescriptor constraint)
+            => target is not null
+            && ReadsAnyOf(target, recreated, constraint.Table, constraint.Schema, constraint.KeyColumns.Append(constraint.PeriodColumn));
+        bool ForeignKeyInTheWay(TemporalForeignKeyDescriptor foreignKey)
+        {
+            if (target is null)
+                return false;
+
+            var dependent = foreignKey.DependentColumns.Append(foreignKey.DependentPeriodColumn).ToList();
+            var principal = foreignKey.PrincipalColumns.Append(foreignKey.PrincipalPeriodColumn).ToList();
+
+            return ReadsAnyOf(target, recreated, foreignKey.DependentTable, foreignKey.DependentSchema, dependent)
+                || ReadsAnyOf(target, retyped,   foreignKey.DependentTable, foreignKey.DependentSchema, dependent)
+                || ReadsAnyOf(target, retyped,   foreignKey.PrincipalTable, foreignKey.PrincipalSchema, principal);
+        }
+
         // Drop/add pairs identical except for the name — typically default-named constraints on a
         // renamed table — become RENAME CONSTRAINT. Dependent foreign keys survive a rename, so
         // they don't churn (DependsOnChangedTemporalConstraint compares names insensitively). A
@@ -753,7 +825,8 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
                 continue;
 
             if (target is not null
-             && IsNameInUse(names ??= TargetNames(target), DefaultSchema(target), dropped.Name, renamed.Table, renamed.Schema, indexBacked: true))
+             && (ConstraintInTheWay(renamed)
+              || IsNameInUse(names ??= TargetNames(target), DefaultSchema(target), dropped.Name, renamed.Table, renamed.Schema, indexBacked: true)))
             {
                 rebuilt.Add(renamed);
                 continue;
@@ -768,25 +841,44 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
             pendingConstraintAdds.Remove(renamed);
         }
 
+        // An unchanged constraint in the way is dropped before the base operations and added after,
+        // and its foreign keys with it.
+        foreach (var (kept, origin) in normalizedConstraints)
+        {
+            if (targetConstraints.TryGetValue(kept, out var current) && !droppedTables.Contains(origin) && ConstraintInTheWay(current))
+            {
+                pendingConstraintDrops.Add(kept);
+                pendingConstraintAdds.Add(current);
+                rebuilt.Add(current);
+            }
+        }
+
         bool DependsOnRebuiltConstraint(TemporalForeignKeyDescriptor foreignKey)
             => rebuilt.Any(c => IsPrincipalConstraintFor(foreignKey, c));
 
-        // A foreign key whose dependent table is dropped goes with it — unless its principal table is
-        // dropped too. EF orders the DropTable operations without knowing about the temporal foreign
-        // key, so when the principal's comes first it fails with 2BP01; dropping the key before the
-        // base operations makes the order irrelevant. Down() of the migration that created both
-        // tables has exactly this shape.
+        // A foreign key whose dependent table is dropped goes with it — unless something before the
+        // base operations needs it gone first. Its principal table dropped too: EF orders the
+        // DropTable operations without knowing about the temporal foreign key, so when the
+        // principal's comes first it fails with 2BP01 (Down() of the migration that created both
+        // tables has exactly this shape). Its principal constraint dropped, changed or rebuilt:
+        // that drop runs before the base operations, while the key still references it (2BP01,
+        // #187). A table drop does not need the key, so dropping it first is always safe.
         var pendingForeignKeyDrops = normalizedForeignKeys.Keys
-            .Where(src => (!droppedTables.Contains(normalizedForeignKeys[src]) || principalDropped.Contains(src))
+            .Where(src => (!droppedTables.Contains(normalizedForeignKeys[src])
+                        || principalDropped.Contains(src)
+                        || DependsOnChangedTemporalConstraint(src, normalizedConstraints.Keys, targetConstraints)
+                        || DependsOnRebuiltConstraint(src))
                        && (!targetForeignKeys.Contains(src)
                         || DependsOnChangedTemporalConstraint(src, normalizedConstraints.Keys, targetConstraints)
-                        || DependsOnRebuiltConstraint(src)))
+                        || DependsOnRebuiltConstraint(src)
+                        || ForeignKeyInTheWay(src)))
             .ToList();
 
         var pendingForeignKeyAdds = targetForeignKeys
             .Where(tgt => !normalizedForeignKeys.ContainsKey(tgt)
                        || DependsOnChangedTemporalConstraint(tgt, normalizedConstraints.Keys, targetConstraints)
-                       || DependsOnRebuiltConstraint(tgt))
+                       || DependsOnRebuiltConstraint(tgt)
+                       || ForeignKeyInTheWay(tgt))
             .ToList();
 
         for (var i = pendingForeignKeyDrops.Count - 1; i >= 0; i--)
@@ -797,7 +889,14 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
             if (renamed is null)
                 continue;
 
-            if (target is not null
+            // A rename runs after the base operations, so the pair stays a drop and an add when
+            // anything before them needs the key gone, as the other rename paths ask (#196): a key
+            // column retyped or recreated, a principal constraint rebuilt or changed, or the old
+            // name taken by the target model (#143).
+            if (ForeignKeyInTheWay(renamed)
+             || DependsOnRebuiltConstraint(renamed)
+             || DependsOnChangedTemporalConstraint(renamed, normalizedConstraints.Keys, targetConstraints)
+             || target is not null
              && IsNameInUse(names ??= TargetNames(target), DefaultSchema(target), dropped.Name, renamed.DependentTable, renamed.DependentSchema, indexBacked: false))
                 continue;
 
@@ -898,7 +997,7 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
     {
         needsBtreeGist = false;
 
-        var sourceConstraints = BuildExclusionDescriptors(source);
+        var sourceConstraints = ResolveSource(operations, () => BuildExclusionDescriptors(source));
         var targetConstraints = BuildExclusionDescriptors(target);
 
         // Target only — a snapshot that already contains a collision, or a filter refused since it
@@ -946,6 +1045,14 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
 
         var pendingAdds = targetConstraints.Where(tgt => !normalizedSource.ContainsKey(tgt)).ToList();
 
+        // A column the base operations drop and add again takes the constraint with it (#184).
+        var recreated = RecreatedColumns(operations);
+        bool InTheWay(ExclusionDescriptor constraint)
+            => target is not null
+            && ReadsAnyOf(target, recreated, constraint.Table, constraint.Schema,
+                                    constraint.Parts.Where(p => !p.IsExpression).Select(p => p.Value),
+                                    string.Join(" ", constraint.Parts.Where(p => p.IsExpression).Select(p => p.Value).Append(constraint.Filter ?? "")));
+
         // A drop/add pair identical except for the name — typically a default-named constraint on a
         // renamed table — becomes RENAME CONSTRAINT: a catalog update instead of a gist rebuild.
         // Placed after the base operations, which may themselves rename the table — and may create
@@ -962,7 +1069,8 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
                 continue;
 
             if (target is not null
-             && IsNameInUse(names ??= TargetNames(target), DefaultSchema(target), dropped.Name, renamed.Table, renamed.Schema, indexBacked: true))
+             && (InTheWay(renamed)
+              || IsNameInUse(names ??= TargetNames(target), DefaultSchema(target), dropped.Name, renamed.Table, renamed.Schema, indexBacked: true)))
                 continue;
 
             renames.Add(new SqlOperation
@@ -972,6 +1080,16 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
                         });
             pendingDrops.RemoveAt(i);
             pendingAdds.Remove(renamed);
+        }
+
+        // An unchanged constraint in the way is dropped before the base operations and added after.
+        foreach (var (kept, origin) in normalizedSource)
+        {
+            if (targetConstraints.TryGetValue(kept, out var current) && !droppedTables.Contains(origin) && InTheWay(current))
+            {
+                pendingDrops.Add(kept);
+                pendingAdds.Add(current);
+            }
         }
 
         var drops = new List<MigrationOperation>();
@@ -1065,13 +1183,14 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
         }
     }
 
-    // Tables the base operations rename, keyed by old identity.
+    // Tables the base operations rename, keyed by old identity. NewSchema is the target's schema,
+    // null for the default one, as EF Core writes it (#185).
     private static Dictionary<(string Name, string? Schema), (string Name, string? Schema)> BuildRenamedTables(
         IReadOnlyList<MigrationOperation> operations)
     {
         var renamed = new Dictionary<(string Name, string? Schema), (string Name, string? Schema)>();
         foreach (var rename in operations.OfType<RenameTableOperation>())
-            renamed[(rename.Name, rename.Schema)] = (rename.NewName ?? rename.Name, rename.NewSchema ?? rename.Schema);
+            renamed[(rename.Name, rename.Schema)] = (rename.NewName ?? rename.Name, rename.NewSchema);
         return renamed;
     }
 
@@ -1210,7 +1329,11 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
                       ?? throw new InvalidOperationException(
                              $"Exclusion constraint property '{part.PropertyPath}' on entity '{entityType.Name}' has no column mapping for table '{table}'.");
 
-            parts.Add(new ResolvedExclusionPart(false, column, part.Operator) { StoreType = property.GetColumnType(storeObject) });
+            parts.Add(new ResolvedExclusionPart(false, RenderedColumn(column, storeObject), part.Operator)
+                      {
+                          StoreType = property.GetColumnType(storeObject),
+                          NameToken = column
+                      });
         }
 
         var name = def.Name ?? $"EX_{table}_{string.Join("_", parts.Select(ExclusionPartToken))}";
@@ -1274,7 +1397,7 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
     private static string ExclusionPartToken(ResolvedExclusionPart part)
     {
         if (!part.IsExpression)
-            return part.Value;
+            return part.NameToken ?? part.Value;
 
         var token = new string([.. part.Value.Where(char.IsLetterOrDigit)]);
         return token.Length > 0 ? token : "expr";
@@ -1328,7 +1451,7 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
         return set;
     }
 
-    private static TemporalDescriptor ResolveTemporal(
+    private TemporalDescriptor ResolveTemporal(
         IEntityType                  entityType,
         TemporalConstraintDefinition def,
         StoreObjectIdentifier        storeObject,
@@ -1362,7 +1485,14 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
 
         var name = def.Name ?? $"AK_{table}_{string.Join("_", keyColumns)}_{periodColumn}";
 
-        return new TemporalDescriptor(table, schema, name, keyColumns, periodColumn);
+        // Named from the columns as the declaring model has them, compared as the base operations
+        // leave them (RenderedColumn).
+        return new TemporalDescriptor(
+            table,
+            schema,
+            name,
+            keyColumns.ConvertAll(column => RenderedColumn(column, storeObject)),
+            RenderedColumn(periodColumn, storeObject));
     }
 
     private HashSet<TemporalForeignKeyDescriptor> BuildForeignKeyDescriptors(
@@ -1447,7 +1577,7 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
                };
     }
 
-    private static TemporalForeignKeyDescriptor ResolveForeignKey(
+    private TemporalForeignKeyDescriptor ResolveForeignKey(
         TemporalForeignKeyDefinition def,
         IEntityType                  dependentEntityType,
         StoreObjectIdentifier        dependentStoreObject,
@@ -1489,7 +1619,11 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
                                  ?? throw new InvalidOperationException(
                                         $"Temporal foreign key principal period property '{def.PrincipalPeriodProperty}' on entity '{principalEntityType.Name}' has no column mapping for table '{principalTable}'.");
 
-        if (!HasMatchingPrincipalTemporalConstraint(temporalConstraints, principalTable, principalSchema, principalColumns, principalPeriodColumn))
+        // The principal's constraints are compared as the base operations leave their columns.
+        var renderedPrincipalColumns = principalColumns.ConvertAll(column => RenderedColumn(column, principalStoreObject));
+        var renderedPrincipalPeriod  = RenderedColumn(principalPeriodColumn, principalStoreObject);
+
+        if (!HasMatchingPrincipalTemporalConstraint(temporalConstraints, principalTable, principalSchema, renderedPrincipalColumns, renderedPrincipalPeriod))
         {
             throw new InvalidOperationException(
                 $"Temporal foreign key '{def.Name ?? DefaultForeignKeyName(dependentTable, principalTable, dependentColumns, dependentPeriodColumn)}' " +
@@ -1507,10 +1641,10 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
             principalTable,
             principalSchema,
             name,
-            dependentColumns,
-            dependentPeriodColumn,
-            principalColumns,
-            principalPeriodColumn);
+            dependentColumns.ConvertAll(column => RenderedColumn(column, dependentStoreObject)),
+            RenderedColumn(dependentPeriodColumn, dependentStoreObject),
+            renderedPrincipalColumns,
+            renderedPrincipalPeriod);
     }
 
     private static List<string> ResolveColumns(
@@ -1578,9 +1712,12 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
 
     private static IEntityType? ResolveEntityType(IModel model, string entityTypeName)
     {
-        var exact = model.GetEntityTypes()
-                         .Where(e => e.Name == entityTypeName || e.ClrType.FullName == entityTypeName)
-                         .ToList();
+        // The stored name is the CLR FullName; a snapshot's property-bag type knows only EF's name,
+        // which differs for a generic type (#197).
+        var efName = EntityTypeNames.FromClrFullName(entityTypeName);
+        var exact  = model.GetEntityTypes()
+                          .Where(e => e.Name == entityTypeName || e.Name == efName || e.ClrType.FullName == entityTypeName)
+                          .ToList();
 
         if (exact.Count > 0)
             return exact[0];
@@ -1682,6 +1819,10 @@ public class NpgsqlComplexIndexMigrationsModelDiffer(
         // Decides btree_gist only. Kept out of equality: a column type change is the base
         // operations' business, and PostgreSQL rebuilds the constraint's index with the column.
         public string? StoreType { get; init; }
+
+        // The column as the declaring model names it, for a default name: Value is renamed while
+        // the source is resolved (RenderedColumn). Kept out of equality.
+        public string? NameToken { get; init; }
 
         public bool Equals(ResolvedExclusionPart? other) =>
             other is not null

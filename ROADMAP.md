@@ -19,6 +19,18 @@ features EF Core 11 and Npgsql 11 now do natively. D3 to D11 are decided accordi
 Where the text below says 6.0, 6.0.0 or 6.x, read SchemaKit 11.0.0 or 11.x. Where it plans a feature
 for 5.5.0 (sections 4.1 to 4.3), read SchemaKit 11.x.
 
+Updated 2026-11-11: **SchemaKit has its own repository, and `main` here carries 5.x again** (#211).
+The repository is
+[CaffeinatedCoder/CodoMetis.EFCore.SchemaKit](https://github.com/CaffeinatedCoder/CodoMetis.EFCore.SchemaKit);
+this one is not renamed and stays `EFCore.ComplexIndexes`. `release/5.x`, cut at the `v5.5.0` tag,
+is merged back into `main`, which takes fixes only until EF Core 10 leaves support. Three things
+below no longer hold and are marked where they stand: D7 (two lines in one repository, a
+cherry-pick per shared fix), the branching paragraph of section 3, and the repository rename in
+5.8. Everything else about SchemaKit (sections 4 to 10) is kept as the record of the 2026-10-19
+plan. That plan continues in the SchemaKit repository's `design/` folder and its issues, and this
+file is no longer where it changes. Where the text says SchemaKit ships from `main`, read: from its
+own repository.
+
 ## 1. Where things stand
 
 **EF Core 11 makes the package name wrong.** `Microsoft.EntityFrameworkCore` 11.0.0-rc.1 was
@@ -75,7 +87,7 @@ trigger does not, and is a non-goal.
 | D4 | The name | `CodoMetis.EFCore.SchemaKit` (5.1) | Decided 2026-10-19 |
 | D5 | Package count | Three: kernel, PostgreSQL, SQL Server; no per-feature packages | Decided 2026-10-19 |
 | D6 | Old ids | Stay the supported EF Core 10 package, fixes only after 5.5.0; deprecated with SchemaKit as the alternate only when EF Core 10 leaves support; no forwarder packages | Decided 2026-10-19 |
-| D7 | EF Core 10 and 11 | Two lines: `EFCore.ComplexIndexes` 5.x on EF Core 10 (`release/5.x`), SchemaKit 11.x on EF Core 11 (`main`); a fix for both goes to `main` first and is cherry-picked with `-x` | Decided 2026-10-19 |
+| D7 | EF Core 10 and 11 | Two lines: `EFCore.ComplexIndexes` 5.x on EF Core 10 (`release/5.x`), SchemaKit 11.x on EF Core 11 (`main`); a fix for both goes to `main` first and is cherry-picked with `-x` | Decided 2026-10-19; superseded 2026-11-11 by #211: SchemaKit in its own repository, 5.x on `main` |
 | D8 | SchemaKit timing | `11.0.0-preview.N` during the EF Core 11 RCs; 11.0.0 when ready, not tied to EF Core 11's GA day | Decided 2026-10-19 |
 | D9 | Version numbering | SchemaKit starts at 11.0.0 and tracks the EF Core major; the old ids continue as 5.x | Decided 2026-10-19 |
 | D10 | Plugin host | Contributors as multiple DI registrations through an options extension, as a **public** contract other packages build on (#56), plus a startup check that SchemaKit still owns the differ and the generator (#57) | Decided 2026-10-19 |
@@ -117,7 +129,9 @@ were planned for 5.5.0.
 The cost (a cherry-pick per fix that applies to both) is accepted. It stays small because 5.x takes
 fixes only after 5.5.0.
 
-**Branching.** At the `v5.5.0` tag, `release/5.x` is cut and `main` becomes SchemaKit (#38). The
+**Branching (superseded 2026-11-11, #211: `release/5.x` was merged back into `main`, and SchemaKit
+is built in its own repository).** The plan was to cut `release/5.x` at the `v5.5.0` tag and turn
+`main` into SchemaKit (#38). The
 long-lived `net11` branch of the 2026-10-18 plan is dropped, as in CodoMetis.ValueRanges.
 `release.yml` verifies the tag against `Directory.Build.props` on the tagged commit and discovers
 packages from the pack output, so both branches release unchanged. Branch protection and the
@@ -521,7 +535,7 @@ service after SchemaKit, is the ownership check (#57).
   diff against the old id, but the namespace change makes every member a break, so start the
   baseline at 11.0.0 instead (#46). `PackagingConventionTests`' baseline rule needs a "no baseline on a
   first release" branch.
-- **Repository.** Rename to `CodoMetis.EFCore.SchemaKit`; update `RepositoryUrl`, `PackageProjectUrl` and the
+- **Repository (superseded 2026-11-11, #211: a new repository, no rename).** Rename to `CodoMetis.EFCore.SchemaKit`; update `RepositoryUrl`, `PackageProjectUrl` and the
   absolute links in the packed READMEs; keep `SECURITY.md`'s table on both lines.
 - **SBOM.** Unchanged: `src/*/` is globbed and the id comes from the directory name.
 

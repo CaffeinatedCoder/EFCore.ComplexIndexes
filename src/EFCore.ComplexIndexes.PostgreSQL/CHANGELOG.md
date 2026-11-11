@@ -4,6 +4,27 @@ The changes that affect the PostgreSQL satellite, newest first. The
 [root changelog](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/CHANGELOG.md)
 covers all three packages, which share one version number and release together.
 
+## [5.6.1] — 2026-10-23
+
+No change in this package.
+
+## [5.6.0] — 2026-10-23
+
+Migrations keep the indexes and constraints a column change used to drop or rebuild: [Changed answers in 5.6.0](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/docs/upgrading.md#changed-answers-in-560).
+
+### Changed answers
+
+- Migrations: on PostgreSQL, changing a generated column's expression, its storage or a `tsvector` column's configuration drops the complex indexes, exclusion constraints, temporal constraints and temporal foreign keys on the column before the change and adds them after it. The migration dropped them with the column and never added them back ([#184](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/issues/184), [Upgrading](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/docs/upgrading.md#a-changed-generated-column-keeps-what-reads-it)).
+- Migrations: moving a table into the default schema keeps the complex indexes and constraints on it. They were dropped and created again, and on PostgreSQL, where Npgsql leaves such a table in its schema, the migration failed (42P01) ([#185](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/issues/185), [Upgrading](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/docs/upgrading.md#a-move-into-the-default-schema-keeps-what-is-on-the-table)).
+- Migrations: renaming a column keeps the complex indexes, exclusion constraints and temporal constraints that read it, and renames a default name that includes the column. They were dropped and created again around the rename. SQL Server still re-creates an index whose filter reads the column ([#182](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/issues/182), [Upgrading](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/docs/upgrading.md#a-column-rename-keeps-what-reads-the-column)).
+
+### Fixed
+
+- Constraints: on PostgreSQL, a temporal foreign key whose name changes in the same migration as a key column type change or a rebuild of its principal constraint applies. A renamed principal table changes a default name. It failed at apply with 42804 or 2BP01 ([#196](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/issues/196), [Temporal constraints](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/docs/postgresql-constraints.md#change-remove-or-rename-a-constraint)).
+- Constraints: on PostgreSQL, a temporal foreign key to a generic entity type such as `Room<int>` diffs from its migration snapshot, where every `migrations add` after the first, and `Migrate()`, failed because the principal could not be resolved ([#197](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/issues/197), [Temporal foreign keys](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/docs/postgresql-constraints.md#temporal-foreign-keys-period--requires-postgresql-18)).
+- Constraints: on PostgreSQL, a migration that drops a temporal foreign key's dependent table and drops or changes the principal's temporal constraint applies, where it failed at apply with 2BP01 ([#187](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/issues/187), [Temporal constraints](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/docs/postgresql-constraints.md#change-remove-or-rename-a-constraint)).
+- Constraints: on PostgreSQL, changing a temporal foreign key's key column type on both tables applies, where it failed at apply with 42804 when EF Core altered the dependent table first ([#188](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/issues/188), [Temporal constraints](https://github.com/CaffeinatedCoder/EFCore.ComplexIndexes/blob/main/docs/postgresql-constraints.md#change-remove-or-rename-a-constraint)).
+
 ## [5.5.0] — 2026-10-20
 
 The last 5.x minor with a change of its own: the line refuses EF Core 11, whose successor is `CodoMetis.EFCore.SchemaKit.PostgreSQL`.

@@ -80,7 +80,7 @@ EntglDb/BLite):
 - **`breaking`:** anything that changes an existing answer or signature.
 - **`stacked`** (PRs): the base is another open PR. Merge them in order.
 - **Releases:** each release is an `epic` with a milestone. Its work is attached as sub-issues and carries the same milestone. A PR carries its issue's labels and says `Closes #n`.
-- **Lines:** from November 2026 there are two supported lines, one per EF Core major (issue #3): `EFCore.ComplexIndexes` 5.x on EF Core 10 / .NET 10 (LTS, to 2028-11, branch `release/5.x`, fixes only after 5.5.0, #36) and its successor `CodoMetis.EFCore.SchemaKit` 11.x on EF Core 11 / .NET 11 (branch `main`, #37). A fix for both goes to `main` first and is cherry-picked with `-x`.
+- **Lines:** this repository ships one line, on `main`: `EFCore.ComplexIndexes` 5.x on EF Core 10 / .NET 10 (LTS, to 2028-11, fixes only after 5.5.0, #36). Its successor for EF Core 11, `CodoMetis.EFCore.SchemaKit`, has its own repository, with its own issues and labels (#211).
 
 `.github/workflows/pr-hygiene.yml` fails a PR with no type label, a bug with no severity, or no
 closing reference, and a `silent` PR into a minor without its row under `### Changed answers`.
@@ -107,47 +107,38 @@ It runs again when labels or the description change, so fixing it needs no new c
 
 ## Branches and releases
 
-Two lines are supported at once, one per EF Core major (decided 2026-10-19, #36):
+This repository ships one line: **`EFCore.ComplexIndexes` 5.x** on EF Core 10 / .NET 10, the LTS
+line, maintained until EF Core 10 leaves support in November 2028. From 5.5.0 it refuses EF Core 11
+at registration (#55) and takes fixes only (#36): loud ones in a patch or a minor, silent ones in a
+minor ([below](#a-fix-that-changes-an-answer)).
 
-- **`EFCore.ComplexIndexes` 5.x** on EF Core 10 / .NET 10, the LTS line, maintained until EF Core
-  10 leaves support in November 2028.
-- **`CodoMetis.EFCore.SchemaKit` 11.x** on EF Core 11 / .NET 11, a new package with a new API
-  (#37, #61). It starts at 11.0.0 and tracks the EF Core major.
+Its successor for EF Core 11, **`CodoMetis.EFCore.SchemaKit`**, is a new package with a new API. It
+has its own repository,
+[CaffeinatedCoder/CodoMetis.EFCore.SchemaKit](https://github.com/CaffeinatedCoder/CodoMetis.EFCore.SchemaKit),
+with its own branches, issues, releases and security policy (decided 2026-11-11, #211). Nothing of
+it is built, tracked or released here, and this repository keeps its name.
 
-Each line has a branch, a `Version` in its own `Directory.Build.props`, and the same CI
-(`dotnet.yml` and `pr-hygiene.yml` run on `main` and `release/**`), and a release is a `v*` tag on
-the branch it ships from. `release.yml` checks the tag against that `Version` and takes the release
+**`main`** is the 5.x line and the only long-lived branch. Work goes into a branch from `main` and
+a PR into `main`, where `dotnet.yml` and `pr-hygiene.yml` run. A release is a `v*` tag on `main`.
+`release.yml` checks the tag against `Version` in `Directory.Build.props` and takes the release
 notes from the `## [<version>] — <date>` section of the root `CHANGELOG.md`, so a mistyped tag or an
 undocumented version stops before anything is published.
 
-### Until the `v5.5.0` tag
+### Where `release/5.x` went
 
-**`main`** is 5.5.0, the last 5.x minor with a change of its own: it refuses EF Core 11 at
-registration (#55).
-
-### At the `v5.5.0` tag
-
-Cut **`release/5.x`** from the tag and protect it like `main`, with the required
-`CI` check. `main` then becomes SchemaKit (#38): new ids, `net11.0`, and
-`11.0.0-preview.N` releases during the EF Core 11 release candidates, tagged on `main`.
-
-### After the `v5.5.0` tag
-
-- **`release/5.x`** takes fixes only: loud ones in a patch or a minor, silent ones in a minor
-  ([below](#a-fix-that-changes-an-answer)). A fix to code both lines have goes into `main` first;
-  once it has merged, cherry-pick it onto a branch from `release/5.x` (`git cherry-pick -x`, so the
-  commit names the original) and open a PR into `release/5.x` that links the `main` PR. A change for
-  5.x only, such as its version bump or a fix to code SchemaKit does not have (its API is new, and it
-  leaves to EF Core 11 what EF Core 11 does natively, #39), goes straight into `release/5.x`.
-- **`main`** is the SchemaKit line: previews until 11.0.0, then its minors. Features go here.
+From the `v5.5.0` tag until 2026-11-11 the plan was two lines in this repository: 5.x on
+`release/5.x`, cut from that tag, and SchemaKit on `main`, with a fix for both merged into `main`
+first and cherry-picked. `v5.6.0` was tagged on `release/5.x` under that plan. When SchemaKit got
+its own repository, `release/5.x` was merged back into `main` (#211). Where an older issue, PR or
+commit names `release/5.x`, read `main`.
 
 ### A fix that changes an answer
 
 A silent fix is one where `migrations add` scaffolded, the migration applied, and the database
 ended up different from what the model declared; the fix changes what an existing model
-scaffolds. With two lines, a major means a new EF Core release and nothing else (11.0.0 is the
-first), so a silent fix has no major to wait for on the LTS line. From 5.5.0 on it ships as a
-minor on every line that has the code, never a patch, and that minor says so:
+scaffolds. 5.x has no next major: the package for the next EF Core major is SchemaKit, in its own
+repository. So a silent fix has no major to wait for. From 5.5.0 on it ships as a minor, never a
+patch, and that minor says so:
 
 - **Its changelog entry opens with `### Changed answers`**, directly after the entry's
   introduction and before any other section: one row per changed answer, each linking its issue
@@ -163,30 +154,26 @@ former value ("where it rendered …") anywhere else in the entry fails it too. 
 `.github/scripts/pr-hygiene.sh`: a PR labelled `silent` into a minor fails until its closing
 issue has a row there, and into a patch it fails outright.
 
-### Releases on two lines
+### Releases
 
-- **Issues:** `Closes #n` closes an issue only when the PR merges into the default branch, `main`.
-  An issue fixed only on a release branch is closed by hand, with a comment linking the PR.
-- **Changelog:** a change goes under the version it ships in on each branch, never under the next
-  major too. `main`'s changelog keeps every release's section, of both lines, so it stays the full
-  history; a cherry-pick brings its 5.x entry with it. A preview has its own
-  `## [11.0.0-preview.N] — <date>` section, which `release.yml` publishes as its notes, marked as a
-  prerelease. The package changelogs under `src/` follow the root, as they do today.
-- **GitHub's Latest release** stays on the newest stable version of the newest line.
-  `release.yml` publishes a preview with `--prerelease --latest=false`, and a stable tag with
-  `--latest=false` when the current Latest is newer by `sort -V`, so a 5.x patch tagged after
-  SchemaKit 11.0.0 leaves the repository page pointing at 11.x. `ReleaseWiringConventionTests` checks both.
-- **SECURITY.md's supported-versions table** names the latest release of each line on NuGet,
-  never the version being prepared, and has no row for a preview.
-  `SecurityPolicyConsistencyTests` compares this branch's row with
-  `PackageValidationBaselineVersion`, so move the row when you move the baseline, which happens
-  when you open the next version right after a tag; the tagged commit still names the release
-  before it. The other line's row is compared with `CompanionLineRelease` in
-  `Directory.Build.props`, which is empty until 11.0.0 ships. From then on, a minor on one line
-  moves its row and `CompanionLineRelease` on the other branch in a PR of its own. The table gets
-  its second row in the PR that opens the first version after `v11.0.0`.
+- **Issues:** `Closes #n` closes its issue when the PR merges into `main`, the default branch,
+  which is where every PR goes.
+- **Changelog:** a change goes under the version it ships in. The root changelog keeps every
+  release's section, so it stays the full history, and the package changelogs under `src/` follow
+  the root.
+- **Previews:** 5.x ships none. `release.yml` and `ChangelogConsistencyTests` still read a
+  `## [x.y.z-preview.N] — <date>` heading, which `release.yml` would publish as a prerelease.
+- **GitHub's Latest release** stays on the newest stable version. `release.yml` publishes a
+  preview with `--prerelease --latest=false`, and a stable tag with `--latest=false` when the
+  current Latest is newer by `sort -V`, so a tag pushed for an older version never takes the
+  repository page. `ReleaseWiringConventionTests` checks both.
+- **SECURITY.md's supported-versions table** has one supported row. It names the latest release on
+  NuGet, never the version being prepared, and never a preview.
+  `SecurityPolicyConsistencyTests` compares the row with `PackageValidationBaselineVersion`, so
+  move the row when you move the baseline, which happens when you open the next version right
+  after a tag; the tagged commit still names the release before it.
 - **The ApiCompat baseline** is the latest stable release before the version being prepared,
-  never a preview. SchemaKit has new ids and no baseline until 11.0.0 ships (#46).
+  never a preview.
 
 ## Changelog
 
@@ -197,7 +184,7 @@ changelog's section is also that package's release notes on nuget.org and in Vis
 pack and shown as plain text: links read as "text (url)" and code marks are dropped, so a line has
 to read well without them. A missing or empty section fails the pack.
 
-- **The heading** is `## [x.y.z] — yyyy-mm-dd` (`## [11.0.0-preview.N] — yyyy-mm-dd` for a
+- **The heading** is `## [x.y.z] — yyyy-mm-dd` (`## [x.y.z-preview.N] — yyyy-mm-dd` for a
   preview), and the root changelog ends with a `[x.y.z]: …/releases/tag/vx.y.z` definition per
   version. Write entries under the version being prepared, never under `Unreleased`. The date is
   the tag's: set it in all four changelogs in the commit that gets tagged, because no test or

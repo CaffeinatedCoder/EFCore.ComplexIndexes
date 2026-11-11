@@ -725,6 +725,135 @@ public class SqlServerIntegrationTests
         AssertDuplicateRefused("INSERT INTO customers (Id, name, email, phone) VALUES (NEWID(), N'b', N'a@x', N'2')");
     }
 
+    // ── A column rename keeps the indexes on the column (#182) ──
+
+    private class OptionalContact
+    {
+        public string? Email { get; set; }
+    }
+
+    private class Subscriber
+    {
+        public Guid            Id        { get; set; }
+        public string          Name      { get; set; } = "";
+        public DateTime?       RevokedAt { get; set; }
+        public OptionalContact Contact   { get; set; } = new();
+    }
+
+    private abstract class ColumnRenameContext(DbContextOptions options, string suffix) : DbContext(options)
+    {
+        protected override void OnModelCreating(ModelBuilder modelBuilder)
+            => modelBuilder.Entity<Subscriber>(b =>
+            {
+                b.ToTable("subscribers");
+                b.HasKey(x => x.Id).IsClustered(false);
+                b.Property(x => x.Name).HasColumnName("name" + suffix).HasMaxLength(100);
+                b.Property(x => x.RevokedAt).HasColumnName("revoked_at" + suffix);
+
+                // Unique over a nullable column: its implicit filter names the column too.
+                b.ComplexProperty(x => x.Contact, c => c.Property(x => x.Email).HasColumnName("email" + suffix).HasMaxLength(256).HasComplexIndex(isUnique: true));
+
+                b.HasComplexCompositeIndex(x => new { x.Name, x.Contact.Email }, filter: "{RevokedAt} IS NULL", indexName: "ix_name_email_active");
+                b.HasComplexIndex(x => x.Name, ix => ix.HasName("ix_name_covering").IncludeProperties("Contact.Email"));
+            });
+    }
+
+    private class ColumnRenameV1Context(DbContextOptions<ColumnRenameV1Context> options) : ColumnRenameContext(options, "");
+
+    private class ColumnRenameV2Context(DbContextOptions<ColumnRenameV2Context> options) : ColumnRenameContext(options, "_v2");
+
+    [TestMethod(DisplayName = "A column rename keeps an unfiltered index and rebuilds a filtered one around it (#182)")]
+    public void Column_rename_keeps_the_indexes()
+    {
+        var v1 = Model<ColumnRenameV1Context>();
+        Migrate(null, v1);
+
+        // sp_rename rejects a column a filtered index reads ("The index … is dependent on column
+        // …"), the implicit IS NOT NULL filter included; a key or included column it renames.
+        var operations = MigrationHarness.SqlServerDiff(v1, Model<ColumnRenameV2Context>());
+        CollectionAssert.AreEquivalent(
+            new[] { "IX_subscribers_email", "ix_name_email_active" },
+            operations.OfType<DropIndexOperation>().Select(o => o.Name).ToArray());
+
+        Migrate(v1, Model<ColumnRenameV2Context>());
+
+        Assert.AreEqual("([email_v2] IS NOT NULL)", AssertIndex("subscribers", "IX_subscribers_email_v2").Filter);
+        Assert.AreEqual("([revoked_at_v2] IS NULL)", AssertIndex("subscribers", "ix_name_email_active").Filter);
+        CollectionAssert.AreEqual(new[] { "name_v2", "email_v2" }, AssertIndex("subscribers", "ix_name_email_active").Keys);
+        CollectionAssert.AreEqual(new[] { "email_v2" }, AssertIndex("subscribers", "ix_name_covering").Included);
+    }
+
+    // ── A move into the default schema keeps the indexes (#185) ──
+
+    private abstract class SchemaMoveContext(DbContextOptions options, string? schema) : DbContext(options)
+    {
+        protected override void OnModelCreating(ModelBuilder modelBuilder)
+            => modelBuilder.Entity<Subscriber>(b =>
+            {
+                b.ToTable("moved_subscribers", schema);
+                b.HasKey(x => x.Id).IsClustered(false);
+                b.Property(x => x.Name).HasMaxLength(100);
+                b.ComplexProperty(x => x.Contact, c => c.Property(x => x.Email).HasMaxLength(256));
+                b.HasComplexCompositeIndex(x => new { x.Name, x.Contact.Email }, indexName: "ix_moved_name_email");
+            });
+    }
+
+    private class SchemaMoveNorthContext(DbContextOptions<SchemaMoveNorthContext> options) : SchemaMoveContext(options, "north");
+
+    private class SchemaMoveDefaultContext(DbContextOptions<SchemaMoveDefaultContext> options) : SchemaMoveContext(options, null);
+
+    [TestMethod(DisplayName = "A move into the default schema keeps the indexes, with no rebuild (#185)")]
+    public void Move_into_default_schema_keeps_the_indexes()
+    {
+        var north = Model<SchemaMoveNorthContext>();
+        Migrate(null, north);
+
+        // ALTER SCHEMA … TRANSFER keeps a table's indexes.
+        var operations = MigrationHarness.SqlServerDiff(north, Model<SchemaMoveDefaultContext>());
+        Assert.IsFalse(operations.Any(o => o is DropIndexOperation or CreateIndexOperation));
+
+        Migrate(north, Model<SchemaMoveDefaultContext>());
+
+        CollectionAssert.AreEqual(new[] { "Name", "Contact_Email" }, AssertIndex("moved_subscribers", "ix_moved_name_email").Keys);
+    }
+
+    // ── A default or comment change keeps the index (#186) ──
+
+    private abstract class FacetContext(DbContextOptions options, bool withDefault) : DbContext(options)
+    {
+        protected override void OnModelCreating(ModelBuilder modelBuilder)
+            => modelBuilder.Entity<Subscriber>(b =>
+            {
+                b.ToTable("facet_subscribers");
+                b.HasKey(x => x.Id).IsClustered(false);
+                var name = b.Property(x => x.Name).HasMaxLength(100);
+                if (withDefault)
+                    name.HasDefaultValue("anonymous").HasComment("shown when nothing else is");
+                b.ComplexProperty(x => x.Contact, c => c.Property(x => x.Email).HasMaxLength(256));
+                b.HasComplexCompositeIndex(x => new { x.Name, x.Contact.Email }, indexName: "ix_facet_name_email");
+            });
+    }
+
+    private class FacetV1Context(DbContextOptions<FacetV1Context> options) : FacetContext(options, withDefault: false);
+
+    private class FacetV2Context(DbContextOptions<FacetV2Context> options) : FacetContext(options, withDefault: true);
+
+    [TestMethod(DisplayName = "A default and comment change applies with the index in place (#186)")]
+    public void Default_and_comment_change_keeps_the_index()
+    {
+        var v1 = Model<FacetV1Context>();
+        Migrate(null, v1);
+
+        // ADD DEFAULT and sp_addextendedproperty, no ALTER COLUMN: the index stays.
+        var operations = MigrationHarness.SqlServerDiff(v1, Model<FacetV2Context>());
+        Assert.IsTrue(operations.OfType<AlterColumnOperation>().Any());
+        Assert.IsFalse(operations.Any(o => o is DropIndexOperation or CreateIndexOperation));
+
+        Migrate(v1, Model<FacetV2Context>());
+
+        CollectionAssert.AreEqual(new[] { "Name", "Contact_Email" }, AssertIndex("facet_subscribers", "ix_facet_name_email").Keys);
+    }
+
     // ── The clustered slot and key names (#90) ──
 
     private class OneClusteredContext(DbContextOptions options) : CustomerContext(options)

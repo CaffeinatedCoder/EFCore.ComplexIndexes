@@ -39,7 +39,7 @@ fi
 
 # A silent fix: a migration that scaffolded and applied cleanly while the database ended up
 # different from the model. Into a major (x.0.0, or its preview) it goes as it always has. From
-# 10.0.0 on a minor may carry one too, so the LTS line can receive it; the price is a row under
+# 5.5.0 on a minor may carry one too, since 5.x has no next major; the price is a row under
 # "### Changed answers" at the top of that version's entry, linking the issue, which
 # ChangelogConsistencyTests cannot tie to the label because a test does not see labels. A patch
 # may not carry one at all.

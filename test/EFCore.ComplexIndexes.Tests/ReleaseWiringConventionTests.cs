@@ -205,21 +205,22 @@ public class ReleaseWiringConventionTests
     }
 
     /// <summary>
-    /// The GitHub release keeps an older line and every preview off Latest.
+    /// The GitHub release keeps an older version and every preview off Latest.
     /// </summary>
     /// <remarks>
     /// GitHub marks each new release Latest unless told otherwise, and Latest is what the repository
-    /// page and <c>gh release view</c> show. With two supported lines, a 10.x patch tagged after
-    /// 11.0.0 is the ordinary case; left to the default it would make the LTS line the front page's
-    /// answer. A preview marked only <c>--prerelease</c> relies on the API refusing to make a
+    /// page and <c>gh release view</c> show. A tag for a version older than the current Latest (a
+    /// patch to an earlier minor, a tag pushed again after its release was deleted) would take the
+    /// front page if left to the default. The rule was written for two lines in one repository; with
+    /// one line (#211) it is the rare case, and still the wrong answer when it happens. A preview marked only <c>--prerelease</c> relies on the API refusing to make a
     /// prerelease Latest, so it says <c>--latest=false</c> as well. Only script lines are read: the
     /// comment above the step explains both rules, and a test matching it would pass with the code
     /// deleted. Each flag is looked for on its own branch, so moving <c>--latest=false</c> out of the
     /// older-than-Latest guard — which would keep every stable release off Latest — fails too.
     /// Ported from the sibling repository.
     /// </remarks>
-    [TestMethod(DisplayName = "The GitHub release keeps an older line and previews off Latest")]
-    public void Github_release_keeps_an_older_line_and_previews_off_latest()
+    [TestMethod(DisplayName = "The GitHub release keeps an older version and previews off Latest")]
+    public void Github_release_keeps_an_older_version_and_previews_off_latest()
     {
         var step = Regex.Match(ReleaseWorkflowText, @"(?ms)^      - name: Create the release if it does not exist\n.*?(?=^      - name: |\z)").Value;
 
@@ -260,7 +261,7 @@ public class ReleaseWiringConventionTests
         Assert.IsTrue(
             olderGuard > stable && olderFlags > olderGuard && olderFlags < guardEnd,
             "The release step no longer compares a stable version with the current Latest by `sort -V` "
-          + "and passes --latest=false only for an older one, so a 10.x tag pushed after 11.0.0 would "
+          + "and passes --latest=false only for an older one, so a tag for an older version would "
           + "take Latest (or no stable release ever would).");
 
         Assert.IsTrue(
@@ -276,8 +277,8 @@ public class ReleaseWiringConventionTests
     /// The GitHub release's notes link the docs at the tag, not at <c>main</c>.
     /// </summary>
     /// <remarks>
-    /// The changelog links this repository at <c>blob/main</c>, and <c>main</c> becomes another line
-    /// after the <c>v5.5.0</c> tag (#151). This runs the step's own lines, from the extraction up to
+    /// The changelog links this repository at <c>blob/main</c>, and <c>main</c> moves on after the
+    /// tag while the release's notes stay as published (#151). This runs the step's own lines, from the extraction up to
     /// the empty-notes check, against a seeded changelog: matching the text would pass with a rewrite
     /// that never matches, and the bash on a contributor's Mac (3.2) and on the runner (5.x) read a
     /// quoted replacement differently.

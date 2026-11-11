@@ -35,7 +35,7 @@ public class WorkflowGateConventionTests
         Assert.AreEqual(
             GateContext, workflow.Key(GateJob, "name"),
             $"The `{GateJob}` job no longer reports as '{GateContext}'. Branch protection requires that "
-          + "context on main and release/5.x; a renamed gate leaves it required and never reported, "
+          + "context on main; a renamed gate leaves it required and never reported, "
           + "which hangs every PR instead of failing it.");
 
         var others = workflow.Jobs.Keys.Where(job => job != GateJob && workflow.Key(job, "name") == GateContext).ToList();

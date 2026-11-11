@@ -42,29 +42,29 @@ the build reports green.
 
 ## CI
 
-`.github/workflows/dotnet.yml` runs on pushes and PRs to `main`, `release/**` and `net11`: the
-unit suite, the integration suites (Docker; `Integration (PostgreSQL 18)` and
+`.github/workflows/dotnet.yml` runs on pushes to `main` and PRs into it, the only long-lived
+branch: the unit suite, the integration suites (Docker; `Integration (PostgreSQL 18)` and
 `Integration (SQL Server 2022)`, one job each), then a pack job whose value is partly that packing
 *is* a check — a package declaring `PackageReadmeFile` without packing the file fails with
 NU5019. A last job, `CI`, needs every other job, runs `if: always()`, and passes only when each of
 them reports `success`. It is the one required build check (#110): GitHub reports a skipped job as
 Success even on a required check, whether its own condition or a failed dependency skipped it, so
-per-lane required checks cannot tell a skip from a pass, and every new lane cost an edit to every
-protected branch. `WorkflowGateConventionTests` holds that every job is in the gate's `needs`, that
+per-lane required checks cannot tell a skip from a pass, and every new lane cost an edit to branch
+protection. `WorkflowGateConventionTests` holds that every job is in the gate's `needs`, that
 it runs `always()`, and that it still reports as `CI`. Everything runs on
 ubuntu-latest.
 
 `dotnet.yml` is also a reusable workflow (`workflow_call`, #111). `release.yml` calls it before
 `verify`, so a release runs every lane on the tagged commit, gated by the same `CI` job, and
-`nightly.yml` calls it on the default branch every night and dispatches it on each release line
-that exists (`release/5.x` after the cut), waiting for the result. The nightly is for the inputs
+`nightly.yml` calls it on the default branch every night. `main` is the only line, so the nightly
+dispatches no other branch; it did while `release/5.x` held 5.x (#211). The nightly is for the inputs
 that change without a diff: `postgres:18`, `postgres:16` and `mssql/server:2022-latest` float within
 their version on purpose, as a consumer's server does, and each integration job writes the image
 digests it used to its summary so a failure with no diff can be compared with the last green run;
 the consumer smoke test restores from nuget.org, with `Microsoft.EntityFrameworkCore.Design` and
 `dotnet-ef` held to `10.*` so EF Core 11's release does not break it. A failed nightly opens an
 issue titled "Nightly CI failed", or comments on the open one: GitHub's own email reaches only the
-user who last edited the cron line, and nobody for the dispatched release-line runs. GitHub turns
+user who last edited the cron line. GitHub turns
 a public repository's schedules off after 60 days without activity, which is why nothing depends
 on the nightly. The SDK comes from `global.json`: `10.0.400` with `rollForward: latestPatch`, the
 band CI used before the pin, so patches arrive and a new feature band needs a PR (the consumer
@@ -166,9 +166,10 @@ than working around it: the workflow **file name** (`release.yml`), the **enviro
 Work is tracked as labelled GitHub issues, not as lists in docs or memory: open the issue before
 the work, give the PR the issue's labels and milestone, open it with `Closes #n`. The label legend
 is the pinned Roadmap issue (#35) and `CONTRIBUTING.md`'s Issues section; `AGENTS.md` has the
-rules in short form, including the two supported lines (`EFCore.ComplexIndexes` 5.x, LTS on EF
-Core 10, on `release/5.x` from the `v5.5.0` tag; `CodoMetis.EFCore.SchemaKit` 11.x on EF Core 11,
-on `main`), the branches, and the silent-fix rule: from 5.5.0 a fix that changes what an existing
+rules in short form, including the one line this repository ships (`EFCore.ComplexIndexes` 5.x,
+LTS on EF Core 10, on `main`, fixes only), the pointer to its successor for EF Core 11
+(`CodoMetis.EFCore.SchemaKit`, in its own repository, `CaffeinatedCoder/CodoMetis.EFCore.SchemaKit`,
+since 2026-11-11, #211; no SchemaKit work belongs here), and the silent-fix rule: from 5.5.0 a fix that changes what an existing
 model scaffolds ships as a minor, never a patch, with `### Changed answers` at the top of its
 changelog entry. `.github/workflows/pr-hygiene.yml` enforces the label half through
 `pr-hygiene.sh`; `ChangelogConsistencyTests` and `SecurityPolicyConsistencyTests` the file half.
@@ -190,7 +191,7 @@ below exist because ordinary review does not catch it.
 | `PackagingConventionTests` | Every package ships its own README as `PackageReadmeFile`; `.targets` ship to both `build/` and `buildTransitive/`, reference a real `IDesignTimeServices` in their own assembly, and set `ForProvider` on satellites but not on core. No public reference pins a package that only a `PrivateAssets=all` reference brings in, read from each project's restore graph (the shape of a Dependabot security pin; the one deliberate case, core's EF Core `Abstractions` ceiling, is named with its reason). Package validation is enabled and its baseline is the shipped version or the release before it, never older and never a preview — the baseline is what `dotnet pack` diffs the public surface against (CP0002 on a removed member), and one left behind stops seeing API added since it. Each package's packed nuspec carries its changelog's section for the shipped version as `releaseNotes`, compared against a renderer of the test's own; a seeded changelog covers what the real ones lack (a preview heading, `$(…)`, `%3B`, a neighbouring version that shares a prefix), the pack fails naming the file on each fail-closed case, and a changelog edit reaches a package repacked into the same folder. Each satellite's packed nuspec depends on the core at exactly its own version, `[x.y.z]` (#169). These pack for real (`--no-build`, in the test run's configuration). |
 | `ClaudeMdConsistencyTests` | This file. Prose cannot be asserted, so it checks the falsifiable parts: cited paths and file names exist, annotation keys under a prefix this repo owns are declared somewhere, `Type.Member` references resolve, and the stated size of the Npgsql whitelist matches it. Those are what a rename rots silently — and the count claim had already gone stale by two. |
 | `BuilderApiParityTests` | Every key in a satellite's annotation whitelist is reachable from a builder method. `SqlServer:DataCompression` sat whitelisted with no API for a full release; this catches that class of drift by invoking every builder extension and diffing the keys it sets. |
-| `SecurityPolicyConsistencyTests` | SECURITY.md's supported-versions table has one `✅` row per supported line, newest first: this branch's line from `PackageValidationBaselineVersion` (the release on NuGet, never the version being prepared), the other line's from `CompanionLineRelease`; never a preview, at most two, adjacent majors, and the `< x.y` row meets the oldest. Each supported line has a "**N.x** targets **EF Core M**" sentence, and for the line this branch prepares M is the core project's dependency floor. All prose a version bump forgets — the sibling repository shipped 6.2.0 with the table still saying 6.1.x. |
+| `SecurityPolicyConsistencyTests` | SECURITY.md's supported-versions table has exactly one `✅` row, the one line this repository ships: the minor of `PackageValidationBaselineVersion` (the release on NuGet, never the version being prepared), never a preview, and the `< x.y` row meets it. A second row fails, since SchemaKit's policy is in its own repository. The line has a "**N.x** targets **EF Core M**" sentence, and M is the core project's dependency floor. All prose a version bump forgets — the sibling repository shipped 6.2.0 with the table still saying 6.1.x. |
 | `WorkflowGateConventionTests` | The `CI` gate in `dotnet.yml`, the one required build check: every other job is in its `needs`, it runs `if: always()`, it reads `toJSON(needs)` whole and fails any result but `success`, and it reports as `CI` and no other job does. A lane the gate does not need can fail while the PR merges, and a gate without `always()` is skipped when a lane fails, which branch protection reads as Success. |
 | `CiInputConventionTests` | The CI inputs that change without a diff: `global.json` pins a feature band (`x.y.z00`, `latestPatch`), every job that checks out the repository sets up .NET from it and not from `dotnet-version`, and `nightly.yml` runs on a schedule, calls `dotnet.yml`, and its `report` job needs every other job, runs `always()`, fails on any result but `success` and can open the issue. A job back on `10.0.x` builds with whatever band the runner has and passes. |
 | `ReleaseWiringConventionTests` | The release path's silent failures: `release.yml` exists under the file name the nuget.org policy names, `publish` depends through `needs` on a job that calls `dotnet.yml` (which keeps its `workflow_call` trigger) with no `always()`, `failure()` or `cancelled()` on that path, the publish job is gated on the `nuget` environment, only that job holds `id-token: write`, no job holds both `id-token: write` and `contents: write`, the tag is checked against `Directory.Build.props`, the GitHub release step passes `--prerelease --latest=false` for a preview and `--latest=false` for a stable tag older than the current Latest by `sort -V` (script lines only — the comment above it explains both rules, and would pass with the code gone), the SBOM tool is pinned in the manifest, and no second publishing path exists under `scripts/`. Rename the environment and nothing else in the build notices — the next tag fails to publish with an authentication error that never mentions the rename. |
@@ -297,8 +298,8 @@ nuget.org renders the field as plain text (measured on real package pages and in
 `text (url)`, backticks, bold markers and the `### ` of a heading are dropped, and one footer line
 links the changelog at the version's tag. Links into this repository at `blob/main/` (or
 `tree/main/`) are rewritten to the version's tag, in the notes and in a copy of the README packed in
-place of the source (#151): a package cannot change once published, and after the `v5.5.0` tag
-`main` is SchemaKit. The release job in `release.yml` does the same to the GitHub release's notes.
+place of the source (#151): a package cannot change once published, while `main` moves on and may
+rename or reshape a page. The release job in `release.yml` does the same to the GitHub release's notes.
 The source keeps `blob/main`, which `DocumentationLinkTests` resolves against the checkout, so on
 the tagged commit that test is what proves the frozen links resolve. The pack fails, naming the file, on a missing changelog,
 a missing or empty section, or notes over nuget.org's 35,000 characters: a package with nothing in
@@ -326,7 +327,9 @@ are condensed on purpose and will overlap `docs/` — that duplication is the pr
 that stands alone, and `DocumentationLinkTests` guards only the part that fails silently.
 
 `ROADMAP.md` at the root is the plan for 5.5.0 and the 6.0 family: the delete guard, the generic
-descriptor differ, the rename under the `CodoMetis.` prefix, the plugin host and EF Core 11. It sits at the
+descriptor differ, the rename under the `CodoMetis.` prefix, the plugin host and EF Core 11. Since
+2026-11-11 the family is built in SchemaKit's own repository, and the roadmap stays here as the
+record of the plan, with a dated note at its top. It sits at the
 root on purpose: `DocumentationLinkTests` checks its links, but `DocumentationApiTests` scans only
 `docs/`, so the roadmap may name methods that do not exist yet.
 
@@ -361,11 +364,19 @@ The differ recognizes two churn cases: a drop/create pair identical except for t
 `RenameIndexOperation` when `CanRenameIndexes` is true (Npgsql and SqlServer satellites; core
 default false — SQLite's generator can't rename annotation-only indexes), and source indexes on
 tables the base operations rename are compared under their new table identity (drops still target
-the old name, since they run before the rename). The exclusion/temporal differs apply the same two
+the old name, since they run before the rename). EF writes the target's schema into `NewSchema`,
+null for the default one, so null is a move there and never "unchanged" (#185). The exclusion/temporal differs apply the same two
 rules: renamed-table normalization, and name-only changes → `ALTER TABLE … RENAME CONSTRAINT`
 (placed *after* the base ops — the rename references the new table name). A constraint rename
 keeps its dependents, so `DependsOnChangedTemporalConstraint` compares principal constraints
-name-insensitively and the temporal FK doesn't churn. Because renames run after the base operations, a pair stays a
+name-insensitively and the temporal FK doesn't churn. Column renames are the third case (#182):
+`CustomMigrationsModelDiffer.ResolveSource` resolves the source model under the names the base
+`RenameColumnOperation`s give its columns (`RenderedColumn`, keyed by the source table, since EF
+names the operation's table as the target has it), so a renamed column no longer drops and creates
+everything that reads it. Only SQL this package renders from a column takes the new name — column
+parts, placeholders, JSON extractions, INCLUDE entries, the implicit filter — while names are built
+from the source's own columns (`ResolvedIndexPart.NameToken`), which turns a default name that
+follows the column into a rename. Verbatim SQL is compared as written. SQL Server is the exception for filters: `sp_rename` rejects a column a filtered index reads, so the SQL Server differ's internal `RequiresIndexRecreation` overload, which also gets the filter's columns, rebuilds such an index around the rename (the implicit `IS NOT NULL` filter included). PostgreSQL has a case of its own (#184): Npgsql renders an `ALTER COLUMN` that changes a generated column's expression, storage or `tsvector` configuration as `DROP COLUMN` plus `ADD COLUMN`, and re-creates EF's indexes only. The Npgsql differ's `RequiresIndexRecreation` treats such an operation as in the way, and the exclusion and temporal diffs apply the same check (`RecreatedColumns`), a temporal FK going with a rebuilt principal constraint as it does for #143. The SQL Server differ's `ALTER COLUMN` rule asks what EF Core's generator asks (`IssuesAlterColumn`, its `alterStatementNeeded` plus the computed-column check), so a default or comment change alone keeps the index (#186). A temporal FK is also in the way of a type change on a key column on either side (`RetypedColumns`): a GiST key has no cross-type operator, so a dependent altered first failed with 42804 (#188). A temporal FK rename pair asks the same in-the-way and rebuilt-principal questions before it becomes `RENAME CONSTRAINT`, as the index, exclusion and temporal constraint rename paths do (#196). And it is dropped before the base operations whenever its principal constraint is, even when its dependent table is dropped (2BP01, #187). The columns an index reads (`ColumnsReadBy`, `ColumnsNamedIn`) compare under `IndexNameComparer`, so on SQL Server a filter's `[note]` reads the column `Note` (#189); on PostgreSQL a quoted `"note"` stays another column. Because renames run after the base operations, a pair stays a
 rename only when nothing before it needs the old object gone: not a base operation it is in the way of
 (`RequiresIndexRecreation`, #141), and not a name the target model gives to anything else in its namespace
 (`CustomMigrationsModelDiffer.IsIndexNameInUse`, the Npgsql `TargetNames` inventory for constraints, #143). Otherwise it
@@ -592,7 +603,10 @@ the configured model when the snapshot was scaffolded. This matters more than ch
 `migrations add` succeeds because the snapshot does not hold the path yet, and everything that
 diffs the resulting snapshot fails — the next `migrations add`, `has-pending-model-changes`, and
 `Migrate()`, whose pending-changes check throws by default since EF Core 9. `SnapshotRoundTripTests`
-covers every place such a path can appear, at the top level and inside a complex type.
+covers every place such a path can appear, at the top level and inside a complex type. The same
+holds for names: a temporal foreign key stores its principal as the CLR `FullName`, which for a
+generic type is not EF's entity-type name, and a snapshot's property-bag type has no CLR type to
+match it against, so `EntityTypeNames.FromClrFullName` converts it by EF Core's own rule (#197).
 
 Typed filters (`NpgsqlTypedFilterExtensions`, PostgreSQL only) run
 `NpgsqlLinqIndexTranslator.TranslatePredicate` at the declaration and store the resulting

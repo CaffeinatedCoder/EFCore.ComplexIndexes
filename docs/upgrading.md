@@ -435,3 +435,94 @@ in the model fails too: map the column, as a shadow property if nothing reads it
 holds such an entry still works, since the check covers your current model only. On PostgreSQL, check a database that a migration of that shape
 reached with `SELECT indexname FROM pg_indexes WHERE tablename = '<table>'`. The migrations do not
 know the index is missing, so re-create it by hand with `migrationBuilder.Sql(…)`.
+
+## Changed answers in 5.6.0
+
+These change only migrations that rename a column, change a generated column, move a table into the
+default schema, or change a column's default or comment on SQL Server. A model you have not changed
+writes no migration, and the snapshot stays as it is. One of them, on PostgreSQL, also
+asks you to check your database for objects an earlier migration dropped.
+
+### A column rename keeps what reads the column
+
+When you rename a column, the migration now renames the column and keeps the complex indexes,
+exclusion constraints and temporal constraints that read it. PostgreSQL and SQLite keep them through
+the rename, and so does SQL Server unless the index has a filter. Before, `migrations add` dropped
+each of them before the rename and created it again after. On a large table, that rebuild locked the
+table until the migration finished.
+
+A default name includes the column, so it changes with it. The migration renames that index or
+constraint, `IX_members_email` to `IX_members_email_address` for example. On SQLite, which cannot
+rename these indexes, the migration drops and re-creates it.
+
+Good to know:
+
+- **On SQL Server, an index whose filter reads the column is still re-created.** SQL Server rejects
+  the rename while such an index exists ("The index … is dependent on column …"), so the migration
+  drops it before the rename and creates it after. That includes the `IS NOT NULL` filter a unique
+  index over a nullable column gets. EF Core does the same for its own filtered indexes.
+- **SQL you wrote as a string is compared as written.** If you change `lower(code)` to
+  `lower(member_code)` in an expression index or a filter along with the rename, the migration
+  drops and re-creates that index. A `{Code}` placeholder or a typed lambda follows the rename
+  without a rebuild.
+- **An `IncludeProperties(…)` entry written as a column name** has to take the new name too.
+  Otherwise `migrations add` fails and names the entry ([INCLUDE entries must name a column](#include-entries-must-name-a-column)).
+- **Anything else that changed** in the same migration still drops and re-creates the index. The
+  drop runs before the rename and the create after it.
+
+### A changed generated column keeps what reads it
+
+On PostgreSQL, when you change a generated column's expression (`HasComputedColumnSql`), whether it
+is stored, or a `HasGeneratedTsVectorColumn` configuration, the migration now drops the complex
+indexes, exclusion constraints, temporal constraints and temporal foreign keys on that column before
+the change and adds them again after it. PostgreSQL cannot change a generation expression in place,
+so Npgsql drops the column and adds it again, which takes everything on the column with it. Npgsql
+then re-creates EF Core's own indexes only. Before, the migration ran without an error and left this
+package's indexes and constraints out. The snapshot still listed them, so no later migration added
+them back. A generated range column used as the period of an exclusion or temporal constraint is
+the usual case.
+
+Check a database that ran such a migration. List what the table has:
+
+```sql
+SELECT indexname FROM pg_indexes WHERE tablename = '<table>';
+SELECT conname FROM pg_constraint WHERE conrelid = '<table>'::regclass;
+```
+
+Compare it with what your model declares on the table. To add what is missing, take the statements
+from the script `GenerateCreateScript()` writes with `UseNpgsqlComplexIndexes()`, and put them in a
+new migration with `migrationBuilder.Sql(…)`. An exclusion or temporal constraint fails to add over
+rows that overlap (23P01). Find and fix those rows first.
+
+Good to know:
+
+- **A column that becomes generated, or stops being one,** takes the same path.
+- **A temporal foreign key** goes with the constraint it references when that constraint is rebuilt,
+  and is added back after it.
+
+### A move into the default schema keeps what is on the table
+
+When you move a table into the default schema, `ToTable("bookings", "north")` to
+`ToTable("bookings")` for example, the migration now keeps the complex indexes, exclusion
+constraints, temporal constraints and temporal foreign keys on it. Before, `migrations add` dropped
+each of them before the move and created it again after. On SQL Server that rebuilt every index for
+nothing, since `ALTER SCHEMA … TRANSFER` keeps a table's indexes. Moves between two named schemas,
+or out of the default schema, already kept them.
+
+On PostgreSQL the migration failed when it ran (42P01). Npgsql 10 writes no statement for a move
+into the default schema, so the table stays where it is, and the indexes were created on a table of
+that name in the default schema, which does not exist. The migration now runs without an error, but
+the table still stays in its old schema. To move it, name the schema: `ToTable("bookings", "public")`.
+
+### A default or comment change keeps the index on SQL Server
+
+On SQL Server, when you change only a column's default (`HasDefaultValue`, `HasDefaultValueSql`) or
+its comment (`HasComment`), the migration now keeps the complex indexes on that column. EF Core
+writes a default as `DROP CONSTRAINT` plus `ADD DEFAULT` and a comment as `sp_addextendedproperty`,
+neither of which touches an index. Before, `migrations add` dropped each complex index on the column
+before the change and created it again after. On every edition but Enterprise that rebuild runs
+offline and locks the table.
+
+A change that EF Core writes as `ALTER COLUMN` still rebuilds the index, because SQL Server rejects
+it while the index exists (Msg 5074): the type, length, precision, nullability, collation, Unicode
+or fixed length, and a computed column's expression.

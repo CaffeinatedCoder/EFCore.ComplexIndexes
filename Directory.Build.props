@@ -1,6 +1,6 @@
 <Project>
     <PropertyGroup>
-        <Version>5.5.0</Version>
+        <Version>5.6.1</Version>
         <Authors>CaffeinatedCoder</Authors>
         <PackageLicenseExpression>MIT</PackageLicenseExpression>
         <GenerateDocumentationFile>true</GenerateDocumentationFile>
@@ -63,19 +63,7 @@
     -->
     <PropertyGroup>
         <EnablePackageValidation>true</EnablePackageValidation>
-        <PackageValidationBaselineVersion>5.4.1</PackageValidationBaselineVersion>
-    </PropertyGroup>
-
-    <!--
-        The latest release of the other supported line, once there is one (CONTRIBUTING.md, Branches
-        and releases). Two lines ship from two branches, and no branch can read the other's props,
-        so this is the one place a branch records what the other line last shipped. Empty until
-        11.0.0 ships; from then on a minor on one line moves this value on the other branch, and
-        SecurityPolicyConsistencyTests holds the supported-versions table to it. Not a package
-        property: nothing in the build reads it.
-    -->
-    <PropertyGroup>
-        <CompanionLineRelease></CompanionLineRelease>
+        <PackageValidationBaselineVersion>5.6.0</PackageValidationBaselineVersion>
     </PropertyGroup>
 
     <!--
