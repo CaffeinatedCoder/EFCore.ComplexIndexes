@@ -361,11 +361,19 @@ The differ recognizes two churn cases: a drop/create pair identical except for t
 `RenameIndexOperation` when `CanRenameIndexes` is true (Npgsql and SqlServer satellites; core
 default false — SQLite's generator can't rename annotation-only indexes), and source indexes on
 tables the base operations rename are compared under their new table identity (drops still target
-the old name, since they run before the rename). The exclusion/temporal differs apply the same two
+the old name, since they run before the rename). EF writes the target's schema into `NewSchema`,
+null for the default one, so null is a move there and never "unchanged" (#185). The exclusion/temporal differs apply the same two
 rules: renamed-table normalization, and name-only changes → `ALTER TABLE … RENAME CONSTRAINT`
 (placed *after* the base ops — the rename references the new table name). A constraint rename
 keeps its dependents, so `DependsOnChangedTemporalConstraint` compares principal constraints
-name-insensitively and the temporal FK doesn't churn. Because renames run after the base operations, a pair stays a
+name-insensitively and the temporal FK doesn't churn. Column renames are the third case (#182):
+`CustomMigrationsModelDiffer.ResolveSource` resolves the source model under the names the base
+`RenameColumnOperation`s give its columns (`RenderedColumn`, keyed by the source table, since EF
+names the operation's table as the target has it), so a renamed column no longer drops and creates
+everything that reads it. Only SQL this package renders from a column takes the new name — column
+parts, placeholders, JSON extractions, INCLUDE entries, the implicit filter — while names are built
+from the source's own columns (`ResolvedIndexPart.NameToken`), which turns a default name that
+follows the column into a rename. Verbatim SQL is compared as written. SQL Server is the exception for filters: `sp_rename` rejects a column a filtered index reads, so the SQL Server differ's internal `RequiresIndexRecreation` overload, which also gets the filter's columns, rebuilds such an index around the rename (the implicit `IS NOT NULL` filter included). PostgreSQL has a case of its own (#184): Npgsql renders an `ALTER COLUMN` that changes a generated column's expression, storage or `tsvector` configuration as `DROP COLUMN` plus `ADD COLUMN`, and re-creates EF's indexes only. The Npgsql differ's `RequiresIndexRecreation` treats such an operation as in the way, and the exclusion and temporal diffs apply the same check (`RecreatedColumns`), a temporal FK going with a rebuilt principal constraint as it does for #143. The SQL Server differ's `ALTER COLUMN` rule asks what EF Core's generator asks (`IssuesAlterColumn`, its `alterStatementNeeded` plus the computed-column check), so a default or comment change alone keeps the index (#186). A temporal FK is also in the way of a type change on a key column on either side (`RetypedColumns`): a GiST key has no cross-type operator, so a dependent altered first failed with 42804 (#188). A temporal FK rename pair asks the same in-the-way and rebuilt-principal questions before it becomes `RENAME CONSTRAINT`, as the index, exclusion and temporal constraint rename paths do (#196). And it is dropped before the base operations whenever its principal constraint is, even when its dependent table is dropped (2BP01, #187). The columns an index reads (`ColumnsReadBy`, `ColumnsNamedIn`) compare under `IndexNameComparer`, so on SQL Server a filter's `[note]` reads the column `Note` (#189); on PostgreSQL a quoted `"note"` stays another column. Because renames run after the base operations, a pair stays a
 rename only when nothing before it needs the old object gone: not a base operation it is in the way of
 (`RequiresIndexRecreation`, #141), and not a name the target model gives to anything else in its namespace
 (`CustomMigrationsModelDiffer.IsIndexNameInUse`, the Npgsql `TargetNames` inventory for constraints, #143). Otherwise it
@@ -592,7 +600,10 @@ the configured model when the snapshot was scaffolded. This matters more than ch
 `migrations add` succeeds because the snapshot does not hold the path yet, and everything that
 diffs the resulting snapshot fails — the next `migrations add`, `has-pending-model-changes`, and
 `Migrate()`, whose pending-changes check throws by default since EF Core 9. `SnapshotRoundTripTests`
-covers every place such a path can appear, at the top level and inside a complex type.
+covers every place such a path can appear, at the top level and inside a complex type. The same
+holds for names: a temporal foreign key stores its principal as the CLR `FullName`, which for a
+generic type is not EF's entity-type name, and a snapshot's property-bag type has no CLR type to
+match it against, so `EntityTypeNames.FromClrFullName` converts it by EF Core's own rule (#197).
 
 Typed filters (`NpgsqlTypedFilterExtensions`, PostgreSQL only) run
 `NpgsqlLinqIndexTranslator.TranslatePredicate` at the declaration and store the resulting

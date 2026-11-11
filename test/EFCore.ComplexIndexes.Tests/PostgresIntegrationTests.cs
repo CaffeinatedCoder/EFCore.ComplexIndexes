@@ -423,11 +423,12 @@ public partial class PostgresIntegrationTests
     }
 
     // As `database update` applies a migration: in one transaction, so a failed statement leaves
-    // nothing behind.
-    private static void ApplyInTransaction(IReadOnlyList<MigrationOperation> operations)
+    // nothing behind. Pass the target model where Npgsql's generator reads it, as `database update`
+    // passes the migration's: it re-creates EF Core's own indexes on a column it drops and adds.
+    private static void ApplyInTransaction(IReadOnlyList<MigrationOperation> operations, IModel? model = null)
     {
         using var context  = new MigrationHarness.EmptyContext(new DbContextOptionsBuilder().UseNpgsql(ConnectionString).UseNpgsqlComplexIndexes().Options);
-        var       commands = context.GetService<IMigrationsSqlGenerator>().Generate(operations, model: null);
+        var       commands = context.GetService<IMigrationsSqlGenerator>().Generate(operations, model);
 
         using var connection = new NpgsqlConnection(ConnectionString);
         connection.Open();

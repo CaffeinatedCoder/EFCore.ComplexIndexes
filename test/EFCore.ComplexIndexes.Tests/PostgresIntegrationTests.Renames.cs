@@ -161,6 +161,80 @@ public partial class PostgresIntegrationTests
         Assert.AreEqual("f", ConstraintType("renamed_away_stays", "ra_fk_stays"));
     }
 
+    // ── A column rename keeps every index and constraint on the column (#182) ──
+
+    private class ColumnRenamed
+    {
+        public int                   Id        { get; set; }
+        public string                Code      { get; set; } = "";
+        public DateTime?             RevokedAt { get; set; }
+        public NpgsqlRange<DateOnly> Period    { get; set; }
+        public RenamedAwayEmail      Email     { get; set; } = new();
+    }
+
+    private abstract class ColumnRenamedContext(DbContextOptions options, string suffix) : DbContext(options)
+    {
+        protected override void OnModelCreating(ModelBuilder modelBuilder)
+            => modelBuilder.Entity<ColumnRenamed>(b =>
+            {
+                b.ToTable("column_renamed");
+                b.Property(x => x.Code).HasColumnName("code" + suffix);
+                b.Property(x => x.RevokedAt).HasColumnName("revoked_at" + suffix);
+                b.Property(x => x.Period).HasColumnName("period" + suffix);
+                b.ComplexProperty(x => x.Email, c => c.Property(x => x.Value).HasColumnName("email" + suffix).HasComplexIndex(isUnique: true));
+
+                b.HasComplexCompositeIndex(x => new { x.Code, x.Email.Value }, filter: "{RevokedAt} IS NULL", indexName: "cr_ix_code_email");
+                b.HasComplexIndex(x => x.Code, ix => ix.HasName("cr_ix_code_incl").IncludeProperties("Email.Value"));
+                b.HasExpressionIndex(x => x.Code.ToLower(), indexName: "cr_ix_code_lower");
+                b.HasExclusionConstraint(x => x.Code, x => x.Period, filter: "{RevokedAt} IS NULL", name: "cr_ex_code_period");
+                b.HasTemporalConstraint(x => x.Email.Value, x => x.Period, name: "cr_uq_email_period");
+            });
+    }
+
+    private class ColumnRenamedV1Context(DbContextOptions<ColumnRenamedV1Context> options) : ColumnRenamedContext(options, "");
+
+    private class ColumnRenamedV2Context(DbContextOptions<ColumnRenamedV2Context> options) : ColumnRenamedContext(options, "_v2");
+
+    [TestMethod(DisplayName = "A column rename keeps every complex index and constraint on the column (#182)")]
+    public void Column_rename_keeps_indexes_and_constraints()
+    {
+        var v1 = BuildRelationalModel<ColumnRenamedV1Context>();
+        Apply(GetDifferences(null, v1));
+
+        string[] indexes     = ["cr_ix_code_email", "cr_ix_code_incl", "cr_ix_code_lower", "cr_ex_code_period", "cr_uq_email_period"];
+        var      before      = indexes.ToDictionary(index => index, RelationOid);
+        var      defaultName = RelationOid("IX_column_renamed_email");
+
+        ApplyInTransaction(GetDifferences(v1, BuildRelationalModel<ColumnRenamedV2Context>()));
+
+        // The same relation, not one created again under the same name.
+        foreach (var index in indexes)
+            Assert.AreEqual(before[index], RelationOid(index), $"'{index}' was rebuilt.");
+        Assert.AreEqual(defaultName, RelationOid("IX_column_renamed_email_v2"), "The default-named index was rebuilt, not renamed.");
+
+        StringAssert.Contains(IndexDefinition("cr_ix_code_email"), "WHERE (revoked_at_v2 IS NULL)");
+        StringAssert.Contains(IndexDefinition("cr_ix_code_incl"), "INCLUDE (email_v2)");
+        StringAssert.Contains(IndexDefinition("cr_ex_code_period"), "USING gist (code_v2, period_v2) WHERE (revoked_at_v2 IS NULL)");
+    }
+
+    private static uint? RelationOid(string name)
+    {
+        using var connection = new NpgsqlConnection(ConnectionString);
+        connection.Open();
+        using var cmd = new NpgsqlCommand("SELECT oid FROM pg_class WHERE relname = @name", connection);
+        cmd.Parameters.AddWithValue("name", name);
+        return (uint?)cmd.ExecuteScalar();
+    }
+
+    private static string IndexDefinition(string index)
+    {
+        using var connection = new NpgsqlConnection(ConnectionString);
+        connection.Open();
+        using var cmd = new NpgsqlCommand("SELECT pg_get_indexdef(oid) FROM pg_class WHERE relname = @index", connection);
+        cmd.Parameters.AddWithValue("index", index);
+        return (string?)cmd.ExecuteScalar() ?? throw new AssertFailedException($"Index '{index}' does not exist.");
+    }
+
     private static string? IndexedColumn(string index)
     {
         using var connection = new NpgsqlConnection(ConnectionString);

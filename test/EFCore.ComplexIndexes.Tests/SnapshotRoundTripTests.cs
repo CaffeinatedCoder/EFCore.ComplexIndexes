@@ -142,6 +142,20 @@ public class SnapshotRoundTripTests
         Assert.IsEmpty(operations, string.Join("\n", operations.Select(o => o.GetType().Name)));
     }
 
+    // A temporal foreign key stores its principal's CLR FullName, which for a generic type is
+    // "Room`1[[System.Int32, …]]" where EF names the entity type "Room<int>". A snapshot's
+    // property-bag type has no CLR type to fall back on, so the principal did not resolve and every
+    // diff from the snapshot threw (#197).
+    [TestMethod(DisplayName = "A temporal foreign key to a generic entity type survives the snapshot round trip (#197)")]
+    public void Temporal_foreign_key_to_a_generic_principal_roundtrip_is_noop()
+    {
+        var operations = GetDifferences(
+            source: BuildModelViaSnapshot<RoundTripGenericTemporalContext>(),
+            target: BuildLiveModel<RoundTripGenericTemporalContext>());
+
+        Assert.IsEmpty(operations, string.Join("\n", operations.Select(o => o.GetType().Name)));
+    }
+
     [TestMethod(DisplayName = "Complex indexes survive the snapshot round trip without churn")]
     public void Complex_index_roundtrip_is_noop()
     {
@@ -729,5 +743,38 @@ internal class RoundTripNamedTpcContext(DbContextOptions<RoundTripNamedTpcContex
 
         modelBuilder.Entity<RoundTripSpecialBooking>().ToTable("rt_special_bookings");
         modelBuilder.Entity<RoundTripVipBooking>().ToTable("rt_vip_bookings");
+    }
+}
+
+internal class RoundTripGenericRoom<TKey>
+{
+    public int                   Id          { get; set; }
+    public TKey                  RoomId      { get; set; } = default!;
+    public NpgsqlRange<DateOnly> ValidDuring { get; set; }
+}
+
+internal class RoundTripGenericBooking<TKey>
+{
+    public int                   Id           { get; set; }
+    public TKey                  RoomId       { get; set; } = default!;
+    public NpgsqlRange<DateOnly> BookedDuring { get; set; }
+}
+
+internal class RoundTripGenericTemporalContext(DbContextOptions<RoundTripGenericTemporalContext> options) : DbContext(options)
+{
+    protected override void OnModelCreating(ModelBuilder modelBuilder)
+    {
+        modelBuilder.Entity<RoundTripGenericRoom<int>>(b =>
+        {
+            b.ToTable("rt_generic_rooms");
+            b.HasTemporalConstraint(x => x.RoomId, x => x.ValidDuring, name: "rt_generic_tc_rooms");
+        });
+
+        modelBuilder.Entity<RoundTripGenericBooking<int>>(b =>
+        {
+            b.ToTable("rt_generic_bookings");
+            b.HasTemporalForeignKey<RoundTripGenericBooking<int>, RoundTripGenericRoom<int>>(
+                x => x.RoomId, x => x.BookedDuring, x => x.RoomId, x => x.ValidDuring, name: "rt_generic_fk_bookings");
+        });
     }
 }
